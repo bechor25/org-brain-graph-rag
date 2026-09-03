@@ -11,12 +11,25 @@ class EmbedDimMismatch(RuntimeError):
     pass
 
 
+class EmbedCountMismatch(RuntimeError):
+    pass
+
+
 class OllamaEmbedder:
     def __init__(self, base_url: str, model: str, dim: int, timeout: float = 120.0) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.dim = dim
         self._client = httpx.Client(timeout=timeout)
+
+    def close(self) -> None:
+        self._client.close()
+
+    def __enter__(self) -> OllamaEmbedder:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
 
     def has_model(self) -> bool:
         r = self._client.get(f"{self.base_url}/api/tags")
@@ -33,6 +46,10 @@ class OllamaEmbedder:
             )
             r.raise_for_status()
             vectors = r.json()["embeddings"]
+            if len(vectors) != len(chunk):
+                raise EmbedCountMismatch(
+                    f"model {self.model} returned {len(vectors)} vectors for {len(chunk)} inputs"
+                )
             for v in vectors:
                 if len(v) != self.dim:
                     raise EmbedDimMismatch(
