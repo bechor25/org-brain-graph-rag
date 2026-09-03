@@ -6,6 +6,7 @@ Order of results is first-appearance order; duplicates removed.
 from __future__ import annotations
 
 import re
+from collections.abc import Collection, Iterable
 from urllib.parse import unquote
 
 from brain.canon.models import Ref
@@ -64,3 +65,52 @@ def extract_refs(text: str) -> list[Ref]:
         seen.add(k)
         out.append(ref)
     return out
+
+
+# --------------------------------------------------------------------------- filtering
+
+#: Project keys an `ABC-123` text match may become an issue ref for. The regex cannot
+#: tell `KAFKA-15123` from `UTF-8` or `SHA-256`; only a key the harvest actually saw can.
+#: The synthetic layer (Plan 1 Task 3) adds `XT/XE/XP/XS/ADO`.
+ISSUE_PROJECT_ALLOWLIST: frozenset[str] = frozenset({"KAFKA"})
+
+#: `KAFKA-1` is the placeholder key in the KIP page template — it is on ~2% of KIP pages
+#: and means "put your Jira key here", never the real issue KAFKA-1.
+ISSUE_KEY_BLACKLIST: frozenset[str] = frozenset({"KAFKA-1"})
+
+NOT_ALLOWED = "not_in_allowlist"
+BLACKLISTED = "blacklisted"
+
+
+def project_of(key: str) -> str:
+    """`KAFKA-15123` → `KAFKA`. Uppercased, so the allowlist check is case-insensitive."""
+    return key.split("-", 1)[0].upper()
+
+
+def filter_refs(
+    refs: Iterable[Ref],
+    *,
+    allowlist: Collection[str] = ISSUE_PROJECT_ALLOWLIST,
+    blacklist: Collection[str] = ISSUE_KEY_BLACKLIST,
+) -> tuple[list[Ref], list[tuple[str, str]]]:
+    """Keep the issue refs that can be real; return the rest with the reason they went.
+
+    Only `kind="issue"` refs are filtered — a URL, a `KIP-N`, a `#N` or an `@user` carries
+    its own evidence. The removed list is what the report turns into "what the regex
+    thought was an issue key": `UTF-8`, `SHA-256`, `HTTP-2`, `AES-256`…
+    """
+    allowed = {p.upper() for p in allowlist}
+    denied = {k.upper() for k in blacklist}
+    kept: list[Ref] = []
+    removed: list[tuple[str, str]] = []
+    for ref in refs:
+        if ref.kind != "issue":
+            kept.append(ref)
+            continue
+        if ref.key.upper() in denied:
+            removed.append((ref.key, BLACKLISTED))
+        elif project_of(ref.key) not in allowed:
+            removed.append((ref.key, NOT_ALLOWED))
+        else:
+            kept.append(ref)
+    return kept, removed

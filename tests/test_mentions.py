@@ -1,4 +1,4 @@
-from brain.canon.mentions import extract_refs
+from brain.canon.mentions import extract_refs, filter_refs
 
 
 def keys(text):
@@ -41,3 +41,32 @@ def test_users_and_dedupe():
 
 def test_hebrew_text_still_finds_keys():
     assert keys("ראו KAFKA-100 ו-KIP-5 לפרטים") == [("issue", "KAFKA-100"), ("kip", "KIP-5")]
+
+
+def test_allowlist_removes_pseudo_keys_and_keeps_the_reason():
+    refs = extract_refs("KAFKA-15123 encoded as UTF-8 with SHA-256 and ADO-77")
+    kept, removed = filter_refs(refs)
+    assert [(r.kind, r.key) for r in kept] == [("issue", "KAFKA-15123")]
+    assert removed == [
+        ("UTF-8", "not_in_allowlist"),
+        ("SHA-256", "not_in_allowlist"),
+        ("ADO-77", "not_in_allowlist"),
+    ]
+
+
+def test_blacklist_removes_the_kip_template_placeholder():
+    kept, removed = filter_refs(extract_refs("JIRA: KAFKA-1 (replace me), see KAFKA-2"))
+    assert [r.key for r in kept] == ["KAFKA-2"]
+    assert removed == [("KAFKA-1", "blacklisted")]
+
+
+def test_filter_leaves_non_issue_refs_alone():
+    text = "KIP-848 and (#14567) and @jrao and https://example.com/x and UTF-8"
+    kept, removed = filter_refs(extract_refs(text))
+    assert [r.kind for r in kept] == ["kip", "pr", "user", "url"]
+    assert [k for k, _ in removed] == ["UTF-8"]
+
+
+def test_allowlist_is_extensible_for_the_synthetic_layer():
+    kept, _ = filter_refs(extract_refs("ADO-77"), allowlist={"KAFKA", "ADO"})
+    assert [r.key for r in kept] == ["ADO-77"]

@@ -16,8 +16,18 @@ RefKind = Literal["issue", "kip", "pr", "url", "user"]
 
 
 class Ref(BaseModel):
+    """A cross-reference found in a record.
+
+    `via` says *how* it was found: `"link"` for a formal link the source itself records
+    (a Jira issuelink), `"text"` for one only the regexes saw. `brain load` turns it into
+    `REFERENCES{via}` — the number that answers "how much traceability is prose?".
+    A text mention that duplicates a formal link counts as `"link"`: the formal link is
+    the stronger evidence, and counting it twice would inflate the text share.
+    """
+
     kind: RefKind
     key: str
+    via: Literal["text", "link"] = "text"
 
 
 class Comment(BaseModel):
@@ -96,6 +106,9 @@ class Identity(BaseModel):
 class Person(BaseModel):
     id: str  # pre-resolution: "<source>:<key>"; post-resolution: canonical id
     identities: list[Identity] = Field(min_length=1)
+    #: False until `brain resolve` merges identities into one person (spec §3.6).
+    #: canon emits one Person per identity, so it is always False here.
+    resolved: bool = False
     synthetic: bool = False
 
 
