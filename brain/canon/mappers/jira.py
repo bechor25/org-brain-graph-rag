@@ -12,12 +12,12 @@ issue that declares it, `in` on the other). Collapsing the pair into one edge is
 
 from __future__ import annotations
 
-import re
+from collections import Counter
 from collections.abc import Iterable, Iterator
 from typing import Any
 
 from brain.canon.mappers.base import Bundle, FieldTracker, parse_dt
-from brain.canon.mentions import ISSUE_PROJECT_ALLOWLIST, extract_refs
+from brain.canon.mentions import extract_refs, filter_refs
 from brain.canon.models import ChangelogEntry, Comment, Link, WorkItem
 
 SOURCE = "jira"
@@ -35,6 +35,8 @@ MAPPED = frozenset(
         "fields.issuetype",
         "fields.status",
         "fields.priority",
+        "fields.resolution",
+        "fields.resolutiondate",
         "fields.created",
         "fields.updated",
         "fields.reporter",
@@ -52,17 +54,6 @@ MAPPED = frozenset(
 )
 
 
-#: Jira's own mention syntax. `extract_refs` matches `@user`, so these are invisible to
-#: it — measured here rather than assumed away, because widening the regex is a change to
-#: `brain/canon/mentions.py` and needs a brief.
-_JIRA_USER_MENTION = re.compile(r"\[~([A-Za-z0-9_.@-]+)\]")
-
-#: `kafka-15123` in prose. The issue-key regex is deliberately uppercase (`[A-Z]…`) so it
-#: does not match every `word-123`; the cost — keys of an *allowlisted* project written in
-#: any other case — is counted here.
-_ANY_CASE_KEY = re.compile(r"\b([A-Za-z][A-Za-z0-9]{1,9})-\d+\b")
-
-
 def raw_paths(issue: dict[str, Any]) -> Iterator[tuple[str, Any]]:
     yield from issue.items()
     for name, value in (issue.get("fields") or {}).items():
@@ -76,6 +67,23 @@ def browse_url(issue: dict[str, Any]) -> str | None:
     if "/rest/" not in self_url or not key:
         return None
     return f"{self_url.split('/rest/', 1)[0]}/browse/{key}"
+
+
+def _raw_container_names(fields: dict[str, Any]) -> Iterator[str]:
+    for group in ("components", "fixVersions", "versions"):
+        for item in fields.get(group) or []:
+            if item.get("name"):
+                yield str(item["name"])
+
+
+def container_name(raw: str) -> str:
+    """`"producer "` → `"producer"`.
+
+    Jira component and version names are free text and carry whatever whitespace the
+    person who created them typed. A trailing space survives every MERGE and produces a
+    `Component` node no query and no reader will ever match.
+    """
+    return " ".join(str(raw).split())
 
 
 def link_type(raw: dict[str, Any]) -> str:
@@ -136,53 +144,14 @@ def _changelog(issue: dict[str, Any], bundle: Bundle) -> list[ChangelogEntry]:
     return out
 
 
-class _MissedSignal:
-    """Signal the deterministic extractor leaves on the floor, counted per source.
-
-    Neither number is a bug to fix here: both are properties of `brain/canon/mentions.py`,
-    which is shared and tested. They are in the report so the planner can decide whether
-    the extra refs are worth widening the regexes for.
-    """
-
-    def __init__(self) -> None:
-        self.mention_occurrences = 0
-        self.mention_issues = 0
-        self.mention_users: set[str] = set()
-        self.lowercase_key_issues = 0
-
-    def observe(self, text: str) -> None:
-        mentions = _JIRA_USER_MENTION.findall(text)
-        if mentions:
-            self.mention_occurrences += len(mentions)
-            self.mention_issues += 1
-            self.mention_users.update(mentions)
-        if any(
-            project != project.upper() and project.upper() in ISSUE_PROJECT_ALLOWLIST
-            for project in _ANY_CASE_KEY.findall(text)
-        ):
-            self.lowercase_key_issues += 1
-
-    def report(self) -> dict[str, Any]:
-        return {
-            "jira_user_mentions": {
-                "note": "`[~username]` is Jira's mention syntax; extract_refs matches `@user`",
-                "occurrences": self.mention_occurrences,
-                "issues": self.mention_issues,
-                "distinct_users": len(self.mention_users),
-            },
-            "lowercase_issue_keys": {
-                "note": "the issue-key regex is uppercase-only, so `kafka-15123` is not a ref",
-                "issues": self.lowercase_key_issues,
-            },
-        }
-
-
 def map_issues(issues: Iterable[dict[str, Any]]) -> Bundle:
     bundle = Bundle(source=SOURCE)
     tracker = FieldTracker(mapped=MAPPED)
     no_components = 0
     truncated_changelogs = 0
-    missed = _MissedSignal()
+    renamed: Counter = Counter()
+    any_text_mention = 0
+    text_only = 0
 
     for issue in issues:
         tracker.observe(raw_paths(issue))
@@ -193,13 +162,18 @@ def map_issues(issues: Iterable[dict[str, Any]]) -> Bundle:
             bundle.warn("issue_without_key_or_created", id=issue.get("id"))
             continue
 
-        components = [str(c.get("name")) for c in fields.get("components") or [] if c.get("name")]
+        components = [
+            container_name(c["name"]) for c in fields.get("components") or [] if c.get("name")
+        ]
         for name in components:
             bundle.container(SOURCE, "component", name)
         fix_versions = [
-            str(v.get("name")) for v in fields.get("fixVersions") or [] if v.get("name")
+            container_name(v["name"]) for v in fields.get("fixVersions") or [] if v.get("name")
         ]
-        affects = [str(v.get("name")) for v in fields.get("versions") or [] if v.get("name")]
+        affects = [container_name(v["name"]) for v in fields.get("versions") or [] if v.get("name")]
+        for raw_name in _raw_container_names(fields):
+            if (clean := container_name(raw_name)) != raw_name:
+                renamed[f"{raw_name!r} -> {clean!r}"] += 1
         for name in (*fix_versions, *affects):
             bundle.container(SOURCE, "version", name)
 
@@ -213,7 +187,15 @@ def map_issues(issues: Iterable[dict[str, Any]]) -> Bundle:
         title = str(fields.get("summary") or "")
         description = str(fields.get("description") or "")
         text = "\n".join([title, description, *(c.body for c in comments)])
-        missed.observe(text)
+        text_refs = extract_refs(text)
+        # What the *text* alone claims, before a formal link gets the credit for it. The
+        # two percentages this feeds are different questions: "does prose carry refs at
+        # all" and "does prose carry refs Jira does not already state".
+        mentioned = {
+            r.key for r in filter_refs(t for t in text_refs if t.key != key)[0] if r.kind == "issue"
+        }
+        any_text_mention += 1 if mentioned else 0
+        text_only += 1 if mentioned - {link.target for link in links} else 0
 
         changelog = (issue.get("changelog") or {}).get("histories") or []
         if len(changelog) < int((issue.get("changelog") or {}).get("total") or 0):
@@ -233,6 +215,8 @@ def map_issues(issues: Iterable[dict[str, Any]]) -> Bundle:
                 title=title,
                 description=description,
                 status=str((fields.get("status") or {}).get("name") or "Unknown"),
+                resolution=(fields.get("resolution") or {}).get("name"),
+                resolved_at=parse_dt(fields.get("resolutiondate")),
                 priority=(fields.get("priority") or {}).get("name"),
                 created=created,
                 updated=parse_dt(fields.get("updated")),
@@ -251,30 +235,33 @@ def map_issues(issues: Iterable[dict[str, Any]]) -> Bundle:
                 comments=comments,
                 changelog=_changelog(issue, bundle),
                 refs=bundle.refs.collect(
-                    extract_refs(text), [link.target for link in links], self_keys=[key]
+                    text_refs, [link.target for link in links], self_keys=[key]
                 ),
                 raw_url=browse_url(issue),
             )
         )
 
-    text_only = sum(
-        1 for wi in bundle.workitems if any(r.kind == "issue" and r.via == "text" for r in wi.refs)
-    )
+    n = len(bundle.workitems) or 1
     bundle.stats = {
         "issues": len(bundle.workitems),
         "with_components": len(bundle.workitems) - no_components,
         "without_components": no_components,
+        "normalized_container_names": {
+            "names_changed": len(renamed),
+            "occurrences": sum(renamed.values()),
+            "changes": dict(renamed.most_common()),
+        },
         "with_links": sum(1 for wi in bundle.workitems if wi.links),
         "formal_links": sum(len(wi.links) for wi in bundle.workitems),
         "with_parent": sum(1 for wi in bundle.workitems if wi.parent),
+        "with_resolution": sum(1 for wi in bundle.workitems if wi.resolution),
         "comments": sum(len(wi.comments) for wi in bundle.workitems),
         "changelog_entries": sum(len(wi.changelog) for wi in bundle.workitems),
         "truncated_changelogs": truncated_changelogs,
+        "workitems_with_any_text_issue_mention": any_text_mention,
+        "pct_workitems_with_any_text_issue_mention": round(100 * any_text_mention / n, 1),
         "workitems_with_text_only_issue_ref": text_only,
-        "pct_workitems_with_text_only_issue_ref": round(
-            100 * text_only / (len(bundle.workitems) or 1), 1
-        ),
+        "pct_workitems_with_text_only_issue_ref": round(100 * text_only / n, 1),
         "unmapped_fields": tracker.report(),
-        "text_signal_not_extracted": missed.report(),
     }
     return bundle

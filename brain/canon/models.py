@@ -59,6 +59,10 @@ class WorkItem(BaseModel):
     title: str
     description: str = ""
     status: str
+    #: Why the item stopped, and when — `status` alone cannot tell "Resolved/Fixed" from
+    #: "Resolved/Won't Fix", and the two mean opposite things to a reader of the graph.
+    resolution: str | None = None
+    resolved_at: datetime | None = None
     priority: str | None = None
     created: datetime
     updated: datetime | None = None

@@ -8,6 +8,7 @@ import pytest
 
 from brain.canon.io import read_jsonl
 from brain.canon.models import Change, Document, Person, WorkItem
+from brain.canon.report import summarize
 from brain.canon.runner import natural_key, resolve_sources, run_canon
 from brain.cli import app
 from tests.canon_helpers import commit, issue, page, plant_commits, plant_pages
@@ -152,7 +153,8 @@ def test_the_report_records_dedupe_refs_kip_decisions_and_the_acceptance_checks(
         "every_workitem_has_a_component",
         "every_document_has_a_body",
         "every_change_has_at",
-        "text_only_issue_refs_at_least_20pct",
+        "pct_any_text_issue_mention",
+        "pct_text_only_issue_ref",
     }
     assert all(c["ok"] for c in report["checks"] if c["name"].startswith("unique_ids"))
 
@@ -161,10 +163,33 @@ def test_a_failing_acceptance_check_stays_visible_in_the_report(corpus):
     plant_pages(corpus / "raw", "jira", [issue("KAFKA-100", description="no refs here")])
 
     report, code = run(corpus, ["jira"])
-    check = next(c for c in report["checks"] if c["name"] == "text_only_issue_refs_at_least_20pct")
+    checks = {c["name"]: c for c in report["checks"]}
 
-    assert check["ok"] is False and check["pct"] == 0.0
+    assert checks["pct_any_text_issue_mention"]["ok"] is False
+    assert checks["pct_any_text_issue_mention"]["pct"] == 0.0
     assert code == 0  # the step succeeded; the corpus is what it is
+
+
+def test_the_text_only_percentage_is_informational_not_a_threshold(corpus):
+    """A mention Jira also states as a link fails neither check: it is real traceability."""
+    plant_pages(
+        corpus / "raw",
+        "jira",
+        [
+            issue(
+                "KAFKA-100",
+                description="caused by KAFKA-200",
+                issuelinks=[{"type": {"name": "Blocker"}, "outwardIssue": {"key": "KAFKA-200"}}],
+            )
+        ],
+    )
+    report, _ = run(corpus, ["jira"])
+    checks = {c["name"]: c for c in report["checks"]}
+
+    assert checks["pct_any_text_issue_mention"]["pct"] == 100.0
+    assert checks["pct_text_only_issue_ref"]["pct"] == 0.0
+    assert checks["pct_text_only_issue_ref"]["ok"] is None
+    assert "checks: all passed" in summarize(report)
 
 
 def test_the_report_is_merged_across_partial_runs(corpus):

@@ -70,3 +70,38 @@ def test_filter_leaves_non_issue_refs_alone():
 def test_allowlist_is_extensible_for_the_synthetic_layer():
     kept, _ = filter_refs(extract_refs("ADO-77"), allowlist={"KAFKA", "ADO"})
     assert [r.key for r in kept] == ["ADO-77"]
+
+
+def test_jira_mention_syntax_is_a_user_ref():
+    assert keys("[~chia7712] thanks, cc @jrao") == [("user", "chia7712"), ("user", "jrao")]
+
+
+def test_the_two_mention_syntaxes_collapse_to_one_ref():
+    assert keys("[~jrao] see @jrao") == [("user", "jrao")]
+
+
+def test_a_lowercase_key_of_an_allowlisted_project_is_normalized():
+    assert keys("fixes kafka-15123 and Kafka-9") == [
+        ("issue", "KAFKA-15123"),
+        ("issue", "KAFKA-9"),
+    ]
+
+
+def test_a_lowercase_non_project_token_keeps_its_case_and_is_filtered_out():
+    kept, removed = filter_refs(extract_refs("encoded utf-8, since pre-2023, see kafka-1234"))
+
+    assert [r.key for r in kept] == ["KAFKA-1234"]
+    assert removed == [("utf-8", "not_in_allowlist"), ("pre-2023", "not_in_allowlist")]
+
+
+def test_normalization_follows_a_widened_allowlist():
+    assert [r.key for r in extract_refs("ado-77", allowlist={"KAFKA", "ADO"})] == ["ADO-77"]
+    assert [r.key for r in extract_refs("ado-77")] == ["ado-77"]
+
+
+def test_a_lowercase_key_in_a_browse_url_is_normalized_too():
+    assert keys("https://issues.apache.org/jira/browse/kafka-15123") == [("issue", "KAFKA-15123")]
+
+
+def test_kip_is_still_not_an_issue_in_any_case():
+    assert keys("kip-848") == [("kip", "KIP-848")]

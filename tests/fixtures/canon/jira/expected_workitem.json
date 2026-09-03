@@ -6,6 +6,8 @@
  "title": "RecordHeader key() is not thread safe",
  "description": "{code:java}\r\npublic String key() {\r\n    if (key == null) {\r\n        key = Utils.utf8(keyBuffer, keyBuffer.remaining());\r\n        keyBuffer = null;\r\n    }\r\n    return key;\r\n} {code}\r\nThis method in RecordHeader is not thread safe.\r\n\r\nIt may throw NPE when it is accessed concurrently by multiple threads, because keyBuffer maybe null by pre thread.",
  "status": "Resolved",
+ "resolution": "Fixed",
+ "resolved_at": "2025-11-03T13:45:53Z",
  "priority": "Major",
  "created": "2024-10-08T13:52:08Z",
  "updated": "2025-11-03T13:45:53Z",
@@ -82,6 +84,11 @@
   }
  ],
  "refs": [
+  {
+   "kind": "user",
+   "key": "chia7712",
+   "via": "text"
+  },
   {
    "kind": "issue",
    "key": "KAFKA-12999",

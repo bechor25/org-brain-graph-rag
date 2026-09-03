@@ -161,14 +161,14 @@ def test_an_issue_without_a_component_is_warned_about():
 def test_unmapped_fields_count_only_the_records_that_carried_a_value():
     bundle = map_issues(
         [
-            issue("KAFKA-1", resolution={"name": "Fixed"}, customfield_1=None),
-            issue("KAFKA-2", resolution=None, customfield_1=None),
+            issue("KAFKA-1", votes={"votes": 3}, customfield_1=None),
+            issue("KAFKA-2", votes=None, customfield_1=None),
         ]
     )
     unmapped = bundle.stats["unmapped_fields"]
 
     assert unmapped["records"] == 2
-    assert unmapped["dropped_with_data"]["fields.resolution"] == 1
+    assert unmapped["dropped_with_data"]["fields.votes"] == 1
     assert "fields.customfield_1" in unmapped["dropped_always_empty"]
 
 
@@ -176,13 +176,24 @@ def test_the_golden_issue_reports_what_the_canonical_model_drops():
     bundle = map_issues([load_fixture("jira", "raw_issue.json")])
     dropped = bundle.stats["unmapped_fields"]["dropped_with_data"]
 
-    assert dropped["fields.resolution"] == 1
-    assert dropped["fields.resolutiondate"] == 1
+    assert dropped["fields.votes"] == 1
+    assert dropped["fields.watches"] == 1
+    assert dropped["fields.workratio"] == 1
     assert any(name.startswith("fields.customfield_") for name in dropped)
 
 
-def test_the_report_counts_the_signal_the_extractor_does_not_take():
-    """Neither gap is fixed here — `mentions.py` is shared — but both are measured."""
+def test_resolution_and_resolved_at_are_kept():
+    wi = one(load_fixture("jira", "raw_issue.json"))
+
+    assert wi.resolution == "Fixed"
+    assert wi.resolved_at.isoformat() == "2025-11-03T13:45:53+00:00"
+    # ...and they are no longer reported as lost in normalization
+    dropped = map_issues([load_fixture("jira", "raw_issue.json")]).stats["unmapped_fields"]
+    assert "fields.resolution" not in dropped["dropped_with_data"]
+    assert "fields.resolutiondate" not in dropped["dropped_with_data"]
+
+
+def test_jira_mentions_in_comments_become_user_refs():
     raw = issue(
         "KAFKA-100",
         description="[~jrao] please look at kafka-200",
@@ -190,10 +201,49 @@ def test_the_report_counts_the_signal_the_extractor_does_not_take():
             "comments": [{"author": {"name": "a"}, "body": "[~chia7712] ok", "created": None}]
         },
     )
-    missed = map_issues([raw]).stats["text_signal_not_extracted"]
 
-    assert missed["jira_user_mentions"]["occurrences"] == 2
-    assert missed["jira_user_mentions"]["distinct_users"] == 2
-    assert missed["lowercase_issue_keys"]["issues"] == 1
-    # and none of it reached the refs
-    assert [r.key for r in map_issues([raw]).workitems[0].refs] == []
+    assert [(r.kind, r.key) for r in one(raw).refs] == [
+        ("user", "jrao"),
+        ("issue", "KAFKA-200"),
+        ("user", "chia7712"),
+    ]
+
+
+def test_container_names_are_stripped_and_reported():
+    bundle = map_issues(
+        [
+            issue(
+                "KAFKA-100",
+                components=[{"name": "producer "}, {"name": "clients"}],
+                fixVersions=[{"name": " 3.7.0"}],
+            )
+        ]
+    )
+
+    assert bundle.workitems[0].components == ["producer", "clients"]
+    assert bundle.workitems[0].fix_versions == ["3.7.0"]
+    assert set(bundle.containers) == {
+        "jira:component:producer",
+        "jira:component:clients",
+        "jira:version:3.7.0",
+    }
+    normalized = bundle.stats["normalized_container_names"]
+    assert normalized["names_changed"] == 2 and normalized["occurrences"] == 2
+
+
+def test_the_two_ref_percentages_answer_different_questions():
+    """A mention Jira also states as a link counts for one metric and not the other."""
+    bundle = map_issues(
+        [
+            issue(
+                "KAFKA-1",
+                description="caused by KAFKA-200",
+                issuelinks=[{"type": {"name": "Blocker"}, "outwardIssue": {"key": "KAFKA-200"}}],
+            ),
+            issue("KAFKA-2", description="see KAFKA-300"),
+            issue("KAFKA-3", description="nothing here"),
+        ]
+    )
+
+    assert bundle.stats["workitems_with_any_text_issue_mention"] == 2
+    assert bundle.stats["workitems_with_text_only_issue_ref"] == 1
