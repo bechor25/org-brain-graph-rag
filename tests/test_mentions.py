@@ -44,14 +44,22 @@ def test_hebrew_text_still_finds_keys():
 
 
 def test_allowlist_removes_pseudo_keys_and_keeps_the_reason():
-    refs = extract_refs("KAFKA-15123 encoded as UTF-8 with SHA-256 and ADO-77")
+    refs = extract_refs("KAFKA-15123 encoded as UTF-8 with SHA-256 and AES-128")
     kept, removed = filter_refs(refs)
     assert [(r.kind, r.key) for r in kept] == [("issue", "KAFKA-15123")]
     assert removed == [
         ("UTF-8", "not_in_allowlist"),
         ("SHA-256", "not_in_allowlist"),
-        ("ADO-77", "not_in_allowlist"),
+        ("AES-128", "not_in_allowlist"),
     ]
+
+
+def test_synthetic_prefixes_are_allowlisted_by_default():
+    """`brain canon` carries the Xray/ADO layer over; its refs must survive the filter."""
+    text = "XE-3 executes XT-12 and XT-13 from XP-2 / XS-4; blocked by ADO-77"
+    kept, removed = filter_refs(extract_refs(text))
+    assert [r.key for r in kept] == ["XE-3", "XT-12", "XT-13", "XP-2", "XS-4", "ADO-77"]
+    assert removed == []
 
 
 def test_blacklist_removes_the_kip_template_placeholder():
@@ -67,9 +75,9 @@ def test_filter_leaves_non_issue_refs_alone():
     assert [k for k, _ in removed] == ["UTF-8"]
 
 
-def test_allowlist_is_extensible_for_the_synthetic_layer():
-    kept, _ = filter_refs(extract_refs("ADO-77"), allowlist={"KAFKA", "ADO"})
-    assert [r.key for r in kept] == ["ADO-77"]
+def test_allowlist_is_extensible_per_call():
+    kept, _ = filter_refs(extract_refs("JETTY-77"), allowlist={"KAFKA", "JETTY"})
+    assert [r.key for r in kept] == ["JETTY-77"]
 
 
 def test_jira_mention_syntax_is_a_user_ref():
@@ -95,8 +103,8 @@ def test_a_lowercase_non_project_token_keeps_its_case_and_is_filtered_out():
 
 
 def test_normalization_follows_a_widened_allowlist():
-    assert [r.key for r in extract_refs("ado-77", allowlist={"KAFKA", "ADO"})] == ["ADO-77"]
-    assert [r.key for r in extract_refs("ado-77")] == ["ado-77"]
+    assert [r.key for r in extract_refs("jetty-77", allowlist={"KAFKA", "JETTY"})] == ["JETTY-77"]
+    assert [r.key for r in extract_refs("jetty-77")] == ["jetty-77"]
 
 
 def test_a_lowercase_key_in_a_browse_url_is_normalized_too():

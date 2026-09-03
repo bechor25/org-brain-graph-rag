@@ -53,7 +53,7 @@ def test_a_formal_link_with_no_text_mention_still_becomes_a_ref():
 def test_refs_are_filtered_by_the_allowlist_and_the_blacklist():
     raw = issue(
         "KAFKA-100",
-        description="KAFKA-200 encoded UTF-8, template key KAFKA-1, ADO-7, KIP-848",
+        description="KAFKA-200 encoded UTF-8, template key KAFKA-1, SHA-256, KIP-848",
     )
     bundle = map_issues([raw])
 
@@ -63,8 +63,15 @@ def test_refs_are_filtered_by_the_allowlist_and_the_blacklist():
     ]
     assert bundle.refs.removed["UTF-8"] == 1
     assert bundle.refs.removed["KAFKA-1"] == 1
-    assert bundle.refs.removed["ADO-7"] == 1
+    assert bundle.refs.removed["SHA-256"] == 1
     assert bundle.refs.removed_by_reason == {"blacklisted": 1, "not_in_allowlist": 2}
+
+
+def test_a_synthetic_key_in_real_text_is_kept_as_a_ref():
+    """Once the Xray/ADO layer exists, a real issue may name one of its keys."""
+    raw = issue("KAFKA-100", description="Covered by XT-12, tracked as ADO-7.")
+
+    assert [(r.kind, r.key) for r in one(raw).refs] == [("issue", "XT-12"), ("issue", "ADO-7")]
 
 
 def test_an_issue_does_not_reference_itself():

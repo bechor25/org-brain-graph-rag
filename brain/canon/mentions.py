@@ -33,10 +33,18 @@ _HOST_CONTEXT = re.compile(r"[.:/@-][A-Za-z0-9]")
 #: Jira's own mention syntax, as it appears in descriptions and comments: `[~jrao]`.
 _JIRA_USER = re.compile(r"\[~([A-Za-z0-9_.-]+)\]")
 
+#: Key prefixes the synthetic Xray/ADO layer mints (Plan 1 Task 3, `synthetic_spec.md`):
+#: `XT` Test, `XE` TestExecution, `XP` TestPlan, `XS` TestSet, `ADO` work item. They are on
+#: the allowlist permanently, not only while `brain synth` runs: `brain canon` carries the
+#: synthetic records over on every rerun and re-derives nothing, but a *real* record whose
+#: text names `XT-12` — a KIP quoting a test key, once the layer exists — must keep the ref.
+#: Zero `XT/XE/XP/XS/ADO-<n>` matches exist in the real corpus (measured over every work
+#: item, document and commit), so widening the allowlist costs no false positives.
+SYNTHETIC_KEY_PREFIXES: frozenset[str] = frozenset({"XT", "XE", "XP", "XS", "ADO"})
+
 #: Project keys an `ABC-123` text match may become an issue ref for. The regex cannot
 #: tell `KAFKA-15123` from `UTF-8` or `SHA-256`; only a key the harvest actually saw can.
-#: The synthetic layer (Plan 1 Task 3) adds `XT/XE/XP/XS/ADO`.
-ISSUE_PROJECT_ALLOWLIST: frozenset[str] = frozenset({"KAFKA"})
+ISSUE_PROJECT_ALLOWLIST: frozenset[str] = frozenset({"KAFKA"}) | SYNTHETIC_KEY_PREFIXES
 
 #: `KAFKA-1` is the placeholder key in the KIP page template — it is on ~2% of KIP pages
 #: and means "put your Jira key here", never the real issue KAFKA-1.
