@@ -228,7 +228,7 @@ class HttpFetcher:
         client: httpx.Client | None = None,
         min_interval: float = 1.0,
         policy: RetryPolicy | None = None,
-        timeout: float = 120.0,
+        timeout: float = 300.0,
         sleep=time.sleep,
         monotonic=time.monotonic,
         rng: random.Random | None = None,
@@ -236,8 +236,11 @@ class HttpFetcher:
         self.base_url = base_url.rstrip("/")
         self.policy = policy or RetryPolicy()
         self.min_interval = min_interval
+        # A 500-issue Jira page with fields=*all is tens of MB: the read budget has to be
+        # generous, while connect stays short so a dead host fails fast into the backoff.
         self._client = client or httpx.Client(
-            timeout=timeout, headers={"User-Agent": USER_AGENT, "Accept": "application/json"}
+            timeout=httpx.Timeout(timeout, connect=15.0),
+            headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
         )
         self._owns_client = client is None
         self._sleep = sleep
@@ -386,20 +389,28 @@ class BaseConnector:
         write_json_atomic(path, payload)
         return path
 
+    def collected_errors(self) -> list[dict[str, Any]]:
+        """Connector-level notes plus whatever the HTTP layer recorded (retries included)."""
+        http = getattr(self, "http", None)
+        return list(self.errors) + (list(http.errors) if http is not None else [])
+
     def run(self, since: date | None = None) -> HarvestResult:
         started = time.perf_counter()
         result = HarvestResult(source=self.name)
         checkpoint = self.checkpoint(since)
+        failure: str | None = None
         try:
             for page in self.fetch(since, checkpoint):
                 result.pages += 1
                 result.records += len(page.records)
-        except HarvestError as exc:
-            result.errors.append(
-                {"when": utc_now_iso(), "kind": "fatal", "detail": str(exc), "fatal": True}
-            )
+        except Exception as exc:  # noqa: BLE001 - one bad source must not sink the others
+            failure = f"{type(exc).__name__}: {exc}"
         finally:
-            result.errors.extend(self.errors)
+            result.errors.extend(self.collected_errors())
+            if failure and not any(e.get("fatal") for e in result.errors):
+                result.errors.append(
+                    {"when": utc_now_iso(), "kind": "fatal", "detail": failure, "fatal": True}
+                )
             result.duration_s = time.perf_counter() - started
             result.checkpoint = checkpoint.as_dict()
             try:

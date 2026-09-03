@@ -255,3 +255,22 @@ def test_stats_count_changelog_and_comment_coverage():
     assert stats["issues"] == 2
     assert stats["pct_with_changelog"] == 50.0
     assert stats["pct_with_comment_field"] == 50.0
+
+
+@respx.mock
+def test_retries_surface_in_the_run_result(tmp_path):
+    """The retry happened on the HTTP layer — the report must still hear about it."""
+    calls: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        if len(calls) == 1:
+            return httpx.Response(429, headers={"Retry-After": "0"})
+        return paged_transport(3, 100)(request)
+
+    respx.get(SEARCH).mock(side_effect=handler)
+    result = connector(tmp_path, page_size=100).run()
+
+    assert result.records == 3
+    assert [e["kind"] for e in result.errors] == ["retry"]
+    assert not any(e["fatal"] for e in result.errors)
