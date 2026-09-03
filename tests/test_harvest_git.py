@@ -113,6 +113,14 @@ def test_log_window_matches_the_corpus_slice(tmp_path):
     assert "--until=2025-12-31" in log_args
 
 
+def test_rename_detection_is_off(tmp_path):
+    """On a blobless clone rename scoring triggers a promisor fetch per commit."""
+    calls: list[list[str]] = []
+    connector(tmp_path, calls=calls).run()
+    log_args = [a for a in calls if a[:2] == ["git", "log"] and "--name-only" in a][0]
+    assert "--no-renames" in log_args
+
+
 def test_since_overrides_the_window_start_and_isolates_the_output(tmp_path):
     calls: list[list[str]] = []
     connector(tmp_path, calls=calls).run(since=date(2025, 6, 1))

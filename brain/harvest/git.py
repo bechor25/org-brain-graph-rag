@@ -162,7 +162,12 @@ class GitConnector(BaseConnector):
         args = ["git", "log", f"--since={start}"]
         if end:
             args.append(f"--until={end}")
-        args += ["--name-only", f"--format={LOG_FORMAT}"]
+        # --no-renames is not cosmetic. Rename detection is on by default and needs blob
+        # *content* to score similarity, which in a --filter=blob:none clone means a
+        # promisor fetch per commit: measured 7s for one month of history vs 0s with it
+        # off. It is also the shape we want — both sides of a rename are files the commit
+        # touched, and the graph should carry both.
+        args += ["--name-only", "--no-renames", f"--format={LOG_FORMAT}"]
         return self._run(args, self.clone_dir)
 
     def fetch(self, since: date | None, checkpoint: Checkpoint) -> Iterator[Page]:
