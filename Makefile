@@ -1,7 +1,7 @@
 .PHONY: up down logs check smoke lint
 
 up:
-	docker compose up -d
+	docker compose up -d --wait
 	@echo "Neo4j browser: http://localhost:7474  (user neo4j / see .env)"
 
 down:

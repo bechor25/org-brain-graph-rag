@@ -16,6 +16,7 @@ the current step brief is in `docs/planning/steps/`.
    LLM-role agents never touch the DB (they cannot: no Bash tool).
 2. No external LLM or embedding API. Embeddings only via `brain/embed/client.py` (Ollama).
 3. Every LLM-derived node/edge carries provenance: `evidence_chunk_ids`, `batch_id`, `model`, `extracted_at`.
+   LLM-role agents emit only chunk ids; the deterministic merge code stamps `batch_id`, `model`, `extracted_at`.
 4. Schema first: entity kinds and relation types are closed sets defined in the spec §2.4 and
    in `brain/<task>/schema.json`. Never invent new kinds; put the unexpected in `notes`.
 5. Pins: dependencies are locked in `uv.lock`; do not upgrade without a brief that asks for it.

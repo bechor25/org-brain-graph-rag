@@ -13,7 +13,7 @@
 | 0 | 7 canonical model | ✅ | 8b5d943 | 5 טיפוסים + regex mentions; עברית = `\w` ב-re → keys נמצאים גם בטקסט עברי |
 | 0 | 8 mini fixtures | ✅ | 6eceb0b, 3fbc900 | 6 issues/1 KIP/3 persons/4 changes/4 containers; regex מוצא רק refs בטקסט — ה-PR חי ב-comment |
 | 0 | 9 agents | ✅ | 35235e2 | 15 סוכנים: 5 הנדסה (כל הכלים), 7 סוכני-LLM (`Read, Write, Glob` בלבד), analyst (`Read`), reviewer, lesson-writer |
-| 0 | 10 templates + README | ⬜ | | `.env.example`: להחליף "(see Task 3)" ב-"(see README)" |
+| 0 | 10 templates + README | ✅ | 8149f11 | README בעברית עם 5 עקרונות; `.env.example` תוקן |
 
 ## ממצאים (findings)
 - `neo4j:2026.06.0` מכיל APOC ו-GDS מקומית (`/var/lib/neo4j/labs`, `/products`) — אין תלות ברשת בזמן עלייה.
@@ -26,6 +26,10 @@
 - `Link.direction` על שני הקצוות → loader חייב לאחד זוגות הדדיים לקשת אחת.
 - `Person.id` לא מסמן אם עבר resolution → להוסיף שדה/סמן לפני שלב resolve.
 - `write_jsonl` דורס → temp+rename כשהפלט הופך ל-artifact.
+
+## מסקירה סופית של Plan 0
+- `read_mode_guard` הוא `required=False` בכוונה — Plan 2 מוסיף guard שני (deny-list + EXPLAIN). לא לסמוך על doctor לבד.
+- `make check` דורש `uv sync --extra dev`; אופציה עתידית: `[dependency-groups] dev`.
 
 ## החלטות פתוחות
 - Ollama רץ כתהליך ידני (`ollama serve`), לא כ-service — README יסביר; LaunchAgent אופציונלי בהמשך.

@@ -1,6 +1,6 @@
 ---
 name: synthetic-org-generator
-description: Generates the synthetic Xray (tests, plans, executions, runs) and Azure DevOps (epics/features/stories/tasks, iterations, area paths) layer on top of real Kafka Jira/KIP entities, with deliberately specified noise, writing canonical JSONL plus a machine-readable truth file. LLM-role agent — JSON only, no shell, no DB.
+description: Generates the synthetic Xray (tests, plans, executions, runs) and Azure DevOps (epics/features/stories/tasks, iterations, area paths) layer on top of real Kafka Jira/KIP entities, with deliberately specified noise, writing per-batch JSON outputs (canonical records + an embedded truth object) that deterministic code merges into canonical JSONL and synthetic_truth.json. LLM-role agent — JSON only, no shell, no DB.
 model: opus
 tools: Read, Write, Glob
 ---
@@ -28,3 +28,4 @@ Rules
   and record the mapping in `truth.identity_map`. Never invent emails for real people.
 - Follow the noise ratios in `synthetic_spec.md` exactly; they are what makes evaluation possible.
 - Validate against the canonical model fields before writing. Never write a partial file.
+- Write `status.json` after every batch. Never skip a batch silently.

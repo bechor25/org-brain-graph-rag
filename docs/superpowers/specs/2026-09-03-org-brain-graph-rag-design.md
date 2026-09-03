@@ -291,7 +291,7 @@ Transport: stdio ל-Claude Code (`.mcp.json` בפרויקט) + streamable HTTP �
 | `cypher-author` | סכמה + שאלה/סוג → Cypher (ל-`cypher_examples` ובזמן שאילתה) |
 | `question-forger` | מסלולים מהגרף + תבניות → שאלות הערכה עם gold |
 | `eval-judge` | `question, gold, context, answer` (עיוור) → ציוני rubric JSON |
-| `brain-analyst` | הסוכן השואל (מצב B): כלי MCP בלבד → תשובה עם ציטוטים |
+| `brain-analyst` | הסוכן השואל (מצב B): `Read` + כלי MCP בלבד (מחוברים ב-Plan 2) → תשובה עם ציטוטים |
 
 **ג. סוכני איכות:**
 

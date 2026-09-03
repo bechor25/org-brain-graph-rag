@@ -35,6 +35,12 @@ make smoke    # doctor + בדיקות live מול Neo4j ו-Ollama
 
 הערה: `ollama serve` הוא תהליך ידני — אחרי reboot צריך להפעיל שוב (או להשתמש באפליקציית Ollama שרצה ברקע). `brain doctor` יגיד `[FAIL] ollama` אם הוא לא רץ.
 
+## פתרון תקלות
+
+- **GDS/APOC לא נטענים או ה-image לא קיים:** ב-`.env` להגדיר `NEO4J_IMAGE=neo4j:5.26`, ואז `make down && docker volume rm graph-rag_neo4j_data graph-rag_neo4j_logs && make up`. לאמת: `docker exec brain-neo4j cypher-shell -u neo4j -p brainpass "RETURN apoc.version(), gds.version()"`.
+- **`[FAIL] ollama`:** להריץ `ollama serve` (או לפתוח את אפליקציית Ollama) ולוודא `ollama list` מציג `bge-m3`.
+- **`embed_dim` לא תואם:** האינדקס והשאילתות חייבים אותו מודל; לא לשנות `EMBED_MODEL`/`EMBED_DIM` בלי לבנות מחדש את האינדקסים.
+
 ## הפייפליין
 
 `brain harvest → canon → load → chunk → extract → resolve → communities → index → serve → eval`
