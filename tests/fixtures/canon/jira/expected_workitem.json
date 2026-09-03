@@ -1,0 +1,98 @@
+{
+ "id": "jira:KAFKA-17725",
+ "key": "KAFKA-17725",
+ "source": "jira",
+ "type": "Bug",
+ "title": "RecordHeader key() is not thread safe",
+ "description": "{code:java}\r\npublic String key() {\r\n    if (key == null) {\r\n        key = Utils.utf8(keyBuffer, keyBuffer.remaining());\r\n        keyBuffer = null;\r\n    }\r\n    return key;\r\n} {code}\r\nThis method in RecordHeader is not thread safe.\r\n\r\nIt may throw NPE when it is accessed concurrently by multiple threads, because keyBuffer maybe null by pre thread.",
+ "status": "Resolved",
+ "priority": "Major",
+ "created": "2024-10-08T13:52:08Z",
+ "updated": "2025-11-03T13:45:53Z",
+ "reporter": "fxbing",
+ "assignee": null,
+ "components": [
+  "clients"
+ ],
+ "labels": [],
+ "fix_versions": [
+  "4.2.0"
+ ],
+ "affects_versions": [],
+ "parent": null,
+ "links": [
+  {
+   "type": "completes",
+   "target": "KAFKA-12999",
+   "direction": "in"
+  },
+  {
+   "type": "reference",
+   "target": "KAFKA-18881",
+   "direction": "out"
+  }
+ ],
+ "comments": [
+  {
+   "author": "chia7712",
+   "at": "2024-10-08T15:05:48.556000Z",
+   "body": "Not only the key, but also the value is not thread-safe. This is the expected behavior. Could you please share your use case?"
+  },
+  {
+   "author": "fxbing",
+   "at": "2024-10-08T15:24:04.579000Z",
+   "body": "[~chia7712] In my usage, one thread records the consumed messages as map key (Record.hashCode) and performs some processing, while another thread records some metrics through the RecordHeaders.lastHeader() method"
+  }
+ ],
+ "changelog": [
+  {
+   "field": "Link",
+   "from": null,
+   "to": "This issue relates to KAFKA-18881",
+   "at": "2025-02-27T09:31:37.449000Z",
+   "by": "chia7712"
+  },
+  {
+   "field": "Link",
+   "from": null,
+   "to": "This issue is fixed by KAFKA-12999",
+   "at": "2025-11-03T13:45:53.428000Z",
+   "by": "mingyen066"
+  },
+  {
+   "field": "Fix Version",
+   "from": null,
+   "to": "4.2.0",
+   "at": "2025-11-03T13:45:53.431000Z",
+   "by": "mingyen066"
+  },
+  {
+   "field": "resolution",
+   "from": null,
+   "to": "Fixed",
+   "at": "2025-11-03T13:45:53.431000Z",
+   "by": "mingyen066"
+  },
+  {
+   "field": "status",
+   "from": "Open",
+   "to": "Resolved",
+   "at": "2025-11-03T13:45:53.431000Z",
+   "by": "mingyen066"
+  }
+ ],
+ "refs": [
+  {
+   "kind": "issue",
+   "key": "KAFKA-12999",
+   "via": "link"
+  },
+  {
+   "kind": "issue",
+   "key": "KAFKA-18881",
+   "via": "link"
+  }
+ ],
+ "synthetic": false,
+ "raw_url": "https://issues.apache.org/jira/browse/KAFKA-17725"
+}
