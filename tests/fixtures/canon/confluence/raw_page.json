@@ -1,0 +1,183 @@
+{
+ "id": "181309271",
+ "type": "page",
+ "status": "current",
+ "title": "KIP-752: Support --bootstrap-server in ReplicaVerificationTool",
+ "history": {
+  "latest": true,
+  "createdBy": {
+   "type": "known",
+   "username": "dongjin",
+   "userKey": "8aa9808758bb560801596d1a98d30318",
+   "profilePicture": {
+    "path": "/confluence/download/attachments/67637132/user-avatar",
+    "width": 48,
+    "height": 48,
+    "isDefault": false
+   },
+   "displayName": "Dongjin Lee",
+   "_links": {
+    "self": "https://cwiki.apache.org/confluence/rest/api/user?key=8aa9808758bb560801596d1a98d30318"
+   },
+   "_expandable": {
+    "status": ""
+   }
+  },
+  "createdDate": "2021-06-05T20:55:52.000Z",
+  "_links": {
+   "self": "https://cwiki.apache.org/confluence/rest/api/content/181309271/history"
+  },
+  "_expandable": {
+   "lastUpdated": "",
+   "previousVersion": "",
+   "contributors": "",
+   "nextVersion": ""
+  }
+ },
+ "version": {
+  "by": {
+   "type": "known",
+   "username": "dongjin",
+   "userKey": "8aa9808758bb560801596d1a98d30318",
+   "profilePicture": {
+    "path": "/confluence/download/attachments/67637132/user-avatar",
+    "width": 48,
+    "height": 48,
+    "isDefault": false
+   },
+   "displayName": "Dongjin Lee",
+   "_links": {
+    "self": "https://cwiki.apache.org/confluence/rest/api/user?key=8aa9808758bb560801596d1a98d30318"
+   },
+   "_expandable": {
+    "status": ""
+   }
+  },
+  "when": "2024-07-07T12:48:20.000Z",
+  "message": "",
+  "number": 4,
+  "minorEdit": false,
+  "hidden": false,
+  "_links": {
+   "self": "https://cwiki.apache.org/confluence/rest/experimental/content/181309271/version/4"
+  },
+  "_expandable": {
+   "content": "/rest/api/content/181309271"
+  }
+ },
+ "ancestors": [
+  {
+   "id": "27821303",
+   "type": "page",
+   "status": "current",
+   "title": "Index",
+   "position": -1,
+   "extensions": {
+    "position": "none"
+   },
+   "_links": {
+    "webui": "/spaces/KAFKA/pages/27821303/Index",
+    "edit": "/pages/resumedraft.action?draftId=27821303",
+    "tinyui": "/x/94SoAQ",
+    "self": "https://cwiki.apache.org/confluence/rest/api/content/27821303"
+   },
+   "_expandable": {
+    "container": "/rest/api/space/KAFKA",
+    "metadata": "",
+    "operations": "",
+    "children": "/rest/api/content/27821303/child",
+    "restrictions": "/rest/api/content/27821303/restriction/byOperation",
+    "history": "/rest/api/content/27821303/history",
+    "ancestors": "",
+    "body": "",
+    "version": "",
+    "descendants": "/rest/api/content/27821303/descendant",
+    "space": "/rest/api/space/KAFKA",
+    "relevantViewRestrictions": "/rest/api/content/27821303/restriction/relevantViewRestrictions"
+   }
+  },
+  {
+   "id": "50859233",
+   "type": "page",
+   "status": "current",
+   "title": "Kafka Improvement Proposals",
+   "position": -1,
+   "extensions": {
+    "position": "none"
+   },
+   "_links": {
+    "webui": "/spaces/KAFKA/pages/50859233/Kafka+Improvement+Proposals",
+    "edit": "/pages/resumedraft.action?draftId=50859233",
+    "tinyui": "/x/4QwIAw",
+    "self": "https://cwiki.apache.org/confluence/rest/api/content/50859233"
+   },
+   "_expandable": {
+    "container": "/rest/api/space/KAFKA",
+    "metadata": "",
+    "operations": "",
+    "children": "/rest/api/content/50859233/child",
+    "restrictions": "/rest/api/content/50859233/restriction/byOperation",
+    "history": "/rest/api/content/50859233/history",
+    "ancestors": "",
+    "body": "",
+    "version": "",
+    "descendants": "/rest/api/content/50859233/descendant",
+    "space": "/rest/api/space/KAFKA",
+    "relevantViewRestrictions": "/rest/api/content/50859233/restriction/relevantViewRestrictions"
+   }
+  }
+ ],
+ "position": 747,
+ "body": {
+  "storage": {
+   "value": "<p><ac:structured-macro ac:name=\"toc\" ac:schema-version=\"1\" ac:macro-id=\"9aac097e-9615-4079-a55c-3bfbb979b937\" /></p><h1>Status</h1><p><strong>Current state</strong>: <span style=\"color: rgb(23,43,77);\">Discarded, replaced by <ac:link><ri:page ri:content-title=\"KIP-1067: Remove ReplicaVerificationTool in 5.0 (deprecate in 3.9)\" /><ac:plain-text-link-body><![CDATA[KIP-1067]]></ac:plain-text-link-body></ac:link></span></p><p><strong>Discussion thread</strong>: <a href=\"https://lists.apache.org/thread.html/ra514b711fcb6e2d319f61f40a54549c2a88465e279f09fdd7df2ca8a%40%3Cdev.kafka.apache.org%3E\">here</a><em><br /></em></p><p><strong>JIRA</strong>: <a href=\"https://issues.apache.org/jira/browse/KAFKA-12899\">KAFKA-12899</a><em><br /></em></p><p>Please keep the discussion on the mailing list rather than commenting on the wiki (wiki discussions get unwieldy fast).</p><h1>Motivation</h1><p>In <ac:link><ri:page ri:content-title=\"KIP-499 - Unify connection name flag for command line tool\" /><ac:plain-text-link-body><![CDATA[KIP-499]]></ac:plain-text-link-body></ac:link>, we decided to unify the connection name flag for the bootstrap servers. However, ReplicaVerificationTool was omitted. As long as this tool is included in the distribution, it can confuse the users.</p><p>This KIP proposes to the deprecated broker-list command-line argument in ReplicaVerificationTool, with introducing bootstrap-server.</p><h1>Public Interfaces</h1><p>ReplicaVerificationTool will have the '--bootstrap-server' command-line argument added.</p><h1>Proposed Changes</h1><p>Add a new command-line argument, '--bootstrap-server', will be added to ReplicaVerificationTool, with the same functionality of traditional '--broker-list'. Instead, '--broker-list' argument will be marked as deprecated.</p><p>If both parameters are given, '--bootstrap-server' gets the preference.</p><h1>Compatibility, Deprecation, and Migration Plan</h1><p>None.</p><h1>Rejected Alternatives</h1><p>None.</p>",
+   "representation": "storage",
+   "_expandable": {
+    "content": "/rest/api/content/181309271"
+   }
+  },
+  "_expandable": {
+   "editor": "",
+   "view": "",
+   "export_view": "",
+   "styled_view": "",
+   "anonymous_export_view": ""
+  }
+ },
+ "metadata": {
+  "labels": {
+   "results": [],
+   "start": 0,
+   "limit": 200,
+   "size": 0,
+   "_links": {
+    "self": "https://cwiki.apache.org/confluence/rest/api/content/181309271/label"
+   }
+  },
+  "_expandable": {
+   "currentuser": "",
+   "reactionsCount": "",
+   "frontend": "",
+   "editorHtml": "",
+   "properties": ""
+  }
+ },
+ "extensions": {
+  "position": 747
+ },
+ "_links": {
+  "webui": "/spaces/KAFKA/pages/181309271/KIP-752+Support+--bootstrap-server+in+ReplicaVerificationTool",
+  "edit": "/pages/resumedraft.action?draftId=181309271&draftShareId=34914409-5683-48ba-941e-252eb3ea805c",
+  "tinyui": "/x/V4-OCg",
+  "self": "https://cwiki.apache.org/confluence/rest/api/content/181309271"
+ },
+ "_expandable": {
+  "container": "/rest/api/space/KAFKA",
+  "operations": "",
+  "children": "/rest/api/content/181309271/child",
+  "restrictions": "/rest/api/content/181309271/restriction/byOperation",
+  "descendants": "/rest/api/content/181309271/descendant",
+  "space": "/rest/api/space/KAFKA",
+  "relevantViewRestrictions": "/rest/api/content/181309271/restriction/relevantViewRestrictions"
+ }
+}

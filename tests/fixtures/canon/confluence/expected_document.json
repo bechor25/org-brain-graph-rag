@@ -1,0 +1,42 @@
+{
+ "id": "confluence:181309271",
+ "key": "KIP-752",
+ "source": "confluence",
+ "kind": "KIP",
+ "space": "KAFKA",
+ "title": "KIP-752: Support --bootstrap-server in ReplicaVerificationTool",
+ "body_md": "# Status\n\n**Current state**: Discarded, replaced by KIP-1067: Remove ReplicaVerificationTool in 5.0 (deprecate in 3.9) KIP-1067\n\n**Discussion thread**: [here](https://lists.apache.org/thread.html/ra514b711fcb6e2d319f61f40a54549c2a88465e279f09fdd7df2ca8a%40%3Cdev.kafka.apache.org%3E)\n\n**JIRA**: [KAFKA-12899](https://issues.apache.org/jira/browse/KAFKA-12899)\n\nPlease keep the discussion on the mailing list rather than commenting on the wiki (wiki discussions get unwieldy fast).\n\n# Motivation\n\nIn KIP-499 - Unify connection name flag for command line tool KIP-499 , we decided to unify the connection name flag for the bootstrap servers. However, ReplicaVerificationTool was omitted. As long as this tool is included in the distribution, it can confuse the users.\n\nThis KIP proposes to the deprecated broker-list command-line argument in ReplicaVerificationTool, with introducing bootstrap-server.\n\n# Public Interfaces\n\nReplicaVerificationTool will have the '--bootstrap-server' command-line argument added.\n\n# Proposed Changes\n\nAdd a new command-line argument, '--bootstrap-server', will be added to ReplicaVerificationTool, with the same functionality of traditional '--broker-list'. Instead, '--broker-list' argument will be marked as deprecated.\n\nIf both parameters are given, '--bootstrap-server' gets the preference.\n\n# Compatibility, Deprecation, and Migration Plan\n\nNone.\n\n# Rejected Alternatives\n\nNone.",
+ "version": 4,
+ "created": "2021-06-05T20:55:52Z",
+ "updated": "2024-07-07T12:48:20Z",
+ "author": "8aa9808758bb560801596d1a98d30318",
+ "ancestors": [
+  "confluence:27821303",
+  "confluence:50859233"
+ ],
+ "labels": [],
+ "refs": [
+  {
+   "kind": "kip",
+   "key": "KIP-1067",
+   "via": "text"
+  },
+  {
+   "kind": "url",
+   "key": "https://lists.apache.org/thread.html/ra514b711fcb6e2d319f61f40a54549c2a88465e279f09fdd7df2ca8a%40%3Cdev.kafka.apache.org%3E",
+   "via": "text"
+  },
+  {
+   "kind": "issue",
+   "key": "KAFKA-12899",
+   "via": "text"
+  },
+  {
+   "kind": "kip",
+   "key": "KIP-499",
+   "via": "text"
+  }
+ ],
+ "synthetic": false,
+ "raw_url": "https://cwiki.apache.org/confluence/spaces/KAFKA/pages/181309271/KIP-752+Support+--bootstrap-server+in+ReplicaVerificationTool"
+}
