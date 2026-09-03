@@ -50,6 +50,7 @@ for _name, (_help, _plan) in _PLANNED.items():
 @app.command()
 def doctor() -> None:
     """Check Neo4j, plugins, read-mode guard, Ollama and the embedding model."""
+    # lazy: keeps --help and other commands importable without neo4j/httpx at import time
     from brain.doctor import run_doctor
 
     ok = run_doctor()

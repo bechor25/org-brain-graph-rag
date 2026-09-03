@@ -11,10 +11,14 @@ pytestmark = pytest.mark.live
 def client():
     s = Settings()
     c = GraphClient(s.neo4j_uri, s.neo4j_user, s.neo4j_password, s.neo4j_database)
-    c.verify()
-    yield c
-    c.write("MATCH (n:_PlanZeroTmp) DETACH DELETE n")
-    c.close()
+    try:
+        c.verify()
+        yield c
+    finally:
+        try:
+            c.write("MATCH (n:_PlanZeroTmp) DETACH DELETE n")
+        finally:
+            c.close()
 
 
 def test_read_returns_dicts(client):

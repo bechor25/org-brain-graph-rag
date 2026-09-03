@@ -5,6 +5,8 @@ read()  -> RoutingControl.READ: the server rejects writes ("Writing in read acce
            Edition (no RBAC), and it is server-side, not a client-side regex.
 write() -> RoutingControl.WRITE.
 write_batched() -> one transaction per batch of rows, query must use `UNWIND $rows AS row`.
+read() returns record.data(): nodes become plain property dicts (labels/element ids dropped)
+— always project explicitly (e.g. RETURN labels(n) AS labels, n.key AS key).
 """
 
 from __future__ import annotations
