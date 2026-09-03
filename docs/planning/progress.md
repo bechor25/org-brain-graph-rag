@@ -18,7 +18,7 @@
 | 0 | 10 templates + README | ✅ | 8149f11 | README בעברית עם 5 עקרונות; `.env.example` תוקן |
 | 1 | 01 probe | ✅ | — | 1,416 issues, 1,391 KIPs, 6,107 commits; search מחזיר changelog מלא; ADO לא נגיש; `"connect"` מילה שמורה |
 | 1 | 02 harvest | ✅ | 79099a0…2c19ca2 | 1,416/1,391/6,107 ב-2m14s; ריצה שנייה 0; `--no-renames` הוריד git log מ-6+ דק' ל-0.44s; צפיפות links מלאה 36% (probe אמר 38%) |
-| 1 | 03 canon | ⬜ | | |
+| 1 | 03 canon | ✅ | 82db3e3…8d60a0c | 1,416/1,391(1,334 KIP+57 Page)/12,133/1,597/117 ב-6.9s; text-only refs 15% (any-mention 23.4%) — קריטריון תוקן; `[~user]` 1,972 אזכורים נוספים; resolution נוסף למודל |
 | 1 | 04 synthetic | ⬜ | | planner: לכתוב `synthetic_spec.md` לפני |
 | 1 | 05 load | ⬜ | | |
 | 1 | 06 chunk+embed | ⬜ | | |
@@ -41,6 +41,7 @@
 - ruff ≥0.16 מפרמט Python fences בתוך Markdown — לכן docs מוחרג מהפורמטר (lint עדיין רץ על הכל).
 
 ## ל-Plan 1 (מסקירת 7–8)
+- (canon) 74% מ-refs ל-issues מצביעים מחוץ לפרוסה (pre-2023) → load מקשר רק ליעדים קיימים, סופר dangling. Jira `Test` type (123) ≠ Xray Test. 9 KIPs אמיתיים חולקים מספר עם KIP אחר (`ambiguous`).
 - (harvest) `KAFKA-1` ב-69 עמודי KIP; 21 מספרי KIP על 45 עמודים; `KIP-1001` = שני KIPs שונים; `KIP-929` body ריק; `raw_layout` = חוזה dedupe בין base ל-`since-*/`.
 - regex issue תופס `UTF-8`, `SHA-256`, `COVID-19` → allowlist של project keys ידועים (מה-harvest) לפני טעינה לגרף.
 - `Ref(kind=pr, key=N)` ללא repo → להחליט `owner/repo#N` לפני ingest של יותר מריפו אחד.
