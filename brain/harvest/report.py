@@ -62,8 +62,21 @@ def build_report(
 
     for name, result in results.items():
         entry = dict(bucket.get(name) or {})
+        previous_fetch = entry.get("last_fetch")
         entry.update(result.as_dict())
         entry["since"] = since.isoformat() if since else None
+        # `records`/`pages`/`duration_s` describe *this* run, so an idempotent re-run zeroes
+        # them. Keep the last run that actually fetched, or the cold-pull cost — the number
+        # that says what this corpus is worth re-fetching — disappears after one no-op run.
+        if result.pages:
+            entry["last_fetch"] = {
+                "at": report["generated_at"],
+                "pages": result.pages,
+                "records": result.records,
+                "duration_s": round(result.duration_s, 2),
+            }
+        elif previous_fetch:
+            entry["last_fetch"] = previous_fetch
         bucket[name] = entry
 
     if since is None:

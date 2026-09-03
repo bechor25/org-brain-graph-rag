@@ -90,6 +90,27 @@ def test_report_merge_keeps_sources_that_did_not_run(tmp_path):
     assert second["last_run"]["sources"] == ["git"]
 
 
+def test_an_idempotent_rerun_keeps_the_cold_pull_numbers(tmp_path):
+    first = build_report(
+        {"jira": result("jira", records=1416, pages=3, duration_s=39.04)},
+        raw_dir=tmp_path,
+        since=None,
+        duration_s=39.0,
+    )
+    assert first["sources"]["jira"]["last_fetch"]["records"] == 1416
+
+    second = build_report(
+        {"jira": result("jira", records=0, pages=0, duration_s=0.0)},
+        raw_dir=tmp_path,
+        since=None,
+        duration_s=0.1,
+        existing=first,
+    )
+    assert second["sources"]["jira"]["records"] == 0  # this run fetched nothing
+    assert second["sources"]["jira"]["last_fetch"]["records"] == 1416  # but we still know
+    assert second["sources"]["jira"]["last_fetch"]["duration_s"] == 39.04
+
+
 def test_link_density_comes_from_the_jira_stats_on_a_full_run(tmp_path):
     density = {"streams": {"n": 5, "pct_formal_links": 40.0}}
     report = build_report(
