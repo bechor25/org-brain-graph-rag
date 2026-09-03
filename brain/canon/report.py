@@ -92,6 +92,12 @@ def _checks(records: dict[str, list[BaseModel]]) -> list[dict[str, Any]]:
             workitems_with_text_only_issue_ref=len(text_only),
             pct=pct,
             target_pct=TEXT_ONLY_TARGET_PCT,
+            note=(
+                "The target came from the probe's ~27%, which measured issues whose text "
+                "mentions another project key at all — not text refs absent from links[] — "
+                "and sampled the newest 100 issues per component, where the density is "
+                "higher. See source_stats.jira for the mapper's own count."
+            ),
         ),
         *[
             check(

@@ -12,11 +12,12 @@ issue that declares it, `in` on the other). Collapsing the pair into one edge is
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Iterator
 from typing import Any
 
 from brain.canon.mappers.base import Bundle, FieldTracker, parse_dt
-from brain.canon.mentions import extract_refs
+from brain.canon.mentions import ISSUE_PROJECT_ALLOWLIST, extract_refs
 from brain.canon.models import ChangelogEntry, Comment, Link, WorkItem
 
 SOURCE = "jira"
@@ -49,6 +50,17 @@ MAPPED = frozenset(
         "fields.project",
     }
 )
+
+
+#: Jira's own mention syntax. `extract_refs` matches `@user`, so these are invisible to
+#: it — measured here rather than assumed away, because widening the regex is a change to
+#: `brain/canon/mentions.py` and needs a brief.
+_JIRA_USER_MENTION = re.compile(r"\[~([A-Za-z0-9_.@-]+)\]")
+
+#: `kafka-15123` in prose. The issue-key regex is deliberately uppercase (`[A-Z]…`) so it
+#: does not match every `word-123`; the cost — keys of an *allowlisted* project written in
+#: any other case — is counted here.
+_ANY_CASE_KEY = re.compile(r"\b([A-Za-z][A-Za-z0-9]{1,9})-\d+\b")
 
 
 def raw_paths(issue: dict[str, Any]) -> Iterator[tuple[str, Any]]:
@@ -124,11 +136,53 @@ def _changelog(issue: dict[str, Any], bundle: Bundle) -> list[ChangelogEntry]:
     return out
 
 
+class _MissedSignal:
+    """Signal the deterministic extractor leaves on the floor, counted per source.
+
+    Neither number is a bug to fix here: both are properties of `brain/canon/mentions.py`,
+    which is shared and tested. They are in the report so the planner can decide whether
+    the extra refs are worth widening the regexes for.
+    """
+
+    def __init__(self) -> None:
+        self.mention_occurrences = 0
+        self.mention_issues = 0
+        self.mention_users: set[str] = set()
+        self.lowercase_key_issues = 0
+
+    def observe(self, text: str) -> None:
+        mentions = _JIRA_USER_MENTION.findall(text)
+        if mentions:
+            self.mention_occurrences += len(mentions)
+            self.mention_issues += 1
+            self.mention_users.update(mentions)
+        if any(
+            project != project.upper() and project.upper() in ISSUE_PROJECT_ALLOWLIST
+            for project in _ANY_CASE_KEY.findall(text)
+        ):
+            self.lowercase_key_issues += 1
+
+    def report(self) -> dict[str, Any]:
+        return {
+            "jira_user_mentions": {
+                "note": "`[~username]` is Jira's mention syntax; extract_refs matches `@user`",
+                "occurrences": self.mention_occurrences,
+                "issues": self.mention_issues,
+                "distinct_users": len(self.mention_users),
+            },
+            "lowercase_issue_keys": {
+                "note": "the issue-key regex is uppercase-only, so `kafka-15123` is not a ref",
+                "issues": self.lowercase_key_issues,
+            },
+        }
+
+
 def map_issues(issues: Iterable[dict[str, Any]]) -> Bundle:
     bundle = Bundle(source=SOURCE)
     tracker = FieldTracker(mapped=MAPPED)
     no_components = 0
     truncated_changelogs = 0
+    missed = _MissedSignal()
 
     for issue in issues:
         tracker.observe(raw_paths(issue))
@@ -159,6 +213,7 @@ def map_issues(issues: Iterable[dict[str, Any]]) -> Bundle:
         title = str(fields.get("summary") or "")
         description = str(fields.get("description") or "")
         text = "\n".join([title, description, *(c.body for c in comments)])
+        missed.observe(text)
 
         changelog = (issue.get("changelog") or {}).get("histories") or []
         if len(changelog) < int((issue.get("changelog") or {}).get("total") or 0):
@@ -220,5 +275,6 @@ def map_issues(issues: Iterable[dict[str, Any]]) -> Bundle:
             100 * text_only / (len(bundle.workitems) or 1), 1
         ),
         "unmapped_fields": tracker.report(),
+        "text_signal_not_extracted": missed.report(),
     }
     return bundle

@@ -179,3 +179,21 @@ def test_the_golden_issue_reports_what_the_canonical_model_drops():
     assert dropped["fields.resolution"] == 1
     assert dropped["fields.resolutiondate"] == 1
     assert any(name.startswith("fields.customfield_") for name in dropped)
+
+
+def test_the_report_counts_the_signal_the_extractor_does_not_take():
+    """Neither gap is fixed here — `mentions.py` is shared — but both are measured."""
+    raw = issue(
+        "KAFKA-100",
+        description="[~jrao] please look at kafka-200",
+        comment={
+            "comments": [{"author": {"name": "a"}, "body": "[~chia7712] ok", "created": None}]
+        },
+    )
+    missed = map_issues([raw]).stats["text_signal_not_extracted"]
+
+    assert missed["jira_user_mentions"]["occurrences"] == 2
+    assert missed["jira_user_mentions"]["distinct_users"] == 2
+    assert missed["lowercase_issue_keys"]["issues"] == 1
+    # and none of it reached the refs
+    assert [r.key for r in map_issues([raw]).workitems[0].refs] == []
