@@ -27,8 +27,11 @@ packages = ["brain"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["live: needs running Neo4j and/or Ollama (docker compose up + ollama serve)"]
-addopts = "-m 'not live'"
+markers = [
+  "live: needs running Neo4j and/or Ollama (docker compose up + ollama serve)",
+  "network: hits the real ASF Jira/Confluence endpoints (read-only, anonymous)",
+]
+addopts = "-m 'not live and not network'"
 
 [tool.ruff]
 line-length = 100

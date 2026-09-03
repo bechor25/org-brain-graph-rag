@@ -17,7 +17,6 @@ app = typer.Typer(
 NOT_IMPLEMENTED_EXIT = 2
 
 _PLANNED: dict[str, tuple[str, str]] = {
-    "harvest": ("Fetch raw data from Jira / Confluence / git / ADO into data/raw/", "Plan 1"),
     "canon": ("Normalize raw data into the canonical model (data/canonical/*.jsonl)", "Plan 1"),
     "load": ("Load canonical data into Neo4j (structured nodes/edges, no LLM)", "Plan 1"),
     "chunk": ("Chunk texts, embed with local bge-m3, create :Chunk nodes + vector index", "Plan 1"),
@@ -45,6 +44,48 @@ def _stub(name: str, help_text: str, plan: str):
 
 for _name, (_help, _plan) in _PLANNED.items():
     app.command(name=_name, help=f"{_help} [{_plan}]")(_stub(_name, _help, _plan))
+
+
+@app.command()
+def harvest(
+    source: str = typer.Option(
+        "all", "--source", help="Which connector to run: jira | confluence | git | all"
+    ),
+    since: str | None = typer.Option(
+        None,
+        "--since",
+        metavar="YYYY-MM-DD",
+        help="Incremental pull: Jira/Confluence by updated/lastmodified, git by commit date. "
+        "Writes into data/raw/<source>/since-<date>/ so the full pull stays intact.",
+    ),
+) -> None:
+    """Fetch raw data from Jira / Confluence / git into data/raw/ [Plan 1]."""
+    from datetime import date as _date
+
+    from brain.config import get_settings
+    from brain.harvest.runner import resolve_sources, run_harvest
+
+    try:
+        sources = resolve_sources(source)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--source") from exc
+
+    since_date: _date | None = None
+    if since:
+        try:
+            since_date = _date.fromisoformat(since)
+        except ValueError as exc:
+            raise typer.BadParameter(f"{since!r} is not YYYY-MM-DD", param_hint="--since") from exc
+
+    settings = get_settings()
+    _, code = run_harvest(
+        sources,
+        raw_dir=settings.raw_dir,
+        reports_dir=settings.reports_dir,
+        since=since_date,
+        echo=typer.echo,
+    )
+    raise typer.Exit(code=code)
 
 
 @app.command()
