@@ -17,7 +17,6 @@ app = typer.Typer(
 NOT_IMPLEMENTED_EXIT = 2
 
 _PLANNED: dict[str, tuple[str, str]] = {
-    "canon": ("Normalize raw data into the canonical model (data/canonical/*.jsonl)", "Plan 1"),
     "load": ("Load canonical data into Neo4j (structured nodes/edges, no LLM)", "Plan 1"),
     "chunk": ("Chunk texts, embed with local bge-m3, create :Chunk nodes + vector index", "Plan 1"),
     "extract": (
@@ -83,6 +82,32 @@ def harvest(
         raw_dir=settings.raw_dir,
         reports_dir=settings.reports_dir,
         since=since_date,
+        echo=typer.echo,
+    )
+    raise typer.Exit(code=code)
+
+
+@app.command()
+def canon(
+    source: str = typer.Option(
+        "all", "--source", help="Which mapper to run: jira | confluence | git | all"
+    ),
+) -> None:
+    """Normalize raw data into the canonical model (data/canonical/*.jsonl) [Plan 1]."""
+    from brain.canon.runner import resolve_sources, run_canon
+    from brain.config import get_settings
+
+    try:
+        sources = resolve_sources(source)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--source") from exc
+
+    settings = get_settings()
+    _, code = run_canon(
+        sources,
+        raw_dir=settings.raw_dir,
+        canonical_dir=settings.canonical_dir,
+        reports_dir=settings.reports_dir,
         echo=typer.echo,
     )
     raise typer.Exit(code=code)
