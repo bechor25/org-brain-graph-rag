@@ -123,6 +123,25 @@ def test_link_density_is_recomputed_from_raw_when_jira_did_not_run(tmp_path):
     assert report["link_density"]["clients"]["pct_formal_links"] == 100.0
 
 
+def test_a_since_run_is_recorded_beside_the_full_pull_not_on_top_of_it(tmp_path):
+    full = build_report(
+        {"jira": result("jira", records=1416, pages=3)},
+        raw_dir=tmp_path,
+        since=None,
+        duration_s=1.0,
+    )
+    after = build_report(
+        {"jira": result("jira", records=12, pages=1)},
+        raw_dir=tmp_path,
+        since=date(2025, 6, 1),
+        duration_s=1.0,
+        existing=full,
+    )
+    assert after["sources"]["jira"]["records"] == 1416  # full pull untouched
+    assert after["incremental"]["2025-06-01"]["jira"]["records"] == 12
+    assert summarize(after).startswith("harvest (incremental, since 2025-06-01):")
+
+
 def test_a_since_run_does_not_overwrite_density_with_the_narrow_slice(tmp_path):
     (tmp_path / "jira").mkdir()
     (tmp_path / "jira" / "issues-0000.json").write_text(

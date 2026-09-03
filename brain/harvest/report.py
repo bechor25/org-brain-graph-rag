@@ -51,13 +51,26 @@ def build_report(
         "new_pages": sum(r.pages for r in results.values()),
         "new_records": sum(r.records for r in results.values()),
     }
-    sources: dict[str, Any] = dict(report.get("sources") or {})
+    # A `--since` pull is a different result set living in its own directory, so it is
+    # recorded next to the full pull, never on top of it: `sources` stays the authoritative
+    # record of the corpus on disk even after a dozen incremental runs.
+    if since is None:
+        bucket: dict[str, Any] = dict(report.get("sources") or {})
+    else:
+        incremental = dict(report.get("incremental") or {})
+        bucket = dict(incremental.get(since.isoformat()) or {})
+
     for name, result in results.items():
-        entry = dict(sources.get(name) or {})
+        entry = dict(bucket.get(name) or {})
         entry.update(result.as_dict())
         entry["since"] = since.isoformat() if since else None
-        sources[name] = entry
-    report["sources"] = sources
+        bucket[name] = entry
+
+    if since is None:
+        report["sources"] = bucket
+    else:
+        incremental[since.isoformat()] = bucket
+        report["incremental"] = incremental
 
     density = link_density(raw_dir, results, since)
     if density:
@@ -85,9 +98,15 @@ def _fmt_density(density: dict[str, Any]) -> list[str]:
 
 def summarize(report: dict[str, Any]) -> str:
     """The short human summary printed at the end of a run."""
-    lines = ["harvest:"]
+    since = (report.get("last_run") or {}).get("since")
+    if since:
+        bucket = (report.get("incremental") or {}).get(since) or {}
+        lines = [f"harvest (incremental, since {since}):"]
+    else:
+        bucket = report.get("sources") or {}
+        lines = ["harvest:"]
     for name in SOURCES:
-        entry = (report.get("sources") or {}).get(name)
+        entry = bucket.get(name)
         if not entry:
             continue
         cp = entry.get("checkpoint") or {}
