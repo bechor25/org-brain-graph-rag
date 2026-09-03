@@ -1,0 +1,18 @@
+{
+ "id": "pr:21175",
+ "kind": "pr",
+ "message": "KAFKA-19755 Move KRaftClusterTest from core module to server module [3/4] (#21175)",
+ "author_name": "Lan Ding",
+ "author_email": "isding_l@163.com",
+ "at": "2025-12-30T16:52:10Z",
+ "files": [],
+ "refs": [
+  {
+   "kind": "issue",
+   "key": "KAFKA-19755",
+   "via": "text"
+  }
+ ],
+ "synthetic": false,
+ "raw_url": "https://github.com/apache/kafka/pull/21175"
+}
