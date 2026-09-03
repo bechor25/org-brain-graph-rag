@@ -62,20 +62,20 @@ def _neo4j_checks(s: Settings) -> list[Check]:
 
 
 def _embed_checks(s: Settings) -> list[Check]:
-    emb = OllamaEmbedder(s.ollama_url, s.embed_model, s.embed_dim, timeout=30)
-    try:
-        present = emb.has_model()
-    except Exception as e:  # noqa: BLE001
-        return [Check("ollama", False, f"{s.ollama_url}: {e}")]
-    checks = [Check("ollama", True, s.ollama_url), Check("embed_model", present, s.embed_model)]
-    if not present:
+    with OllamaEmbedder(s.ollama_url, s.embed_model, s.embed_dim, timeout=30) as emb:
+        try:
+            present = emb.has_model()
+        except Exception as e:  # noqa: BLE001
+            return [Check("ollama", False, f"{s.ollama_url}: {e}")]
+        checks = [Check("ollama", True, s.ollama_url), Check("embed_model", present, s.embed_model)]
+        if not present:
+            return checks
+        try:
+            v = emb.embed_one("doctor")
+            checks.append(Check("embed_dim", True, f"{len(v)} == {s.embed_dim}"))
+        except Exception as e:  # noqa: BLE001
+            checks.append(Check("embed_dim", False, str(e).splitlines()[0]))
         return checks
-    try:
-        v = emb.embed_one("doctor")
-        checks.append(Check("embed_dim", True, f"{len(v)} == {s.embed_dim}"))
-    except Exception as e:  # noqa: BLE001
-        checks.append(Check("embed_dim", False, str(e).splitlines()[0]))
-    return checks
 
 
 def run_doctor() -> bool:
