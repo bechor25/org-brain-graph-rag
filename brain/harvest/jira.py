@@ -26,6 +26,7 @@ from brain.harvest.base import (
     HttpFetcher,
     Page,
     ProbeResult,
+    checkpoint_pages,
     signature_of,
 )
 
@@ -149,10 +150,12 @@ class JiraConnector(BaseConnector):
 
 
 def iter_raw_issues(run_dir: Path) -> Iterator[dict[str, Any]]:
-    """Re-read the raw pages from disk. Analysis never re-fetches."""
-    if not run_dir.exists():
-        return
-    for path in sorted(run_dir.glob("issues-*.json")):
+    """Re-read the raw pages from disk. Analysis never re-fetches.
+
+    Pages come from the checkpoint's file list, never from a glob — see
+    `brain.harvest.base.checkpoint_pages`.
+    """
+    for path in checkpoint_pages(run_dir):
         payload = json.loads(path.read_text(encoding="utf-8"))
         yield from payload.get("issues") or []
 
@@ -171,7 +174,7 @@ def _blank_bucket() -> dict[str, Any]:
         "n": 0,
         "_formal_links": 0,
         "_kip_mention": 0,
-        "_changelog": 0,
+        "_history": 0,
         "_comments": 0,
         "_assignee": 0,
         "_fix_versions": 0,
@@ -184,7 +187,7 @@ def _finish_bucket(b: dict[str, Any]) -> dict[str, Any]:
         "n": b["n"],
         "pct_formal_links": round(100 * b["_formal_links"] / n, 1),
         "pct_kip_mention": round(100 * b["_kip_mention"] / n, 1),
-        "pct_changelog_present": round(100 * b["_changelog"] / n, 1),
+        "pct_with_history": round(100 * b["_history"] / n, 1),
         "avg_comments": round(b["_comments"] / n, 2),
         "pct_assignee": round(100 * b["_assignee"] / n, 1),
         "pct_fix_versions": round(100 * b["_fix_versions"] / n, 1),
@@ -207,6 +210,9 @@ def analyze(issues: Iterable[dict[str, Any]]) -> dict[str, Any]:
         keys.add(str(issue.get("key") or ""))
         fields = issue.get("fields") or {}
         changelog = issue.get("changelog") or {}
+        # Two different questions: did `expand=changelog` come back at all (a harvest
+        # correctness check), and does this issue actually have history (a corpus fact —
+        # an issue created and never touched legitimately has none).
         has_changelog = "changelog" in issue and "histories" in changelog
         has_histories = bool(changelog.get("histories"))
         comment = fields.get("comment")
@@ -218,7 +224,7 @@ def analyze(issues: Iterable[dict[str, Any]]) -> dict[str, Any]:
         flags = {
             "_formal_links": bool(fields.get("issuelinks")),
             "_kip_mention": bool(_KIP.search(_issue_text(issue))),
-            "_changelog": has_histories,
+            "_history": has_histories,
             "_assignee": fields.get("assignee") is not None,
             "_fix_versions": bool(fields.get("fixVersions")),
         }
@@ -239,7 +245,7 @@ def analyze(issues: Iterable[dict[str, Any]]) -> dict[str, Any]:
     return {
         "issues": total,
         "distinct_keys": len(keys - {""}),
-        "pct_with_changelog": round(100 * with_changelog / n, 1),
+        "pct_changelog_expanded": round(100 * with_changelog / n, 1),
         "pct_with_comment_field": round(100 * with_comment_field / n, 1),
         "link_density": density,
     }

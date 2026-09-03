@@ -190,3 +190,49 @@ def test_every_connector_satisfies_the_protocol(tmp_path):
 
     for cls in (JiraConnector, ConfluenceConnector, GitConnector):
         assert isinstance(cls(tmp_path), Connector), cls.__name__
+
+
+# --------------------------------------------------------------------------- stale pages
+
+
+def test_checkpoint_pages_reads_the_file_list_not_a_glob(tmp_path):
+    from brain.harvest.base import checkpoint_pages
+
+    for name in ("issues-0000.json", "issues-0001.json", "issues-0002.json"):
+        (tmp_path / name).write_text("{}", encoding="utf-8")
+    (tmp_path / "checkpoint.json").write_text(
+        json.dumps({"files": ["issues-0000.json", "issues-0001.json"]}), encoding="utf-8"
+    )
+
+    # issues-0002.json is on disk but not in the checkpoint: it belongs to an older query
+    assert [p.name for p in checkpoint_pages(tmp_path)] == [
+        "issues-0000.json",
+        "issues-0001.json",
+    ]
+
+
+def test_checkpoint_pages_is_empty_without_a_checkpoint(tmp_path):
+    from brain.harvest.base import checkpoint_pages
+
+    (tmp_path / "issues-0000.json").write_text("{}", encoding="utf-8")
+    assert checkpoint_pages(tmp_path) == []
+
+
+def test_checkpoint_pages_skips_files_the_checkpoint_names_but_disk_lost(tmp_path):
+    from brain.harvest.base import checkpoint_pages
+
+    (tmp_path / "checkpoint.json").write_text(
+        json.dumps({"files": ["issues-0000.json"]}), encoding="utf-8"
+    )
+    assert checkpoint_pages(tmp_path) == []
+
+
+def test_a_signature_change_hands_back_the_old_pages_as_stale(tmp_path):
+    path = tmp_path / "checkpoint.json"
+    cp = Checkpoint.load(path, source="jira", signature="abc")
+    cp.advance(page=Page(index=0, records=[{}], path=tmp_path / "issues-0000.json"), cursor={})
+    cp.advance(page=Page(index=1, records=[{}], path=tmp_path / "issues-0001.json"), cursor={})
+
+    fresh = Checkpoint.load(path, source="jira", signature="different")
+    assert fresh.stale_files == ["issues-0000.json", "issues-0001.json"]
+    assert fresh.files == []

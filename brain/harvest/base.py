@@ -11,6 +11,34 @@ Three ideas carry the whole step:
 3. **Polite and stubborn.** ≥1s between remote calls, exponential backoff with
    jitter on 429/5xx/timeouts, and every failure recorded in the report instead
    of a silent "success".
+
+Reading ``data/raw/`` back (this is the contract for `brain canon`)
+------------------------------------------------------------------
+**Never glob a run directory.** The file list lives in ``<run_dir>/checkpoint.json``
+under ``files``; use :func:`checkpoint_pages`. A page index restarts at 0 whenever the
+query signature changes, so a glob can pick up higher-numbered pages left by an older,
+different query and hand the same record to canon twice.
+
+A source has one **authoritative** directory — ``data/raw/<source>/``, the full slice —
+plus zero or more **incremental** directories ``data/raw/<source>/since-<date>/`` from
+``--since`` runs. They overlap by construction: an incremental pull re-fetches records the
+full pull already has. Canon must read the authoritative directory first, then each
+incremental directory in date order, and **deduplicate**:
+
+===========  ============  ====================================
+source       dedupe key    recency field (latest wins)
+===========  ============  ====================================
+jira         ``key``       ``fields.updated``
+confluence   ``id``        ``version.number``
+git          ``sha``       n/a — a sha is content-addressed
+===========  ============  ====================================
+
+``data/reports/harvest.json`` restates this under ``raw_layout`` with the directories
+that actually exist.
+
+Durability limit: pages and checkpoints are written temp+rename with an fsync on the
+file, but the *directory* entry is not fsynced. A power cut (not a process crash) can
+therefore lose the last rename. Harvest is re-runnable, so the cost is one refetched page.
 """
 
 from __future__ import annotations
@@ -48,6 +76,33 @@ def signature_of(payload: Any) -> str:
     """Stable short hash of whatever defines "the same pull" for a connector."""
     blob = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
     return hashlib.sha1(blob.encode("utf-8")).hexdigest()[:12]
+
+
+CHECKPOINT_NAME = "checkpoint.json"
+
+
+def read_checkpoint_file(run_dir: Path) -> dict[str, Any]:
+    """The raw checkpoint dict for a run directory, or {} if there is none/unreadable."""
+    path = run_dir / CHECKPOINT_NAME
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def checkpoint_pages(run_dir: Path) -> list[Path]:
+    """The page files this run's checkpoint recorded, in write order.
+
+    This is the *only* correct way to enumerate raw pages. Globbing `pages-*.json`
+    would also return pages left behind by an earlier run with a different query
+    signature — the page index restarts at 0 on a signature change — which shows up
+    downstream as duplicate records rather than as an error.
+    """
+    files = read_checkpoint_file(run_dir).get("files") or []
+    return [p for p in (run_dir / str(name) for name in files) if p.is_file()]
 
 
 def write_json_atomic(path: Path, obj: Any) -> None:
@@ -103,13 +158,18 @@ class Checkpoint:
     files: list[str] = field(default_factory=list)
     updated_at: str | None = None
     query: str | None = None
+    #: pages written by a *previous*, differently-signed query — must be deleted before
+    #: this run writes, or they linger as duplicates nobody counted on.
+    stale_files: list[str] = field(default_factory=list)
 
     @classmethod
     def load(cls, path: Path, source: str, signature: str, query: str | None = None) -> Checkpoint:
         """Restore the checkpoint if it belongs to this exact query, else start fresh.
 
         A signature mismatch means the query changed under us (new JQL, new `--since`);
-        resuming would splice two different result sets together, so we start over.
+        resuming would splice two different result sets together, so we start over — and
+        the pages of the old query are handed back in `stale_files` for deletion, because
+        the page index restarts at 0 and would otherwise leave orphans behind it.
         """
         cp = cls(source=source, path=path, signature=signature, query=query)
         if not path.exists():
@@ -119,6 +179,7 @@ class Checkpoint:
         except (OSError, json.JSONDecodeError):
             return cp
         if data.get("signature") != signature:
+            cp.stale_files = [str(name) for name in data.get("files") or []]
             return cp
         cp.cursor = data.get("cursor") or {}
         cp.pages = int(data.get("pages", 0))
@@ -375,12 +436,43 @@ class BaseConnector:
     # -- run ---------------------------------------------------------------
 
     def checkpoint(self, since: date | None) -> Checkpoint:
-        return Checkpoint.load(
+        checkpoint = Checkpoint.load(
             self.checkpoint_path(since),
             source=self.name,
             signature=self.signature(since),
             query=self.query_text(since),
         )
+        self.discard_stale(checkpoint)
+        return checkpoint
+
+    def discard_stale(self, checkpoint: Checkpoint) -> list[str]:
+        """Delete pages left by a previous query before this one starts writing.
+
+        The page index restarts at 0 on a signature change, so a shorter new pull would
+        leave the old run's higher-numbered pages in place. They are not referenced by the
+        new checkpoint, but anything that globs the directory would still find them.
+        """
+        if not checkpoint.stale_files:
+            return []
+        run_dir = checkpoint.path.parent
+        removed: list[str] = []
+        for name in checkpoint.stale_files:
+            path = run_dir / name
+            if path.is_file():
+                path.unlink()
+                removed.append(name)
+        checkpoint.stale_files = []
+        if removed:
+            self.errors.append(
+                {
+                    "when": utc_now_iso(),
+                    "kind": "reset",
+                    "detail": f"query changed; removed {len(removed)} stale page(s) "
+                    f"from {run_dir}: {', '.join(removed[:5])}" + ("…" if len(removed) > 5 else ""),
+                    "fatal": False,
+                }
+            )
+        return removed
 
     def write_page(self, since: date | None, index: int, payload: Any) -> Path:
         path = self.page_path(since, index)

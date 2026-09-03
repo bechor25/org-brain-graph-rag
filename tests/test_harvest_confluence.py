@@ -203,3 +203,131 @@ def test_analyze_counts_bodies():
     assert stats["pages"] == 3
     assert stats["pages_with_body_storage"] == 2
     assert stats["pct_with_body_storage"] == 66.7
+
+
+@respx.mock
+def test_a_cursor_that_does_not_advance_is_overridden(tmp_path):
+    """A `_links.next` pointing at or behind the current start is an infinite crawl."""
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        params = dict(request.url.params)
+        seen.append(params)
+        start = int(params.get("start", 0))
+        links: dict = {"base": BASE_URL}
+        if start < 4:
+            # the server keeps handing back the same offset
+            links["next"] = f"/rest/api/content/search?cql=x&limit=2&start={start}"
+        return httpx.Response(
+            200,
+            json={
+                "results": [make_page(start), make_page(start + 1)],
+                "totalSize": 6,
+                "_links": links,
+            },
+        )
+
+    respx.get(SEARCH).mock(side_effect=handler)
+    result = connector(tmp_path, limit=2).run()
+
+    assert [int(p["start"]) for p in seen] == [0, 2, 4]  # advanced by results received
+    assert result.pages == 3
+    assert any(e["kind"] == "cursor" for e in result.errors)
+
+
+@respx.mock
+def test_a_query_change_deletes_the_previous_query_pages(tmp_path):
+    respx.get(SEARCH).mock(side_effect=paged_transport(85, 25))
+    connector(tmp_path).run()
+    assert len(list((tmp_path / "confluence").glob("pages-*.json"))) == 4
+
+    respx.get(SEARCH).mock(side_effect=paged_transport(85, 100))
+    second = connector(tmp_path, limit=100).run()
+
+    assert sorted(f.name for f in (tmp_path / "confluence").glob("pages-*.json")) == [
+        "pages-0000.json"
+    ]
+    assert second.stats["pages"] == 85
+
+
+# --------------------------------------------------------------------------- kip keys
+
+
+def titled(page_id: str, title: str) -> dict:
+    page = make_page(1)
+    page["id"] = page_id
+    page["title"] = title
+    return page
+
+
+def test_kip_key_parsing():
+    from brain.harvest.confluence import kip_key
+
+    assert kip_key("KIP-848: The Next Generation of the Consumer Rebalance Protocol") == "KIP-848"
+    assert kip_key("KIP-929 : Observer Replicas") == "KIP-929"
+    assert kip_key("[DRAFT] KIP-1027 Add MockFixedKeyProcessorContext") == "KIP-1027"
+    assert kip_key("Copy of KIP-848") == "KIP-848"
+    assert kip_key("KIP Release Notes") is None
+    assert kip_key("") is None
+
+
+def test_kip_key_block_reports_collisions_and_unparseable_titles():
+    stats = analyze(
+        iter(
+            [
+                titled("1", "KIP-848: The Next Generation"),
+                titled("2", "Copy of KIP-848: The Next Generation"),
+                titled("3", "[DRAFT] KIP-848"),
+                titled("4", "KIP-932: Queues for Kafka"),
+                titled("5", "Kafka Improvement Proposals"),
+                titled("6", "KIP index"),
+                titled("7", "KIP 156 Add option dry run"),
+            ]
+        )
+    )
+    block = stats["kip_key"]
+
+    assert block["distinct_keys"] == 2
+    assert block["pages_without_key"] == 3  # 2 keyless + 1 space-separated
+    assert block["pages_unparseable"] == 2
+    assert [p["title"] for p in block["unparseable"]] == [
+        "Kafka Improvement Proposals",
+        "KIP index",
+    ]
+    assert block["colliding_keys"] == 1
+    assert block["pages_in_collisions"] == 3
+    assert [p["id"] for p in block["collisions"]["KIP-848"]] == ["1", "2", "3"]
+    assert "KIP-932" not in block["collisions"]
+
+
+def test_a_space_separated_title_is_recoverable_not_keyless():
+    """ "KIP 156 …" carries a real number; canon should see it as a choice, not a loss."""
+    from brain.harvest.confluence import spaced_kip_key
+
+    assert spaced_kip_key("KIP 156 Add option dry run") == "KIP-156"
+    assert spaced_kip_key("Kafka Improvement Proposals") is None
+
+    stats = analyze(iter([titled("7", "KIP 141 - ProducerRecord: Add timestamp constructors")]))
+    block = stats["kip_key"]
+    assert block["pages_space_separated"] == 1
+    assert block["space_separated"][0]["would_be_key"] == "KIP-141"
+    assert block["unparseable"] == []
+
+
+def test_the_cost_of_accepting_the_space_form_is_reported():
+    """Widening the parser recovers pages but can walk into numbers already taken."""
+    block = analyze(
+        iter(
+            [
+                titled("1", "KIP-156: Add option dry run"),
+                titled("2", "KIP 156 Add option dry run"),
+                titled("3", "KIP 771: KRaft brokers"),
+            ]
+        )
+    )["kip_key"]
+
+    assert block["colliding_keys"] == 0  # strict: one page per key
+    assert block["distinct_keys"] == 1
+    assert block["if_space_form_accepted"]["distinct_keys"] == 2  # KIP-156 + KIP-771
+    assert block["if_space_form_accepted"]["colliding_keys"] == 1  # …but KIP-156 now clashes
+    assert block["if_space_form_accepted"]["pages_in_collisions"] == 2

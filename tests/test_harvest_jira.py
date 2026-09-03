@@ -230,7 +230,7 @@ def test_link_density_is_computed_per_component(density_issues):
     assert density["streams"]["avg_comments"] == 1.0
     assert density["streams"]["pct_assignee"] == 50.0
     assert density["streams"]["pct_fix_versions"] == 50.0
-    assert density["streams"]["pct_changelog_present"] == 50.0
+    assert density["streams"]["pct_with_history"] == 50.0
 
     assert density["connect"]["pct_formal_links"] == 100.0
     assert density["clients"]["pct_formal_links"] == 0.0
@@ -253,7 +253,7 @@ def test_stats_count_changelog_and_comment_coverage():
     ]
     stats = analyze(issues)
     assert stats["issues"] == 2
-    assert stats["pct_with_changelog"] == 50.0
+    assert stats["pct_changelog_expanded"] == 50.0
     assert stats["pct_with_comment_field"] == 50.0
 
 
@@ -274,3 +274,60 @@ def test_retries_surface_in_the_run_result(tmp_path):
     assert result.records == 3
     assert [e["kind"] for e in result.errors] == ["retry"]
     assert not any(e["fatal"] for e in result.errors)
+
+
+@respx.mock
+def test_a_query_change_deletes_the_previous_query_pages(tmp_path):
+    """Page indexes restart at 0, so the old run's tail must not survive as duplicates."""
+    respx.get(SEARCH).mock(side_effect=paged_transport(250, 100))
+    connector(tmp_path, page_size=100).run()
+    assert len(list((tmp_path / "jira").glob("issues-*.json"))) == 3
+
+    # a different page size is a different signature -> a fresh, shorter pull
+    respx.get(SEARCH).mock(side_effect=paged_transport(250, 250))
+    second = connector(tmp_path, page_size=250).run()
+
+    assert second.records == 250
+    assert sorted(f.name for f in (tmp_path / "jira").glob("issues-*.json")) == ["issues-0000.json"]
+    assert second.stats["issues"] == 250  # not 250 + the 200 stranded in pages 1 and 2
+    assert any(e["kind"] == "reset" for e in second.errors)
+
+
+@respx.mock
+def test_analysis_ignores_a_page_the_checkpoint_does_not_list(tmp_path):
+    respx.get(SEARCH).mock(side_effect=paged_transport(150, 100))
+    connector(tmp_path, page_size=100).run()
+
+    # an orphan from some earlier run, higher-numbered than anything current
+    (tmp_path / "jira" / "issues-0009.json").write_text(
+        json.dumps({"issues": [make_issue(999)]}), encoding="utf-8"
+    )
+
+    from brain.harvest.jira import analyze, iter_raw_issues
+
+    assert analyze(iter_raw_issues(tmp_path / "jira"))["issues"] == 150
+
+
+@respx.mock
+def test_resume_overwrites_a_page_the_checkpoint_never_recorded(tmp_path):
+    """Crash between writing a page and saving the checkpoint: refetch, never append."""
+    respx.get(SEARCH).mock(side_effect=paged_transport(250, 100))
+
+    run_dir = tmp_path / "jira"
+    run_dir.mkdir(parents=True)
+    (run_dir / "issues-0000.json").write_text(
+        json.dumps({"issues": [make_issue(9001)], "total": 250}), encoding="utf-8"
+    )
+
+    result = connector(tmp_path, page_size=100).run()
+
+    assert result.pages == 3
+    assert result.records == 250
+    assert sorted(f.name for f in run_dir.glob("issues-*.json")) == [
+        "issues-0000.json",
+        "issues-0001.json",
+        "issues-0002.json",
+    ]
+    keys = [i["key"] for i in json.loads((run_dir / "issues-0000.json").read_text())["issues"]]
+    assert "KAFKA-9001" not in keys  # the planted page was overwritten, not kept
+    assert result.stats["issues"] == 250

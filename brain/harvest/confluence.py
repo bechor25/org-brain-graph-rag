@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 from collections.abc import Iterator
 from datetime import date
 from pathlib import Path
@@ -26,7 +27,9 @@ from brain.harvest.base import (
     HttpFetcher,
     Page,
     ProbeResult,
+    checkpoint_pages,
     signature_of,
+    utc_now_iso,
 )
 
 BASE_URL = "https://cwiki.apache.org/confluence"
@@ -36,6 +39,13 @@ SPACE = "KAFKA"
 CQL = f'space={SPACE} and type=page and title ~ "KIP-"'
 EXPAND = "body.storage,version,history,ancestors,metadata.labels"
 LIMIT = 25  # the server trims larger limits when bodies are expanded
+
+# "KIP-848: ...", "KIP-929 : ...", "[DRAFT] KIP-1234 ..." — the number is the key.
+_KIP_IN_TITLE = re.compile(r"KIP-(\d+)", re.IGNORECASE)
+# …but a handful of pages write "KIP 156 Add option …" with a space. They carry a real
+# number that the canonical `KIP-N` form misses, so they are counted separately rather
+# than lumped in with the genuinely keyless pages.
+_KIP_SPACED = re.compile(r"KIP\s+(\d+)", re.IGNORECASE)
 
 
 def build_cql(since: date | None = None) -> str:
@@ -118,6 +128,19 @@ class ConfluenceConnector(BaseConnector):
             path = self.write_page(since, index, payload)
             page = Page(index=index, records=results, path=path)
             following = next_start(payload, current=start, limit=self.limit)
+            if following is not None and following <= start:
+                # A cursor that does not move forward is an infinite loop that looks like
+                # a working crawl. Trust the page we just got instead.
+                self.errors.append(
+                    {
+                        "when": utc_now_iso(),
+                        "kind": "cursor",
+                        "detail": f"_links.next pointed at start={following} from start="
+                        f"{start}; advancing by the {len(results)} results received",
+                        "fatal": False,
+                    }
+                )
+                following = start + len(results)
             checkpoint.advance(
                 page=page,
                 cursor={"start": following if following is not None else start + len(results)},
@@ -141,25 +164,74 @@ class ConfluenceConnector(BaseConnector):
 
 
 def iter_raw_pages(run_dir: Path) -> Iterator[dict[str, Any]]:
-    if not run_dir.exists():
-        return
-    for path in sorted(run_dir.glob("pages-*.json")):
+    """Pages come from the checkpoint's file list, never from a glob (see base)."""
+    for path in checkpoint_pages(run_dir):
         payload = json.loads(path.read_text(encoding="utf-8"))
         yield from payload.get("results") or []
 
 
+def kip_key(title: str) -> str | None:
+    """`KIP-N` parsed out of a page title, or None if the title carries no number."""
+    m = _KIP_IN_TITLE.search(title or "")
+    return f"KIP-{int(m.group(1))}" if m else None
+
+
+def spaced_kip_key(title: str) -> str | None:
+    """The key a `KIP 156 …` title *would* have if the space form were accepted."""
+    m = _KIP_SPACED.search(title or "")
+    return f"KIP-{int(m.group(1))}" if m else None
+
+
 def analyze(pages: Iterator[dict[str, Any]]) -> dict[str, Any]:
+    """Coverage plus the `KIP-N` key problem canon has to solve.
+
+    `Document.key = KIP-N` parsed from the title is not injective on this space: drafts,
+    "Copy of …" pages and release-notes pages carry a number that another page already
+    owns, and some titles carry no number at all. Counting it here means canon meets the
+    collisions as a documented number rather than as a MERGE that silently unified two
+    different pages.
+
+    Pages whose title writes the number with a space ("KIP 156 Add option …") are reported
+    apart from the genuinely keyless ones: they are recoverable if canon widens the parser,
+    and folding them in would create *more* collisions, not fewer.
+    """
     total = 0
     with_body = 0
     body_chars = 0
     ids: set[str] = set()
+    unparseable: list[dict[str, str]] = []
+    space_separated: list[dict[str, str]] = []
+    by_key: dict[str, list[dict[str, str]]] = {}
+
     for page in pages:
         total += 1
-        ids.add(str(page.get("id") or ""))
+        page_id = str(page.get("id") or "")
+        title = str(page.get("title") or "")
+        ids.add(page_id)
         body = ((page.get("body") or {}).get("storage") or {}).get("value") or ""
         if body:
             with_body += 1
             body_chars += len(body)
+
+        key = kip_key(title)
+        if key is not None:
+            by_key.setdefault(key, []).append({"id": page_id, "title": title})
+            continue
+        spaced = spaced_kip_key(title)
+        if spaced is not None:
+            space_separated.append({"id": page_id, "title": title, "would_be_key": spaced})
+        else:
+            unparseable.append({"id": page_id, "title": title})
+
+    collisions = {k: v for k, v in sorted(by_key.items()) if len(v) > 1}
+
+    # What accepting the space form would cost: it recovers pages, but some of the numbers
+    # it recovers are already taken. Canon should see both totals before choosing a parser.
+    widened = {k: list(v) for k, v in by_key.items()}
+    for page in space_separated:
+        widened.setdefault(page["would_be_key"], []).append(page)
+    widened_collisions = {k: v for k, v in widened.items() if len(v) > 1}
+
     n = total or 1
     return {
         "pages": total,
@@ -167,4 +239,20 @@ def analyze(pages: Iterator[dict[str, Any]]) -> dict[str, Any]:
         "pages_with_body_storage": with_body,
         "pct_with_body_storage": round(100 * with_body / n, 1),
         "avg_body_chars": round(body_chars / (with_body or 1)),
+        "kip_key": {
+            "distinct_keys": len(by_key),
+            "pages_without_key": len(unparseable) + len(space_separated),
+            "pages_unparseable": len(unparseable),
+            "pages_space_separated": len(space_separated),
+            "colliding_keys": len(collisions),
+            "pages_in_collisions": sum(len(v) for v in collisions.values()),
+            "if_space_form_accepted": {
+                "distinct_keys": len(widened),
+                "colliding_keys": len(widened_collisions),
+                "pages_in_collisions": sum(len(v) for v in widened_collisions.values()),
+            },
+            "unparseable": unparseable,
+            "space_separated": space_separated,
+            "collisions": collisions,
+        },
     }
