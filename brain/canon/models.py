@@ -37,10 +37,19 @@ class Comment(BaseModel):
 
 
 class ChangelogEntry(BaseModel):
+    """One field change. Display strings *and* the raw ids behind them.
+
+    `from_`/`to` are what Jira shows a human ("Jun Rao"); `from_id`/`to_id` are the
+    identity keys it stores ("jrao"). Only the ids can build `ASSIGNED_TO` — 9 display
+    names in this corpus are shared by 18 different people.
+    """
+
     model_config = ConfigDict(populate_by_name=True)
     field: str
     from_: str | None = Field(default=None, alias="from")
     to: str | None = None
+    from_id: str | None = None
+    to_id: str | None = None
     at: datetime
     by: str | None = None
 
@@ -94,6 +103,9 @@ class Document(BaseModel):
     updated: datetime | None = None
     author: str | None = None
     ancestors: list[str] = []
+    #: For a page that carries a `KIP-N` another page owns: that page's key. `ancestors`
+    #: stays what Confluence means by it — the page tree — and nothing else.
+    kip_of: str | None = None
     labels: list[str] = []
     refs: list[Ref] = []
     synthetic: bool = False
@@ -119,6 +131,10 @@ class Person(BaseModel):
 class Change(BaseModel):
     id: str  # commit sha or "pr:<number>"
     kind: Literal["commit", "pr"]
+    #: For a commit: the id of the pull request it *is* (`pr:21175`), from the trailing
+    #: `(#N)` a squashed merge leaves in the subject. Other `#N` in the text are mentions
+    #: and stay in `refs`.
+    pr: str | None = None
     message: str
     author_name: str | None = None
     author_email: str | None = None

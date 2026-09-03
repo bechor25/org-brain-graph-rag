@@ -78,29 +78,49 @@ def sort_key(record: BaseModel) -> tuple[object, ...]:
     return (kind, *natural_key(str(record.id)))
 
 
+class CanonError(RuntimeError):
+    """The step cannot produce a correct file. Never downgraded to a partial result."""
+
+
 def read_existing(path: Path, model: type[BaseModel]) -> list[BaseModel]:
+    """The records already on disk, or a loud failure.
+
+    Swallowing a read error here silently deletes data: everything this run does not
+    produce — the other sources' records and every synthetic record — is carried over
+    from this file. An empty list on a parse error looks like a successful run that
+    happens to have dropped half the corpus, and the next step would believe it.
+    """
     if not path.is_file():
         return []
     try:
         return list(read_jsonl(path, model))
-    except (OSError, ValueError):
-        # A corrupt or older-schema file is not a reason to lose this run; it is a reason
-        # to rebuild the sources that were asked for and report what was dropped.
-        return []
+    except (OSError, ValueError) as exc:
+        raise CanonError(
+            f"{path} exists but could not be read as {model.__name__}: {exc}\n"
+            "Records from other sources and every synthetic record are carried over from "
+            "this file, so canon will not continue and silently drop them. Fix or remove "
+            "the file (a full `brain canon` rebuilds every source) and run again."
+        ) from exc
 
 
 def carried_over(
     existing: Iterable[BaseModel], produced: Iterable[BaseModel], sources: Sequence[str]
-) -> list[BaseModel]:
-    """Existing records this run is not responsible for: other sources, plus synthetics."""
+) -> tuple[list[BaseModel], dict[str, int]]:
+    """Existing records this run is not responsible for: other sources, plus synthetics.
+
+    Returns the records and a count of them, because "what did this run keep rather than
+    build" is exactly the number a partial run has to be judged on.
+    """
     fresh = {r.id for r in produced}
-    keep = []
+    keep: list[BaseModel] = []
+    synthetic = 0
     for record in existing:
         if record.id in fresh:
             continue
         if record.synthetic or owner_of(record) not in sources:
             keep.append(record)
-    return keep
+            synthetic += 1 if record.synthetic else 0
+    return keep, {"total": len(keep), "synthetic": synthetic}
 
 
 def merge_bundles(bundles: dict[str, Bundle]) -> dict[str, list[BaseModel]]:
@@ -144,10 +164,12 @@ def run_canon(
 
     produced = merge_bundles(bundles)
     written: dict[str, int] = {}
+    kept: dict[str, dict[str, int]] = {}
     records: dict[str, list[BaseModel]] = {}
     for name, model in FILES.items():
         path = canonical_dir / f"{name}.jsonl"
-        merged = produced[name] + carried_over(read_existing(path, model), produced[name], sources)
+        keep, kept[name] = carried_over(read_existing(path, model), produced[name], sources)
+        merged = produced[name] + keep
         merged.sort(key=sort_key)
         records[name] = merged
         written[name] = write_jsonl(path, merged)
@@ -158,6 +180,7 @@ def run_canon(
     report = build_report(
         bundles,
         records=records,
+        carried_over=kept,
         slices=slices,
         sources=sources,
         durations=durations,

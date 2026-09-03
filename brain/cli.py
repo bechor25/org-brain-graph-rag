@@ -94,7 +94,7 @@ def canon(
     ),
 ) -> None:
     """Normalize raw data into the canonical model (data/canonical/*.jsonl) [Plan 1]."""
-    from brain.canon.runner import resolve_sources, run_canon
+    from brain.canon.runner import CanonError, resolve_sources, run_canon
     from brain.config import get_settings
 
     try:
@@ -103,13 +103,18 @@ def canon(
         raise typer.BadParameter(str(exc), param_hint="--source") from exc
 
     settings = get_settings()
-    _, code = run_canon(
-        sources,
-        raw_dir=settings.raw_dir,
-        canonical_dir=settings.canonical_dir,
-        reports_dir=settings.reports_dir,
-        echo=typer.echo,
-    )
+    try:
+        _, code = run_canon(
+            sources,
+            raw_dir=settings.raw_dir,
+            canonical_dir=settings.canonical_dir,
+            reports_dir=settings.reports_dir,
+            echo=typer.echo,
+        )
+    except CanonError as exc:
+        # A refusal to write, not a crash: the message says what to do about it.
+        typer.echo(f"canon: {exc}", err=False)
+        raise typer.Exit(code=1) from exc
     raise typer.Exit(code=code)
 
 

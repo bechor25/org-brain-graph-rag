@@ -64,6 +64,7 @@ VARIANT_MARKER = re.compile(r"\[draft\]|\bdraft\b|\bcopy of\b|\bold\b|release no
 
 _RI_PAGE = re.compile(r"<ri:page\b[^>]*?ri:content-title=\"([^\"]*)\"[^>]*?>")
 _RI_ATTACHMENT = re.compile(r"<ri:attachment\b[^>]*?ri:filename=\"([^\"]*)\"[^>]*?>")
+_RI_USER = re.compile(r"<ri:user\b[^>]*?ri:userkey=\"([^\"]*)\"[^>]*?>")
 _CDATA_BODY = re.compile(
     r"<ac:plain-text-body>\s*<!\[CDATA\[(.*?)\]\]>\s*</ac:plain-text-body>", re.DOTALL
 )
@@ -79,6 +80,9 @@ def storage_to_markdown(storage: str) -> str:
         return ""
     text = _RI_PAGE.sub(lambda m: f" {html.unescape(m.group(1))} ", storage)
     text = _RI_ATTACHMENT.sub(lambda m: f" {html.unescape(m.group(1))} ", text)
+    # The storage format stores a person as a key; the rendered page shows a name. `@key`
+    # is the one form the mention regexes already understand.
+    text = _RI_USER.sub(lambda m: f" @{html.unescape(m.group(1))} ", text)
     text = _CDATA_BODY.sub(lambda m: f"<pre>{html.escape(m.group(1))}</pre>", text)
     text = _CDATA.sub(lambda m: f" {html.escape(m.group(1))} ", text)
     # Whatever `ac:`/`ri:` markup is left is layout, not content — but it must not glue
@@ -147,6 +151,18 @@ def canonical_rank(page: dict[str, Any], key: str) -> tuple[int, int, int, int, 
     )
 
 
+#: The rank terms, in the order `canonical_rank` returns them.
+RANK_TERMS = ("starts_with_key", "no_variant_marker", "colon_form", "body_length", "page_id")
+
+
+def decided_by(winner: tuple[int, ...], runner_up: tuple[int, ...]) -> str:
+    """Which term of the rank actually separated the top two."""
+    for term, mine, theirs in zip(RANK_TERMS, winner, runner_up, strict=True):
+        if mine != theirs:
+            return term
+    return "tie"
+
+
 def decide_keys(pages: Iterable[dict[str, Any]]) -> tuple[dict[str, str], list[dict[str, Any]]]:
     """page id → `Document.key`, plus one decision record per colliding `KIP-N`."""
     by_key: dict[str, list[dict[str, Any]]] = {}
@@ -177,6 +193,8 @@ def decide_keys(pages: Iterable[dict[str, Any]]) -> tuple[dict[str, str], list[d
                 # No title signal separated the top two: the number is genuinely reused by
                 # two real pages and only body size decided. A human should look at these.
                 "ambiguous": top[:3] == second[:3],
+                "decided_by": decided_by(top, second),
+                "runner_up_id": str(ranked[1]["id"]),
             }
         )
     return keys, decisions
@@ -187,6 +205,7 @@ def map_pages(pages: Iterable[dict[str, Any]]) -> Bundle:
     tracker = FieldTracker(mapped=MAPPED)
     pages = list(pages)
     keys, decisions = decide_keys(pages)
+    ambiguous_ids = {d["runner_up_id"] for d in decisions if d["ambiguous"]}
     empty_bodies = 0
     space_form: list[dict[str, str]] = []
 
@@ -205,15 +224,22 @@ def map_pages(pages: Iterable[dict[str, Any]]) -> Bundle:
             for x in ((page.get("metadata") or {}).get("labels") or {}).get("results") or []
             if x.get("name")
         ]
-        ancestors = [
-            keys.get(str(a.get("id")), f"{SOURCE}:{a.get('id')}")
-            for a in page.get("ancestors") or []
-            if a.get("id")
-        ]
+        ancestors = list(
+            dict.fromkeys(
+                keys.get(str(a.get("id")), f"{SOURCE}:{a.get('id')}")
+                for a in page.get("ancestors") or []
+                if a.get("id")
+            )
+        )
+        kip_of = None
         if not is_kip and (owner := kip_key(title)):
-            # A variant of a number another page owns: keep the link, not the key.
+            # A variant of a number another page owns. `ancestors` stays the page tree.
+            kip_of = owner
             labels.append("kip-variant")
-            ancestors.append(owner)
+            if page_id in ambiguous_ids:
+                # Only body size separated this page from the canonical one — it may be a
+                # real KIP that reused the number, so chunk/extract should still see it.
+                labels.append("ambiguous-kip")
         if not is_kip and (spaced := spaced_kip_key(title)):
             # `KIP 230: …` — recoverable only by widening the parser, which would create
             # more collisions than it resolves (harvest report, `if_space_form_accepted`).
@@ -255,6 +281,7 @@ def map_pages(pages: Iterable[dict[str, Any]]) -> Bundle:
                     display=author.get("displayName"),
                 ),
                 ancestors=ancestors,
+                kip_of=kip_of,
                 labels=labels,
                 refs=bundle.refs.collect(extract_refs(f"{title}\n{body_md}"), self_keys=[key]),
                 raw_url=page_url(page),
@@ -276,6 +303,21 @@ def map_pages(pages: Iterable[dict[str, Any]]) -> Bundle:
             "colliding_keys": len(decisions),
             "variants": variants,
             "ambiguous_collisions": sum(1 for d in decisions if d["ambiguous"]),
+            "ambiguous_kips": [
+                {
+                    "key": d["key"],
+                    "canonical_page_id": d["canonical"]["id"],
+                    "demoted_page_id": d["runner_up_id"],
+                    "titles": {
+                        "canonical": d["canonical"]["title"],
+                        "demoted": next(
+                            v["title"] for v in d["variants"] if v["id"] == d["runner_up_id"]
+                        ),
+                    },
+                }
+                for d in decisions
+                if d["ambiguous"]
+            ],
             "pages_without_key": len(bundle.documents) - kips - variants,
             "pages_space_form": space_form,
             "collisions": decisions,

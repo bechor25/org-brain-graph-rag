@@ -20,7 +20,8 @@ def test_the_message_is_the_subject_plus_the_body():
     change = map_commits([commit("a" * 40, "KAFKA-1234 fix (#12)", body="why\nnot")]).changes[0]
 
     assert change.message == "KAFKA-1234 fix (#12)\n\nwhy\nnot"
-    assert [(r.kind, r.key) for r in change.refs] == [("issue", "KAFKA-1234"), ("pr", "12")]
+    assert change.pr == "pr:12"
+    assert [(r.kind, r.key) for r in change.refs] == [("issue", "KAFKA-1234")]
 
 
 def test_one_pr_record_per_number_even_when_a_backport_repeats_it():
@@ -37,12 +38,30 @@ def test_one_pr_record_per_number_even_when_a_backport_repeats_it():
     assert bundle.stats["prs_claimed_by_more_than_one_commit"] == 1
 
 
-def test_a_pr_does_not_reference_itself_but_the_commit_does():
-    bundle = map_commits([commit("a" * 40, "KAFKA-1234 fix (#12)")])
+def test_the_pull_request_a_commit_is_goes_on_pr_not_into_refs():
+    """`(#12)` at the end of the subject is the merge, not a mention of another PR."""
+    bundle = map_commits(
+        [commit("a" * 40, "KAFKA-1234 fix, follow-up to (#7) (#12)", body="see #99")]
+    )
     by_kind = {c.kind: c for c in bundle.changes}
 
-    assert ("pr", "12") in [(r.kind, r.key) for r in by_kind["commit"].refs]
-    assert [(r.kind, r.key) for r in by_kind["pr"].refs] == [("issue", "KAFKA-1234")]
+    assert by_kind["commit"].pr == "pr:12"
+    assert [(r.kind, r.key) for r in by_kind["commit"].refs] == [
+        ("issue", "KAFKA-1234"),
+        ("pr", "7"),
+        ("pr", "99"),
+    ]
+    assert bundle.stats["subjects_naming_more_than_one_pr"] == 1
+    assert bundle.stats["commits_with_pr"] == 1
+    # both numbers still get a PR record; only the trailing one is this commit's identity
+    assert sorted(c.id for c in bundle.changes if c.kind == "pr") == ["pr:12", "pr:7"]
+
+
+def test_a_commit_without_a_trailing_marker_has_no_pr():
+    bundle = map_commits([commit("a" * 40, "KAFKA-1234 fix", body="follow-up to #99")])
+
+    assert bundle.changes[0].pr is None
+    assert bundle.stats["commits_with_pr"] == 0
 
 
 def test_a_bare_hash_in_the_body_is_a_mention_not_a_pull_request_record():

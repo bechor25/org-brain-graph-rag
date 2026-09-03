@@ -51,6 +51,8 @@
    "field": "Link",
    "from": null,
    "to": "This issue relates to KAFKA-18881",
+   "from_id": null,
+   "to_id": "KAFKA-18881",
    "at": "2025-02-27T09:31:37.449000Z",
    "by": "chia7712"
   },
@@ -58,6 +60,8 @@
    "field": "Link",
    "from": null,
    "to": "This issue is fixed by KAFKA-12999",
+   "from_id": null,
+   "to_id": "KAFKA-12999",
    "at": "2025-11-03T13:45:53.428000Z",
    "by": "mingyen066"
   },
@@ -65,6 +69,8 @@
    "field": "Fix Version",
    "from": null,
    "to": "4.2.0",
+   "from_id": null,
+   "to_id": "12355509",
    "at": "2025-11-03T13:45:53.431000Z",
    "by": "mingyen066"
   },
@@ -72,6 +78,8 @@
    "field": "resolution",
    "from": null,
    "to": "Fixed",
+   "from_id": null,
+   "to_id": "1",
    "at": "2025-11-03T13:45:53.431000Z",
    "by": "mingyen066"
   },
@@ -79,6 +87,8 @@
    "field": "status",
    "from": "Open",
    "to": "Resolved",
+   "from_id": "1",
+   "to_id": "5",
    "at": "2025-11-03T13:45:53.431000Z",
    "by": "mingyen066"
   }

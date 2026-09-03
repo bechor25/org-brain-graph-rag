@@ -9,7 +9,7 @@ import pytest
 from brain.canon.io import read_jsonl
 from brain.canon.models import Change, Document, Person, WorkItem
 from brain.canon.report import summarize
-from brain.canon.runner import natural_key, resolve_sources, run_canon
+from brain.canon.runner import CanonError, natural_key, resolve_sources, run_canon
 from brain.cli import app
 from tests.canon_helpers import commit, issue, page, plant_commits, plant_pages
 
@@ -217,3 +217,35 @@ def test_cli_rejects_an_unknown_source(runner):
 
     assert out.exit_code != 0
     assert "unknown source" in out.output
+
+
+def test_an_unreadable_canonical_file_fails_the_step_instead_of_dropping_records(corpus):
+    run(corpus, ["jira", "confluence", "git"])
+    (corpus / "canonical" / "workitems.jsonl").write_text("{not json\n", encoding="utf-8")
+
+    with pytest.raises(CanonError, match="could not be read"):
+        run(corpus, ["git"])
+
+
+def test_the_cli_reports_an_unreadable_file_without_a_traceback(runner, corpus, monkeypatch):
+    monkeypatch.setenv("DATA_DIR", str(corpus))
+    run(corpus, ["jira", "confluence", "git"])
+    (corpus / "canonical" / "changes.jsonl").write_text("{not json\n", encoding="utf-8")
+
+    out = runner.invoke(app, ["canon", "--source", "git"])
+
+    assert out.exit_code == 1
+    assert "could not be read" in out.output
+    assert "Traceback" not in out.output
+
+
+def test_the_report_counts_what_a_partial_run_carried_over(corpus):
+    run(corpus, ["jira", "confluence", "git"])
+    report, _ = run(corpus, ["git"])
+
+    assert report["carried_over"]["workitems"] == {"total": 1, "synthetic": 0}
+    assert report["carried_over"]["documents"] == {"total": 1, "synthetic": 0}
+    assert report["carried_over"]["changes"] == {"total": 0, "synthetic": 0}
+    # a full run builds everything it writes
+    report, _ = run(corpus, ["jira", "confluence", "git"])
+    assert all(v["total"] == 0 for v in report["carried_over"].values())

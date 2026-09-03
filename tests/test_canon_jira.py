@@ -133,7 +133,13 @@ def test_changelog_keeps_the_human_readable_values():
                 "author": {"name": "editor"},
                 "created": "2024-01-02T00:00:00.000+0000",
                 "items": [
-                    {"field": "status", "from": "1", "fromString": "Open", "toString": "Resolved"}
+                    {
+                        "field": "status",
+                        "from": "1",
+                        "fromString": "Open",
+                        "to": "5",
+                        "toString": "Resolved",
+                    }
                 ],
             }
         ]
@@ -146,6 +152,54 @@ def test_changelog_keeps_the_human_readable_values():
         "Resolved",
         "editor",
     )
+    assert (entry.from_id, entry.to_id) == ("1", "5")
+
+
+def test_an_assignee_change_keeps_the_identity_keys_not_only_the_display_names():
+    """`ASSIGNED_TO` needs the keys: display names are shared by different people here."""
+    raw = issue("KAFKA-100")
+    raw["changelog"] = {
+        "histories": [
+            {
+                "author": {"name": "editor"},
+                "created": "2024-01-02T00:00:00.000+0000",
+                "items": [
+                    {
+                        "field": "assignee",
+                        "from": "jrao",
+                        "fromString": "Jun Rao",
+                        "to": "chia7712",
+                        "toString": "Chia-Ping Tsai",
+                    }
+                ],
+            }
+        ]
+    }
+    entry = one(raw).changelog[0]
+
+    assert (entry.from_id, entry.to_id) == ("jrao", "chia7712")
+    assert (entry.from_, entry.to) == ("Jun Rao", "Chia-Ping Tsai")
+
+
+def test_the_stats_census_link_types_and_changelog_fields():
+    raw = issue(
+        "KAFKA-100",
+        issuelinks=[{"type": {"name": "Blocker"}, "outwardIssue": {"key": "KAFKA-200"}}],
+    )
+    raw["changelog"] = {
+        "histories": [
+            {
+                "author": {"name": "e"},
+                "created": "2024-01-02T00:00:00.000+0000",
+                "items": [{"field": "RemoteIssueLink"}, {"field": "status"}],
+            }
+        ]
+    }
+    stats = map_issues([raw]).stats
+
+    assert stats["link_types"] == {"blocker": 1}
+    assert stats["changelog_fields"] == {"RemoteIssueLink": 1, "status": 1}
+    assert stats["changelog_remote_issue_link_noise"] == 1
 
 
 def test_an_issue_without_a_component_is_warned_about():

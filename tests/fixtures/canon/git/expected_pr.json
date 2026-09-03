@@ -1,6 +1,7 @@
 {
  "id": "pr:21175",
  "kind": "pr",
+ "pr": null,
  "message": "KAFKA-19755 Move KRaftClusterTest from core module to server module [3/4] (#21175)",
  "author_name": "Lan Ding",
  "author_email": "isding_l@163.com",

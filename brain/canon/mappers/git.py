@@ -26,9 +26,13 @@ MAPPED = frozenset(
     {"sha", "author_name", "author_email", "authored_at", "subject", "body", "files"}
 )
 
-#: `(#21175)` at the end of a squashed-merge subject. Bare `#21175` in a body is a text
-#: mention (it becomes a ref), not evidence that this commit *is* that PR.
+#: `(#21175)` in a squashed-merge subject. Bare `#21175` in a body is a text mention (it
+#: becomes a ref), not evidence that this commit *is* that PR.
 PR_IN_SUBJECT = re.compile(r"\(#(\d{1,7})\)")
+
+#: The *trailing* one is the merge GitHub performed; an earlier `(#N)` in the same subject
+#: is the author quoting another PR. Only the trailing one becomes `Change.pr`.
+PR_AT_END = re.compile(r"\(#(\d{1,7})\)\s*$")
 
 
 def raw_paths(commit: dict[str, Any]) -> Iterator[tuple[str, Any]]:
@@ -48,6 +52,7 @@ def map_commits(commits: Iterable[dict[str, Any]]) -> Bundle:
     # earliest commit wins and the choice does not depend on git log order.
     pull_requests: dict[str, dict[str, Any]] = {}
     shared_prs = 0
+    multi_pr_subjects = 0
 
     for commit in commits:
         tracker.observe(raw_paths(commit))
@@ -61,22 +66,32 @@ def map_commits(commits: Iterable[dict[str, Any]]) -> Bundle:
         name = str(commit.get("author_name") or "")
         bundle.identity(SOURCE, email, display=name, email=email)
         message = commit_message(commit)
+        subject = str(commit.get("subject") or "")
+        own_pr = PR_AT_END.search(subject)
+        pr_numbers = list(dict.fromkeys(PR_IN_SUBJECT.findall(subject)))
+        if len(pr_numbers) > 1:
+            multi_pr_subjects += 1
 
         bundle.changes.append(
             Change(
                 id=sha,
                 kind="commit",
+                pr=f"pr:{own_pr.group(1)}" if own_pr else None,
                 message=message,
                 author_name=name or None,
                 author_email=email or None,
                 at=at,
                 files=[str(f) for f in commit.get("files") or []],
-                refs=bundle.refs.collect(extract_refs(message)),
+                # The commit's own PR is on `pr`, not in `refs`: an edge to the pull
+                # request it *is* is not the same fact as a mention of another one.
+                refs=bundle.refs.collect(
+                    extract_refs(message), self_keys=[own_pr.group(1)] if own_pr else []
+                ),
                 raw_url=f"{CLONE_URL}/commit/{sha}",
             )
         )
 
-        for number in dict.fromkeys(PR_IN_SUBJECT.findall(str(commit.get("subject") or ""))):
+        for number in pr_numbers:
             current = pull_requests.get(number)
             if current is None:
                 pull_requests[number] = commit
@@ -110,6 +125,8 @@ def map_commits(commits: Iterable[dict[str, Any]]) -> Bundle:
     bundle.stats = {
         "commits": commits_n,
         "pull_requests": len(pull_requests),
+        "commits_with_pr": sum(1 for c in bundle.changes if c.kind == "commit" and c.pr),
+        "subjects_naming_more_than_one_pr": multi_pr_subjects,
         "commits_with_issue_ref": keyed,
         "pct_commits_with_issue_ref": round(100 * keyed / (commits_n or 1), 1),
         "prs_claimed_by_more_than_one_commit": shared_prs,

@@ -121,6 +121,10 @@ def _comments(issue: dict[str, Any], bundle: Bundle) -> list[Comment]:
     return out
 
 
+def _as_id(value: Any) -> str | None:
+    return None if value in (None, "") else str(value)
+
+
 def _changelog(issue: dict[str, Any], bundle: Bundle) -> list[ChangelogEntry]:
     out: list[ChangelogEntry] = []
     for history in (issue.get("changelog") or {}).get("histories") or []:
@@ -133,10 +137,13 @@ def _changelog(issue: dict[str, Any], bundle: Bundle) -> list[ChangelogEntry]:
             out.append(
                 ChangelogEntry(
                     field=str(item.get("field") or ""),
-                    # `fromString`/`toString` are the human-readable values; the numeric
-                    # `from`/`to` are Jira ids that mean nothing outside this instance.
+                    # `fromString`/`toString` read like a person; `from`/`to` identify one.
+                    # For `assignee` the raw values are the identity keys `ASSIGNED_TO`
+                    # needs — display names are not unique in this corpus.
                     from_=item.get("fromString"),
                     to=item.get("toString"),
+                    from_id=_as_id(item.get("from")),
+                    to_id=_as_id(item.get("to")),
                     at=at,
                     by=by,
                 )
@@ -150,6 +157,8 @@ def map_issues(issues: Iterable[dict[str, Any]]) -> Bundle:
     no_components = 0
     truncated_changelogs = 0
     renamed: Counter = Counter()
+    link_types: Counter = Counter()
+    changelog_fields: Counter = Counter()
     any_text_mention = 0
     text_only = 0
 
@@ -184,6 +193,7 @@ def map_issues(issues: Iterable[dict[str, Any]]) -> Bundle:
 
         comments = _comments(issue, bundle)
         links = _links(issue)
+        link_types.update(link.type for link in links)
         title = str(fields.get("summary") or "")
         description = str(fields.get("description") or "")
         text = "\n".join([title, description, *(c.body for c in comments)])
@@ -205,6 +215,9 @@ def map_issues(issues: Iterable[dict[str, Any]]) -> Bundle:
         if not components:
             no_components += 1
             bundle.warn("issue_without_component", key=key)
+
+        history = _changelog(issue, bundle)
+        changelog_fields.update(entry.field for entry in history)
 
         bundle.workitems.append(
             WorkItem(
@@ -233,7 +246,7 @@ def map_issues(issues: Iterable[dict[str, Any]]) -> Bundle:
                 parent=(fields.get("parent") or {}).get("key"),
                 links=links,
                 comments=comments,
-                changelog=_changelog(issue, bundle),
+                changelog=history,
                 refs=bundle.refs.collect(
                     text_refs, [link.target for link in links], self_keys=[key]
                 ),
@@ -258,6 +271,9 @@ def map_issues(issues: Iterable[dict[str, Any]]) -> Bundle:
         "comments": sum(len(wi.comments) for wi in bundle.workitems),
         "changelog_entries": sum(len(wi.changelog) for wi in bundle.workitems),
         "truncated_changelogs": truncated_changelogs,
+        "link_types": dict(link_types.most_common()),
+        "changelog_fields": dict(changelog_fields.most_common()),
+        "changelog_remote_issue_link_noise": changelog_fields["RemoteIssueLink"],
         "workitems_with_any_text_issue_mention": any_text_mention,
         "pct_workitems_with_any_text_issue_mention": round(100 * any_text_mention / n, 1),
         "workitems_with_text_only_issue_ref": text_only,

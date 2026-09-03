@@ -44,6 +44,12 @@ def test_the_jira_macro_key_stays_a_word_the_regex_can_find():
     assert " KAFKA-20186" in f" {storage_to_markdown(storage)}"
 
 
+def test_a_user_macro_becomes_a_mention_the_regexes_can_see():
+    storage = '<p>thanks <ac:link><ri:user ri:userkey="073590d2893a" /></ac:link></p>'
+
+    assert "@073590d2893a" in storage_to_markdown(storage)
+
+
 def test_an_internal_page_link_becomes_its_target_title():
     storage = '<p>see <ac:link><ri:page ri:content-title="KIP-848: Next Gen" /></ac:link></p>'
 
@@ -113,7 +119,35 @@ def test_two_real_kips_sharing_a_number_are_decided_by_body_and_flagged_ambiguou
 
     assert keys["1001"] == "KIP-1001"  # the longer body
     assert decisions[0]["ambiguous"] is True
+    assert decisions[0]["decided_by"] == "body_length"
     assert decisions[0]["variants"] == [{"id": "1000", "title": "KIP-1001: Metric A"}]
+
+
+def test_the_report_names_every_ambiguous_collision_and_labels_the_demoted_page():
+    bundle = map_pages(
+        [
+            page("1000", "KIP-1001: Metric A"),
+            page("1001", "KIP-1001: Metric B", body="<p>a longer body</p>"),
+        ]
+    )
+    demoted = next(d for d in bundle.documents if d.id == "confluence:1000")
+
+    assert demoted.labels == ["kip-variant", "ambiguous-kip"]
+    assert bundle.stats["kip_key"]["ambiguous_kips"] == [
+        {
+            "key": "KIP-1001",
+            "canonical_page_id": "1001",
+            "demoted_page_id": "1000",
+            "titles": {"canonical": "KIP-1001: Metric B", "demoted": "KIP-1001: Metric A"},
+        }
+    ]
+
+
+def test_a_marker_decision_is_not_ambiguous_and_says_which_term_decided():
+    _, (_, decisions) = collision("[DRAFT] KIP-9: a", "KIP-9: a")
+
+    assert decisions[0]["ambiguous"] is False
+    assert decisions[0]["decided_by"] == "starts_with_key"
 
 
 def test_a_variant_becomes_a_page_that_points_at_the_canonical_key():
@@ -128,7 +162,8 @@ def test_a_variant_becomes_a_page_that_points_at_the_canonical_key():
     assert (canonical.key, canonical.kind) == ("KIP-848", "KIP")
     assert (variant.key, variant.kind) == ("confluence:2", "Page")
     assert "kip-variant" in variant.labels
-    assert variant.ancestors[-1] == "KIP-848"
+    assert variant.kip_of == "KIP-848"
+    assert variant.ancestors == []  # `ancestors` stays the page tree, nothing else
 
 
 def test_a_page_without_a_number_is_a_page_keyed_by_id():
@@ -147,15 +182,16 @@ def test_the_space_form_is_reported_but_not_accepted_as_a_key():
     ]
 
 
-def test_ancestors_are_document_keys_not_raw_page_ids():
+def test_ancestors_are_deduplicated_document_keys_not_raw_page_ids():
     bundle = map_pages(
         [
             page("1", "KIP-1: parent"),
-            page("2", "KIP-2: child", ancestors=[{"id": "1"}, {"id": "999"}]),
+            page("2", "KIP-2: child", ancestors=[{"id": "1"}, {"id": "999"}, {"id": "1"}]),
         ]
     )
 
     assert bundle.documents[1].ancestors == ["KIP-1", "confluence:999"]
+    assert bundle.documents[1].kip_of is None
 
 
 # --------------------------------------------------------------------------- bodies, refs

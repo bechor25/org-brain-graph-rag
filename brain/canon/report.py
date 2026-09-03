@@ -29,12 +29,26 @@ from pydantic import BaseModel
 from brain.canon.mappers.base import Bundle
 from brain.harvest.base import utc_now_iso, write_json_atomic
 
-#: The one page in the corpus whose Confluence body is genuinely empty (harvest §3.2).
-EMPTY_BODY_ALLOWED = {"KIP-929"}
+#: The one page in the corpus whose Confluence body is genuinely empty: `KIP-929 :
+#: Observer Replicas`. Keyed on the page id, not the KIP key — a key is a mapping
+#: decision this very step makes, and could move to a different page tomorrow.
+EMPTY_BODY_ALLOWED = {"confluence:255070191"}
 
 #: The step brief's threshold, on the metric the probe actually measured: work items
 #: whose text mentions another issue key at all.
 ANY_TEXT_MENTION_TARGET_PCT = 20.0
+
+#: Things a reader of this report should know that are not defects and not counts.
+NOTES = [
+    "Confluence identities fall back username -> displayName slug if `userKey` is "
+    "missing; in this corpus it never is (0 of 2,782 identity records), so the fallback "
+    "is untested against real data.",
+    "canon holds one source's raw records in memory at a time (~230 MB for Confluence). "
+    "It is bounded by the largest source, not by the corpus, but it is not streaming: a "
+    "corpus an order of magnitude larger needs a chunked mapper.",
+    "WorkItem.type is passed through as the source spells it (Bug / Sub-task / "
+    "New Feature). Normalizing to the graph's closed set is `brain load`'s job.",
+]
 
 
 def _counts(records: dict[str, list[BaseModel]]) -> dict[str, Any]:
@@ -65,7 +79,7 @@ def _checks(
     changes = records["changes"]
 
     no_component = [w.key for w in workitems if not w.components]
-    empty_body = [d.key for d in documents if not d.body_md and d.key not in EMPTY_BODY_ALLOWED]
+    empty_body = [d.key for d in documents if not d.body_md and d.id not in EMPTY_BODY_ALLOWED]
     no_at = [c.id for c in changes if c.at is None]
     n = len(workitems) or 1
     # "Mentioned in text at all" cannot be recovered from the written records — a mention
@@ -142,6 +156,7 @@ def build_report(
     bundles: dict[str, Bundle],
     *,
     records: dict[str, list[BaseModel]],
+    carried_over: dict[str, dict[str, int]],
     slices: dict[str, dict[str, Any]],
     sources: Sequence[str],
     durations: dict[str, float],
@@ -165,6 +180,9 @@ def build_report(
             "per_source_s": durations,
         },
         "counts": _counts(records),
+        # What this run kept rather than built. On a full run it is all zeros; on
+        # `--source git` it is every Jira and Confluence record still on disk.
+        "carried_over": carried_over,
         "dedupe": _merge_source_blocks(existing, "dedupe", slices),
         "source_stats": _merge_source_blocks(existing, "source_stats", stats),
         # `existing["refs"]` is already a built block, so the merge reaches into its
@@ -187,6 +205,7 @@ def build_report(
             "counts": dict(Counter(w["code"] for w in warnings).most_common()),
             "sample": warnings[:50],
         },
+        "notes": NOTES,
         "limitations": sorted(
             {line for b in bundles.values() for line in b.stats.get("limitations", [])}
             | set((existing or {}).get("limitations") or [])

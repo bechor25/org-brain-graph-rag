@@ -1,6 +1,7 @@
 {
  "id": "32efc1cd09817b4eb1de19b789949abc0b7b9f89",
  "kind": "commit",
+ "pr": "pr:21175",
  "message": "KAFKA-19755 Move KRaftClusterTest from core module to server module [3/4] (#21175)\n\nMove KRaftClusterTest from core module to server module.\nRewrite\n- testCreateClusterAndPerformReassignment\n- testIncrementalAlterConfigs\n- testSetLog4jConfigurations\n- testCreatePartitions\n- testDescribeQuorumRequestToBrokers\n- testDescribeQuorumRequestToControllers\n- testUpdateMetadataVersion\n- testDescribeKRaftVersion\n- testCreateClusterAndCreateTopicWithRemoteLogManagerInstantiation\n\nReviewers: Chia-Ping Tsai <chia7712@gmail.com>",
  "author_name": "Lan Ding",
  "author_email": "isding_l@163.com",
@@ -13,11 +14,6 @@
   {
    "kind": "issue",
    "key": "KAFKA-19755",
-   "via": "text"
-  },
-  {
-   "kind": "pr",
-   "key": "21175",
    "via": "text"
   }
  ],
