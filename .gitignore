@@ -5,3 +5,6 @@ __pycache__/
 *.pyc
 .env
 .DS_Store
+.ruff_cache/
+.pytest_cache/
+*.egg-info/

@@ -1,0 +1,40 @@
+[project]
+name = "brain"
+version = "0.1.0"
+description = "Organizational brain — Graph RAG POC (Kafka corpus, Neo4j, local embeddings, agents as LLM)"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+  "typer>=0.12",
+  "pydantic>=2.7",
+  "pydantic-settings>=2.3",
+  "neo4j>=5.23",
+  "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "respx>=0.21", "ruff>=0.5"]
+local-embed = ["sentence-transformers>=3.0"]
+
+[project.scripts]
+brain = "brain.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["brain"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["live: needs running Neo4j and/or Ollama (docker compose up + ollama serve)"]
+addopts = "-m 'not live'"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+# docs/ is prose; ruff also formats Python blocks inside Markdown, which we do not want.
+extend-exclude = ["docs"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
