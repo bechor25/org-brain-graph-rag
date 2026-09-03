@@ -105,3 +105,16 @@ def test_a_lowercase_key_in_a_browse_url_is_normalized_too():
 
 def test_kip_is_still_not_an_issue_in_any_case():
     assert keys("kip-848") == [("kip", "KIP-848")]
+
+
+def test_a_lowercase_key_in_a_hostname_or_port_is_not_an_issue():
+    """`kafka-2` in a broker address is a pod, not KAFKA-2."""
+    text = (
+        "Error connecting to node kafka-2.kafka.myproject.svc.cluster.local "
+        "with quorum.voters=1@kafka-1:9092 — unlike kafka-15123, which is an issue."
+    )
+    assert keys(text) == [("issue", "KAFKA-15123")]
+
+
+def test_an_uppercase_key_is_never_judged_by_what_follows_it():
+    assert keys("KAFKA-15123:fix the thing") == [("issue", "KAFKA-15123")]

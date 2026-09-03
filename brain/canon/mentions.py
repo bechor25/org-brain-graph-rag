@@ -25,6 +25,11 @@ _KIP = re.compile(r"\bKIP-(\d+)\b", re.IGNORECASE)
 _PR = re.compile(r"(?<![\w/#])#(\d{1,7})\b")
 _URL = re.compile(r"https?://[^\s)\]>\"']+")
 _USER = re.compile(r"(?<![\w.])@([A-Za-z0-9_.-]+)")
+#: What follows a key in a hostname, port or config value rather than in prose:
+#: `kafka-2.kafka.svc`, `1@kafka-1:9092`, `kafka-3/data`. Only lowercase-spelled matches
+#: are judged by it — nobody writes a hostname in caps, and `KAFKA-15123: fix` is prose.
+_HOST_CONTEXT = re.compile(r"[.:/@-][A-Za-z0-9]")
+
 #: Jira's own mention syntax, as it appears in descriptions and comments: `[~jrao]`.
 _JIRA_USER = re.compile(r"\[~([A-Za-z0-9_.-]+)\]")
 
@@ -85,7 +90,10 @@ def extract_refs(text: str, *, allowlist: Collection[str] = ISSUE_PROJECT_ALLOWL
     masked = _URL.sub(lambda m: " " * len(m.group(0)), text)
 
     for m in _ISSUE.finditer(masked):
-        if m.group(1).upper() == "KIP":
+        project = m.group(1)
+        if project.upper() == "KIP":
+            continue
+        if project != project.upper() and _HOST_CONTEXT.match(masked, m.end()):
             continue
         found.append((m.start(), Ref(kind="issue", key=_issue_key(*m.groups(), allowed))))
     for m in _KIP.finditer(masked):
