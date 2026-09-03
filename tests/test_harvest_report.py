@@ -187,7 +187,7 @@ def test_a_since_run_does_not_overwrite_density_with_the_narrow_slice(tmp_path):
 def test_summary_mentions_every_source_and_the_density_table(tmp_path):
     report = build_report(
         {
-            "jira": result("jira", stats={"issues": 1416, "pct_with_changelog": 100.0}),
+            "jira": result("jira", stats={"issues": 1416, "pct_changelog_expanded": 100.0}),
             "confluence": result("confluence", stats={"pages": 1391}),
             "git": result("git", stats={"commits": 6107, "with_issue_key": 4069}),
         },
