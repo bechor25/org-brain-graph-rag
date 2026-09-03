@@ -1,0 +1,4 @@
+{"id":"jira:component:clients","source":"jira","kind":"component","name":"clients","parent":null,"synthetic":false}
+{"id":"jira:component:streams","source":"jira","kind":"component","name":"streams","parent":null,"synthetic":false}
+{"id":"jira:component:connect","source":"jira","kind":"component","name":"connect","parent":null,"synthetic":false}
+{"id":"jira:version:3.7.0","source":"jira","kind":"version","name":"3.7.0","parent":null,"synthetic":false}
