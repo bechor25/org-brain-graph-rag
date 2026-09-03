@@ -31,3 +31,21 @@ def test_version(runner):
     result = runner.invoke(app, ["version"])
     assert result.exit_code == 0
     assert result.output.strip() == "0.1.0"
+
+
+def test_canon_error_goes_to_stderr(runner, tmp_path, monkeypatch):
+    """A refusal to write must not land in stdout, which a caller may be piping."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    (tmp_path / "canonical").mkdir(parents=True)
+    (tmp_path / "canonical" / "workitems.jsonl").write_text("{not json\n", encoding="utf-8")
+    (tmp_path / "raw" / "jira").mkdir(parents=True)
+    (tmp_path / "raw" / "jira" / "issues-0000.json").write_text('{"issues": []}', encoding="utf-8")
+    (tmp_path / "raw" / "jira" / "checkpoint.json").write_text(
+        '{"source": "jira", "files": ["issues-0000.json"], "done": true}', encoding="utf-8"
+    )
+
+    result = runner.invoke(app, ["canon", "--source", "jira"])
+
+    assert result.exit_code == 1
+    assert "canon:" not in result.stdout
+    assert "canon:" in result.stderr

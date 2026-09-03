@@ -113,7 +113,8 @@ def canon(
         )
     except CanonError as exc:
         # A refusal to write, not a crash: the message says what to do about it.
-        typer.echo(f"canon: {exc}", err=False)
+        # On stderr, so a caller piping stdout still sees why nothing was written.
+        typer.echo(f"canon: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     raise typer.Exit(code=code)
 

@@ -43,9 +43,11 @@ NOTES = [
     "Confluence identities fall back username -> displayName slug if `userKey` is "
     "missing; in this corpus it never is (0 of 2,782 identity records), so the fallback "
     "is untested against real data.",
-    "canon holds one source's raw records in memory at a time (~230 MB for Confluence). "
-    "It is bounded by the largest source, not by the corpus, but it is not streaming: a "
-    "corpus an order of magnitude larger needs a chunked mapper.",
+    "canon is not streaming: the raw records of the source being mapped, every record "
+    "it produces, and every record carried over from the existing files are all live at "
+    "once. Measured peak RSS on the full `--source all` run is ~644 MB — well above the "
+    "~230 MB the largest single source (Confluence) holds — so the ceiling is the whole "
+    "corpus, not one source. A corpus an order of magnitude larger needs a chunked mapper.",
     "WorkItem.type is passed through as the source spells it (Bug / Sub-task / "
     "New Feature). Normalizing to the graph's closed set is `brain load`'s job.",
 ]
