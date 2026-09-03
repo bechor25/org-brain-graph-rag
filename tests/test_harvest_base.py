@@ -179,3 +179,14 @@ def test_signature_is_stable_and_query_sensitive():
     c = signature_of({"jql": "project = FLINK", "max": 500})
     assert a == b
     assert a != c
+
+
+def test_every_connector_satisfies_the_protocol(tmp_path):
+    """The Connector protocol is the contract; keep it load-bearing, not decorative."""
+    from brain.harvest.base import Connector
+    from brain.harvest.confluence import ConfluenceConnector
+    from brain.harvest.git import GitConnector
+    from brain.harvest.jira import JiraConnector
+
+    for cls in (JiraConnector, ConfluenceConnector, GitConnector):
+        assert isinstance(cls(tmp_path), Connector), cls.__name__

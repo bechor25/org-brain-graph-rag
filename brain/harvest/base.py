@@ -175,7 +175,6 @@ class HarvestResult:
     errors: list[dict[str, Any]] = field(default_factory=list)
     checkpoint: dict[str, Any] = field(default_factory=dict)
     stats: dict[str, Any] = field(default_factory=dict)
-    skipped: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -185,7 +184,6 @@ class HarvestResult:
             "errors": self.errors,
             "checkpoint": self.checkpoint,
             "stats": self.stats,
-            "skipped": self.skipped,
         }
 
 
