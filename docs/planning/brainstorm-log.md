@@ -33,3 +33,5 @@
 ## Self-review של ה-spec (2026-09-03)
 
 תוקן inline: אחידות נתיבי batches בין סעיף 1 ל-3; `:Claim` שלא הוגדר → `relations`; מפתחות בדוגמאות השאלות סומנו כהמחשה; `synthetic_truth.json` נוסף כ-ground truth מכונה-קריא; הובהר מי כותב Cypher במצב A/B; כלי `lesson-writer`; אימות GDS ב-`brain doctor`; פסקת Scope בראש המסמך.
+
+**תיקון (writing-plans):** Neo4j Community ללא RBAC → `brain_ro` הוחלף ב-`RoutingControl.READ` (אכיפת השרת) + deny-list + EXPLAIN.

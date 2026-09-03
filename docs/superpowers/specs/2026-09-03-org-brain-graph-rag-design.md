@@ -186,7 +186,7 @@ harvest לפי `updated >= checkpoint`; canon/load idempotent; chunk לפי hash
 | S1 | Hybrid chunks (baseline) | `HybridRetriever` של neo4j-graphrag עם `Embedder` מותאם שעוטף את Ollama: vector + fulltext, RRF. בלי גרף | baseline לכל דבר; שאלות "מה כתוב על X" |
 | S2 | Graph-enhanced vector | `VectorCypherRetriever`: chunk → parent → הרחבה 1–2 hops (issues מקושרים, tests, commits, KIP) → הקשר מובנה | עקיבות כשהעוגן מעורפל |
 | S3 | Entity-anchored local | קישור ישויות: regex keys → lookup ישיר; אחרת embedding שאלה → top-k `Entity` → הרחבת שכונה עומק 2 (`MENTIONS/IMPLEMENTS/DEPENDS_ON/TESTS/…`), דירוג לפי degree + משקל קשת, chunks ראייתיים עם quotes | רציונל החלטות, השפעה |
-| S4 | Text2Cypher מוגן | הסוכן מקבל סכמה (`apoc.meta.schema`) + few-shot לכל סוג שאלה → Cypher. שומר: משתמש read-only `brain_ro`, deny-list (`CREATE/MERGE/DELETE/SET/REMOVE/CALL` פרט ל-allowlist), `EXPLAIN` לפני ריצה, timeout 10s, הזרקת `LIMIT` | אגרגציות ("מי הכי הרבה", "אילו רכיבים… עם…"), נקודת-זמן |
+| S4 | Text2Cypher מוגן | הסוכן מקבל סכמה (`apoc.meta.schema`) + few-shot לכל סוג שאלה → Cypher. שומר: ריצה במצב `READ` של הדרייבר (`RoutingControl.READ` — השרת דוחה כתיבה; Community Edition ללא RBAC), deny-list (`CREATE/MERGE/DELETE/SET/REMOVE/CALL` פרט ל-allowlist), `EXPLAIN` לפני ריצה, timeout 10s, הזרקת `LIMIT` | אגרגציות ("מי הכי הרבה", "אילו רכיבים… עם…"), נקודת-זמן |
 | S5 | Global (community reports) | embedding שאלה → top-k `Community` (vector) → מחזיר reports; ה-reduce נעשה ע"י הסוכן השואל (map-reduce של MS GraphRAG, בגרסה אגנטית) | תמטי/גלובלי |
 | S6 | Temporal tools | דטרמיניסטי: `status_at(key, date)` מ-`StatusChange`; `timeline(key)`; `changes_between(component, v1, v2)` מ-`FIX_VERSION + RESOLVES + StatusChange`; `assignees_over_time(key)` מ-`valid_from/to` | טמפורלי |
 
@@ -221,7 +221,7 @@ Transport: stdio ל-Claude Code (`.mcp.json` בפרויקט) + streamable HTTP �
 
 ### 4.5 אבטחה (מודול 10)
 
-`run_cypher` רק דרך `brain_ro` (read-only); deny-list + `EXPLAIN` + timeout + `LIMIT`; לוג של כל Cypher שנוצר. הרשאות ברמת צומת (`acl_groups[]` + פילטר בכל שאילתה) — מחוץ ל-scope, מתועד כ-hook עתידי ב-ADR.
+`run_cypher` רק במצב `READ` של הדרייבר (אכיפה בצד השרת; ב-Community אין משתמש read-only); deny-list + `EXPLAIN` + timeout + `LIMIT`; לוג של כל Cypher שנוצר. הרשאות ברמת צומת (`acl_groups[]` + פילטר בכל שאילתה) — מחוץ ל-scope, מתועד כ-hook עתידי ב-ADR.
 
 
 ## סעיף 5 — הערכה ✅ מאושר
@@ -340,5 +340,5 @@ Transport: stdio ל-Claude Code (`.mcp.json` בפרויקט) + streamable HTTP �
 - **embedding:** שם המודל והמימד נשמרים ב-metadata של האינדקס; אי-התאמה בזמן שאילתה = שגיאה קשה (לא fallback שקט). Ollama לא זמין → fallback ל-sentence-transformers **רק עם אותו מודל**, עם אזהרה בדוח.
 - **cypher guard:** דחייה עם סיבה מובנית; לוג של כל Cypher שנדחה (חומר ל-few-shot).
 - **MCP:** כלי מחזיר `{error, hint}` מובנה, לא exception; timeout לכל כלי.
-- **דטרמיניזם:** seed קבוע לייצור סינתטי; גרסאות מוצמדות; `brain doctor` בודק Neo4j, plugins (APOC/GDS), Ollama, מודל ומימד, משתמש `brain_ro`.
+- **דטרמיניזם:** seed קבוע לייצור סינתטי; גרסאות מוצמדות; `brain doctor` בודק Neo4j, plugins (APOC/GDS), Ollama, מודל ומימד, ושהשרת אכן דוחה כתיבה במצב READ.
 
