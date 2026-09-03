@@ -1,0 +1,838 @@
+{
+  "probe_date": "2026-09-03",
+  "step": "01-probe (Plan 1)",
+  "agent": "brain-ingest-engineer",
+  "mode": "read-only, anonymous, no credentials",
+  "jira": {
+    "base_url": "https://issues.apache.org/jira",
+    "anonymous_access": true,
+    "serverInfo": {
+      "endpoint": "/rest/api/2/serverInfo",
+      "status": 200,
+      "version": "8.20.10",
+      "deploymentType": "Server",
+      "buildNumber": 820010,
+      "buildDate": "2022-06-22T00:00:00.000+0000",
+      "serverTitle": "ASF Jira",
+      "X-AUSERNAME": "anonymous"
+    },
+    "search_endpoint": "/rest/api/2/search (GET)",
+    "counts": {
+      "kafka_3components_window": {
+        "jql": "project = KAFKA AND component in (streams, \"connect\", clients) AND created >= \"2023-01-01\" AND created <= \"2025-12-31\"",
+        "status": 200,
+        "total": 1416
+      },
+      "kafka_streams_window": {
+        "jql": "project = KAFKA AND component = streams AND created >= \"2023-01-01\" AND created <= \"2025-12-31\"",
+        "status": 200,
+        "total": 509
+      },
+      "kafka_connect_window": {
+        "jql": "project = KAFKA AND component = \"connect\" AND created >= \"2023-01-01\" AND created <= \"2025-12-31\"",
+        "status": 200,
+        "total": 242
+      },
+      "kafka_clients_window": {
+        "jql": "project = KAFKA AND component = clients AND created >= \"2023-01-01\" AND created <= \"2025-12-31\"",
+        "status": 200,
+        "total": 686
+      },
+      "kafka_all_window": {
+        "jql": "project = KAFKA AND created >= \"2023-01-01\" AND created <= \"2025-12-31\"",
+        "status": 200,
+        "total": 5463
+      },
+      "kafka_all_ever": {
+        "jql": "project = KAFKA",
+        "status": 200,
+        "total": 19737
+      },
+      "flink_window": {
+        "jql": "project = FLINK AND created >= \"2023-01-01\"",
+        "status": 200,
+        "total": 9994
+      }
+    },
+    "limits": {
+      "maxResults_probe": {
+        "100": {
+          "status": 200,
+          "maxResults_echoed": 100,
+          "issues_returned": 100
+        },
+        "200": {
+          "status": 200,
+          "maxResults_echoed": 200,
+          "issues_returned": 200
+        },
+        "1000": {
+          "status": 200,
+          "maxResults_echoed": 1000,
+          "issues_returned": 509
+        }
+      },
+      "maxResults_probe_large": {
+        "1000": {
+          "status": 200,
+          "maxResults_echoed": 1000,
+          "issues_returned": 1000,
+          "total": 5463
+        },
+        "2000": {
+          "status": 200,
+          "maxResults_echoed": 1000,
+          "issues_returned": 1000,
+          "total": 5463
+        }
+      },
+      "hard_cap_maxResults": 1000,
+      "rate_limit_headers_seen": null,
+      "http_429_seen": false,
+      "observed_pacing": "1.2-1.5s sleep between calls; no throttling observed over ~25 calls"
+    },
+    "gotchas": [
+      "'connect' is a reserved JQL word -> component = \"connect\" must be quoted, else HTTP 400",
+      "Anonymous reads work; Set-Cookie atlassian.xsrf.token returned but not required for GET"
+    ],
+    "expand_verification": {
+      "changelog_in_search": "FULL - not truncated",
+      "comments_in_search": "FULL - not truncated",
+      "evidence": {
+        "search_max_histories": {
+          "count": 113,
+          "key": "KAFKA-19479"
+        },
+        "search_max_comments": {
+          "count": 33,
+          "key": "KAFKA-19259"
+        },
+        "issue_endpoint_KAFKA-19479": {
+          "status": 200,
+          "changelog_histories": 113,
+          "changelog_total": 113,
+          "changelog_maxResults": 113,
+          "comment_returned": 9,
+          "comment_total": 9
+        },
+        "issue_endpoint_KAFKA-19259": {
+          "status": 200,
+          "changelog_histories": 39,
+          "changelog_total": 39,
+          "changelog_maxResults": 39,
+          "comment_returned": 33,
+          "comment_total": 33
+        }
+      },
+      "conclusion": "/search with expand=changelog and fields=comment returns complete changelog and comments; no per-issue /issue/{key} fetch needed"
+    },
+    "sample": {
+      "size_per_component": 100,
+      "total_issues_fetched": 300,
+      "order": "created DESC",
+      "window": "created >= \"2023-01-01\" AND created <= \"2025-12-31\"",
+      "fields": "summary,description,comment,issuelinks,components,fixVersions,versions,status,issuetype,priority,assignee,reporter,created,updated,labels,parent",
+      "expand": "changelog",
+      "raw_files": [
+        "sample_streams.json",
+        "sample_connect.json",
+        "sample_clients.json"
+      ],
+      "raw_dir": "/private/tmp/claude-501/-Users-bechorsimhaevness-Desktop-code-graph-rag/f18df721-caa2-4800-a86b-674b88f22f10/scratchpad/probe/"
+    },
+    "density": {
+      "streams": {
+        "sample_size": 100,
+        "pct_with_description": 98.0,
+        "pct_mentioning_KIP_any_text": 17.0,
+        "pct_mentioning_KIP_summary_or_description": 15.0,
+        "pct_with_formal_issuelink": 38.0,
+        "avg_issuelinks_per_issue": 0.46,
+        "reciprocal_inward_links": 22,
+        "link_types_top": [
+          [
+            "Reference",
+            13
+          ],
+          [
+            "Problem/Incident",
+            10
+          ],
+          [
+            "Completes",
+            6
+          ],
+          [
+            "Testing",
+            4
+          ],
+          [
+            "Duplicate",
+            3
+          ],
+          [
+            "Blocker",
+            3
+          ],
+          [
+            "Cloners",
+            2
+          ],
+          [
+            "Related",
+            1
+          ],
+          [
+            "Regression",
+            1
+          ],
+          [
+            "dependent",
+            1
+          ]
+        ],
+        "avg_comments_per_issue": 2.77,
+        "total_comments": 277,
+        "pct_with_changelog_histories": 100.0,
+        "avg_status_transitions_per_issue": 1.59,
+        "pct_with_assignee": 86.0,
+        "pct_with_fixVersions": 56.0,
+        "pct_with_affectedVersions": 33.0,
+        "pct_with_parent": 28.0,
+        "pct_with_labels": 20.0,
+        "distinct_assignee_names": 32,
+        "issues_with_truncated_changelog": 0,
+        "issues_with_truncated_comments": 0,
+        "top10_issue_types": [
+          [
+            "Bug",
+            32
+          ],
+          [
+            "Sub-task",
+            28
+          ],
+          [
+            "Improvement",
+            23
+          ],
+          [
+            "Task",
+            8
+          ],
+          [
+            "Test",
+            8
+          ],
+          [
+            "Wish",
+            1
+          ]
+        ],
+        "top10_statuses": [
+          [
+            "Resolved",
+            79
+          ],
+          [
+            "Open",
+            14
+          ],
+          [
+            "Patch Available",
+            5
+          ],
+          [
+            "In Progress",
+            1
+          ],
+          [
+            "Closed",
+            1
+          ]
+        ],
+        "sample": 100,
+        "pct_with_matching_commit": 71.0,
+        "pct_text_mentions_other_KAFKA_key": 27.0,
+        "avg_textual_issue_refs_per_issue": 0.33
+      },
+      "connect": {
+        "sample_size": 100,
+        "pct_with_description": 93.0,
+        "pct_mentioning_KIP_any_text": 11.0,
+        "pct_mentioning_KIP_summary_or_description": 8.0,
+        "pct_with_formal_issuelink": 43.0,
+        "avg_issuelinks_per_issue": 0.66,
+        "reciprocal_inward_links": 36,
+        "link_types_top": [
+          [
+            "Reference",
+            32
+          ],
+          [
+            "Blocker",
+            15
+          ],
+          [
+            "Problem/Incident",
+            7
+          ],
+          [
+            "Completes",
+            5
+          ],
+          [
+            "Duplicate",
+            3
+          ],
+          [
+            "Issue split",
+            2
+          ],
+          [
+            "Cloners",
+            1
+          ],
+          [
+            "Testing",
+            1
+          ]
+        ],
+        "avg_comments_per_issue": 2.51,
+        "total_comments": 251,
+        "pct_with_changelog_histories": 91.0,
+        "avg_status_transitions_per_issue": 1.13,
+        "pct_with_assignee": 68.0,
+        "pct_with_fixVersions": 47.0,
+        "pct_with_affectedVersions": 50.0,
+        "pct_with_parent": 3.0,
+        "pct_with_labels": 21.0,
+        "distinct_assignee_names": 37,
+        "issues_with_truncated_changelog": 0,
+        "issues_with_truncated_comments": 0,
+        "top10_issue_types": [
+          [
+            "Bug",
+            47
+          ],
+          [
+            "Improvement",
+            28
+          ],
+          [
+            "Task",
+            9
+          ],
+          [
+            "New Feature",
+            6
+          ],
+          [
+            "Test",
+            5
+          ],
+          [
+            "Sub-task",
+            3
+          ],
+          [
+            "Wish",
+            2
+          ]
+        ],
+        "top10_statuses": [
+          [
+            "Resolved",
+            54
+          ],
+          [
+            "Open",
+            35
+          ],
+          [
+            "Patch Available",
+            7
+          ],
+          [
+            "In Progress",
+            3
+          ],
+          [
+            "Closed",
+            1
+          ]
+        ],
+        "sample": 100,
+        "pct_with_matching_commit": 46.0,
+        "pct_text_mentions_other_KAFKA_key": 29.0,
+        "avg_textual_issue_refs_per_issue": 0.33
+      },
+      "clients": {
+        "sample_size": 100,
+        "pct_with_description": 99.0,
+        "pct_mentioning_KIP_any_text": 21.0,
+        "pct_mentioning_KIP_summary_or_description": 17.0,
+        "pct_with_formal_issuelink": 19.0,
+        "avg_issuelinks_per_issue": 0.21,
+        "reciprocal_inward_links": 9,
+        "link_types_top": [
+          [
+            "Reference",
+            13
+          ],
+          [
+            "Completes",
+            3
+          ],
+          [
+            "Blocker",
+            2
+          ],
+          [
+            "Duplicate",
+            2
+          ],
+          [
+            "Problem/Incident",
+            1
+          ]
+        ],
+        "avg_comments_per_issue": 3.49,
+        "total_comments": 349,
+        "pct_with_changelog_histories": 97.0,
+        "avg_status_transitions_per_issue": 1.5,
+        "pct_with_assignee": 85.0,
+        "pct_with_fixVersions": 52.0,
+        "pct_with_affectedVersions": 44.0,
+        "pct_with_parent": 4.0,
+        "pct_with_labels": 39.0,
+        "distinct_assignee_names": 41,
+        "issues_with_truncated_changelog": 0,
+        "issues_with_truncated_comments": 0,
+        "top10_issue_types": [
+          [
+            "Bug",
+            44
+          ],
+          [
+            "Improvement",
+            35
+          ],
+          [
+            "Test",
+            8
+          ],
+          [
+            "Task",
+            5
+          ],
+          [
+            "Sub-task",
+            4
+          ],
+          [
+            "New Feature",
+            3
+          ],
+          [
+            "Wish",
+            1
+          ]
+        ],
+        "top10_statuses": [
+          [
+            "Resolved",
+            63
+          ],
+          [
+            "Open",
+            28
+          ],
+          [
+            "Patch Available",
+            7
+          ],
+          [
+            "In Progress",
+            2
+          ]
+        ],
+        "sample": 100,
+        "pct_with_matching_commit": 53.0,
+        "pct_text_mentions_other_KAFKA_key": 27.0,
+        "avg_textual_issue_refs_per_issue": 0.36
+      }
+    },
+    "identity_noise": {
+      "distinct_usernames_assignee_or_reporter": 152,
+      "usernames_with_multiple_displayName_forms": 0,
+      "examples": {},
+      "usernames_differing_from_displayName": 142,
+      "displayNames_shared_by_multiple_usernames": {
+        "Pritam Kumar": [
+          "kumarpritam863",
+          "kumarpritam8634"
+        ]
+      }
+    },
+    "alternative_components_window_2023_2025": {
+      "core": 265,
+      "consumer": 522,
+      "producer": 0,
+      "admin": 45,
+      "kraft": 175,
+      "group-coordinator": 58,
+      "controller": 52,
+      "docs": 47,
+      "security": 34,
+      "metrics": 34,
+      "tools": 65,
+      "mirrormaker": 90
+    },
+    "component_overlaps": {
+      "clients_AND_consumer": 486,
+      "streams_clients_consumer": 1214,
+      "streams_clients_connect_consumer": 1446,
+      "streams_AND_clients": 14
+    },
+    "component_overlap_note": "consumer is 93% a subset of clients (486 of 522 carry both) -> swapping connect for consumer would add only ~36 net issues while removing 242. streams AND clients overlap = 14. Keep streams/connect/clients.",
+    "text_volume": {
+      "description_chars": {
+        "n": 290,
+        "avg": 1330,
+        "median": 602,
+        "p90": 3192
+      },
+      "comment_chars": {
+        "n": 877,
+        "avg": 494,
+        "median": 181,
+        "p90": 1215
+      },
+      "distinct_KIPs_referenced_by_300_issue_sample": 41
+    }
+  },
+  "confluence": {
+    "base_url": "https://cwiki.apache.org/confluence",
+    "anonymous_access": true,
+    "login_redirect": false,
+    "counts": {
+      "kafka_KIP_pages": {
+        "status": 200,
+        "cql": "space=KAFKA and type=page and title ~ \"KIP-\"",
+        "totalSize": 1391,
+        "size": 1
+      },
+      "flink_FLIP_pages": {
+        "status": 200,
+        "cql": "space=FLINK and type=page and title ~ \"FLIP-\"",
+        "totalSize": 609,
+        "size": 1
+      }
+    },
+    "kip_index_page": {
+      "status": 200,
+      "id": "50859233",
+      "title": "Kafka Improvement Proposals",
+      "body_chars": 258732,
+      "version": 3939,
+      "distinct_KIP_numbers_in_body": 1158,
+      "confluence_link_titles_KIP": 655,
+      "anchor_text_KIP_matches": 504
+    },
+    "sample_pages": {
+      "KIP-848": {
+        "status": 200,
+        "id": "217387038",
+        "redirect_location": null,
+        "title": "KIP-848: The Next Generation of the Consumer Rebalance Protocol",
+        "body_chars": 194589,
+        "body_plaintext_chars_approx": 109832,
+        "version_number": 126,
+        "version_when": "2026-06-10T07:52:40.000Z",
+        "created_when": "2022-06-14T09:18:57.000Z",
+        "author_key": "dajac",
+        "author_display": "David Jacot",
+        "ancestors": [
+          "Index",
+          "Kafka Improvement Proposals"
+        ],
+        "labels": [],
+        "kafka_keys_found": [
+          "KAFKA-14048",
+          "KAFKA-17747",
+          "KAFKA-18327",
+          "KAFKA-18328",
+          "KAFKA-18329"
+        ],
+        "kafka_keys_count": 5,
+        "kip_refs_in_body": 12
+      },
+      "KIP-932": {
+        "status": 200,
+        "id": "255070434",
+        "redirect_location": null,
+        "title": "KIP-932: Queues for Kafka",
+        "body_chars": 280529,
+        "body_plaintext_chars_approx": 157337,
+        "version_number": 138,
+        "version_when": "2026-01-26T10:41:12.000Z",
+        "created_when": "2023-05-15T06:57:44.000Z",
+        "author_key": "schofielaj",
+        "author_display": "Andrew Schofield",
+        "ancestors": [
+          "Index",
+          "Kafka Improvement Proposals"
+        ],
+        "labels": [],
+        "kafka_keys_found": [
+          "KAFKA-16092"
+        ],
+        "kafka_keys_count": 1,
+        "kip_refs_in_body": 9
+      },
+      "KIP-2024": {
+        "status": 200,
+        "id": "294816709",
+        "redirect_location": null,
+        "title": "KIP-1027: Add MockFixedKeyProcessorContext and TestFixedKeyRecordFactory",
+        "body_chars": 7684,
+        "body_plaintext_chars_approx": 5060,
+        "version_number": 5,
+        "version_when": "2026-08-28T02:33:13.000Z",
+        "created_when": "2024-03-09T03:16:43.000Z",
+        "author_key": "mjsax",
+        "author_display": "Matthias J. Sax",
+        "ancestors": [
+          "Index",
+          "Kafka Improvement Proposals"
+        ],
+        "labels": [],
+        "kafka_keys_found": [
+          "KAFKA-15143"
+        ],
+        "kafka_keys_count": 1,
+        "kip_refs_in_body": 2
+      }
+    },
+    "bulk_body_sample": {
+      "http_status": 200,
+      "sampled_pages": 50,
+      "avg_body_storage_chars": 27671,
+      "median_body_storage_chars": 16820,
+      "min_chars": 2902,
+      "max_chars": 185748,
+      "avg_plaintext_chars": 17032,
+      "median_plaintext_chars": 10702,
+      "pct_pages_mentioning_KAFKA_key": 98.0,
+      "avg_distinct_KAFKA_keys_per_page": 1.46,
+      "note": "CQL search supports expand=body.storage -> bulk body fetch works (25/page)"
+    },
+    "gotchas": [
+      "CQL /rest/api/content/search supports expand=body.storage -> 25 full bodies per call (bulk harvest OK)",
+      "KIP page template contains placeholder link 'browse/KAFKA-1' ('Change the link from KAFKA-1 to your own ticket') - 4/25 pages in sample. KAFKA-1 must be blacklisted as a mention",
+      "metadata.labels was empty on all 3 inspected pages - labels are not a usable signal",
+      "history.createdBy.username is the ASF username (dajac, schofielaj, mjsax) - same namespace as Jira 'name' -> free identity join"
+    ]
+  },
+  "git": {
+    "clone": {
+      "cmd": "git clone --filter=blob:none --no-checkout --shallow-since=2023-01-01 https://github.com/apache/kafka data/raw/git/kafka",
+      "status": "success",
+      "path": "data/raw/git/kafka",
+      "size_on_disk": "27M",
+      "default_branch": "trunk",
+      "gitignored": true,
+      "note": "trees present despite blob:none -> git log --name-only works offline (12s / 500 commits)"
+    },
+    "commits_since_2023_01_01": {
+      "total": 7468,
+      "per_year": {
+        "2023": 1474,
+        "2024": 2448,
+        "2025": 2185,
+        "2026": 1361
+      },
+      "with_KAFKA_key": 4949,
+      "with_KIP": 886,
+      "with_PR_number": 7384,
+      "distinct_KAFKA_keys": 3975
+    },
+    "commits_window_2023_2025": {
+      "total": 6107,
+      "with_KAFKA_key": 4069,
+      "pct_with_KAFKA_key": 66.6,
+      "with_KIP": 662,
+      "pct_with_KIP": 10.8,
+      "with_PR_number": 6025,
+      "pct_with_PR_number": 98.7,
+      "KAFKA_key_commits_with_PR_number": 4032,
+      "pct_of_KAFKA_key_commits_with_PR": 99.1,
+      "distinct_KAFKA_keys": 3356
+    },
+    "identity_noise": {
+      "distinct_author_emails": 659,
+      "distinct_author_names": 607,
+      "distinct_name_email_pairs": 690,
+      "names_with_multiple_emails": 79,
+      "emails_with_multiple_names": 29,
+      "examples_names_with_3_emails": [
+        "jimmy",
+        "TengYao Chi",
+        "Kevin Wu",
+        "Jose Armando Garcia Sancio"
+      ]
+    },
+    "files_per_commit": {
+      "sample": 500,
+      "avg": 4.92,
+      "median": 2,
+      "p90": 11,
+      "p99": 36,
+      "max": 157,
+      "total_file_touch_edges_in_sample": 2458
+    }
+  },
+  "github_api": {
+    "endpoint": "https://api.github.com/repos/apache/kafka",
+    "status": 200,
+    "rate_limit": {
+      "x-ratelimit-limit": 60,
+      "x-ratelimit-remaining": 59,
+      "x-ratelimit-resource": "core",
+      "window": "per hour, unauthenticated"
+    },
+    "repo": {
+      "default_branch": "trunk",
+      "has_issues": false,
+      "open_issues_count": 534,
+      "stargazers": 33659,
+      "size_kb": 311329
+    },
+    "verdict": "PR metadata via REST API is NOT viable unauthenticated: 6025 PRs in window / 60 req per hour = ~100h. has_issues=false -> GitHub Issues disabled, Jira is the only tracker. Use commit messages ((#N) present on 98.7%) for the Commit->PR link instead of the API."
+  },
+  "azure_devops": {
+    "orgs_tried": [
+      "dnceng-public",
+      "azure-sdk",
+      "mseng",
+      "dotnet"
+    ],
+    "projects_api_result": {
+      "dnceng-public": {
+        "status": 302,
+        "redirect_to": "https://spsprodcus4.vssps.visualstudio.com/_signin?realm=dev.azure.com&reply_to="
+      },
+      "azure-sdk": {
+        "status": 302,
+        "redirect_to": "https://spsprodcus3.vssps.visualstudio.com/_signin?realm=dev.azure.com&reply_to="
+      },
+      "mseng": {
+        "status": 302,
+        "redirect_to": "https://spsprodwcus0.vssps.visualstudio.com/_signin?realm=dev.azure.com&reply_to"
+      },
+      "dotnet": {
+        "status": 302,
+        "redirect_to": "https://spsprodeus24.vssps.visualstudio.com/_signin?realm=dev.azure.com&reply_to"
+      }
+    },
+    "project_scoped_probes": [
+      {
+        "url": "https://dev.azure.com/dnceng-public/public/_apis/build/builds?api-version=7.1&$top=1",
+        "status": 200,
+        "note": "pipelines/builds ARE anonymous"
+      },
+      {
+        "url": "https://dev.azure.com/dnceng-public/public/_apis/wit/workitems?ids=1,2,3&api-version=7.1",
+        "status": 404,
+        "body_excerpt": "TF401232: Work item 1 does not exist, or you do not have permissions to read it."
+      },
+      {
+        "url": "https://dev.azure.com/dnceng-public/public/_apis/wit/wiql?api-version=7.1",
+        "method": "POST",
+        "status": 302,
+        "redirect_to": "spsprodcus4.vssps.visualstudio.com/_signin"
+      },
+      {
+        "url": "https://dev.azure.com/mseng/PipelineTools/_apis/wit/workitems?ids=1&api-version=7.1",
+        "status": 404,
+        "body_excerpt": "TF401232: ... or you do not have permissions to read it."
+      },
+      {
+        "url": "https://dev.azure.com/azure-sdk/public/_apis/wit/workitems?ids=1&api-version=7.1",
+        "status": 503,
+        "body_excerpt": "HTML error page"
+      },
+      {
+        "url": "https://dev.azure.com/dotnet/runtime/_apis/wit/workitems?ids=1&api-version=7.1",
+        "status": 302,
+        "redirect_to": "spsprodeus24.vssps.visualstudio.com/_signin"
+      }
+    ],
+    "verdict": "NO anonymous work-item access on any org tried. /_apis/projects 302-redirects to Entra sign-in; WIQL 302; workitems 404 TF401232. Only build/pipeline data on dnceng-public/public is anonymous. ADO is OUT for this POC without a PAT.",
+    "work_items_saved": false
+  },
+  "fallback_flink": {
+    "jira_FLINK_created_since_2023_01_01": 9994,
+    "jira_endpoint": "/rest/api/2/search",
+    "jira_status": 200,
+    "confluence_FLIP_pages": 609,
+    "confluence_status": 200,
+    "note": "Same Jira and same Confluence instance -> identical connectors, zero extra engineering. Viable fallback."
+  },
+  "errors_encountered": [
+    {
+      "where": "Jira JQL",
+      "error": "HTTP 400 - \"'connect' is a reserved JQL word\"",
+      "resolution": "quoted the component name; re-ran successfully"
+    },
+    {
+      "where": "Azure DevOps",
+      "error": "HTTP 302 to Entra sign-in on all 4 orgs for /_apis/projects",
+      "resolution": "none - anonymous work-item access does not exist"
+    },
+    {
+      "where": "Azure DevOps azure-sdk",
+      "error": "HTTP 503 HTML error page",
+      "resolution": "none"
+    }
+  ],
+  "corpus_estimate_window_2023_2025_3_components": {
+    "issues": 1416,
+    "issue_chunks": 1416,
+    "comments_est": 4139,
+    "comment_chunks": 4139,
+    "commits_est": "1000-1300",
+    "commit_chunks_est": 1200,
+    "kips_referenced_est": 194,
+    "kip_chunks_referenced_only": 1268,
+    "kips_all": 1391,
+    "kip_chunks_all": 9112,
+    "total_chunks_scoped": "~8000",
+    "total_chunks_all_kips": "~15900",
+    "assumptions": "4 chars/token, 650 tokens/chunk, 1 chunk per comment and per commit message"
+  },
+  "recommendation": {
+    "stay_with_kafka": true,
+    "components": "keep streams / connect / clients unchanged",
+    "harvest_window": "2023-01-01 .. 2025-12-31",
+    "kip_strategy": "fetch all 1391 raw (~56 calls); chunk+embed only the referenced ones (~194) in pass 1",
+    "github_token_needed": false,
+    "ado": "dropped - no anonymous work-item access",
+    "flink": "fallback only; same Jira + same Confluence, so connectors are identical",
+    "top_risks": [
+      "identity resolution noise (git)",
+      "template-placeholder mentions (KAFKA-1)",
+      "sparse deterministic connectivity, worst in clients (19%)"
+    ]
+  },
+  "operational_notes_for_harvest": [
+    "JQL: component = \"connect\" MUST be quoted (reserved word)",
+    "maxResults hard cap 1000; paginate with startAt",
+    "expand=changelog on /search returns full changelog - do NOT fetch per issue",
+    "Confluence: expand=body.storage on CQL search, limit=25",
+    "Jira returns both sides of an issuelink (inwardIssue/outwardIssue) - collapse to one edge on load",
+    "No GitHub token needed: PR number is in the commit subject for 98.7% of commits",
+    "Blacklist KAFKA-1 (KIP template placeholder, appeared on 4/25 sampled pages)"
+  ]
+}

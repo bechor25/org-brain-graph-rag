@@ -16,6 +16,19 @@
 | 0 | 8 mini fixtures | ✅ | 6eceb0b, 3fbc900 | 6 issues/1 KIP/3 persons/4 changes/4 containers; regex מוצא רק refs בטקסט — ה-PR חי ב-comment |
 | 0 | 9 agents | ✅ | 35235e2 | 15 סוכנים: 5 הנדסה (כל הכלים), 7 סוכני-LLM (`Read, Write, Glob` בלבד), analyst (`Read`), reviewer, lesson-writer |
 | 0 | 10 templates + README | ✅ | 8149f11 | README בעברית עם 5 עקרונות; `.env.example` תוקן |
+| 1 | 01 probe | ✅ | — | 1,416 issues, 1,391 KIPs, 6,107 commits; search מחזיר changelog מלא; ADO לא נגיש; `"connect"` מילה שמורה |
+| 1 | 02 harvest | ⬜ | | |
+| 1 | 03 canon | ⬜ | | |
+| 1 | 04 synthetic | ⬜ | | planner: לכתוב `synthetic_spec.md` לפני |
+| 1 | 05 load | ⬜ | | |
+| 1 | 06 chunk+embed | ⬜ | | |
+| 1 | 07 extract Phase A | ⬜ | | |
+| 1 | 08 resolve | ⬜ | | |
+| 1 | 09 communities | ⬜ | | |
+| 1 | 10 index + gate | ⬜ | | |
+
+## החלטת תהליך (2026-09-03, המשתמש)
+- מ-Plan 1 והלאה: התכנית = brief + חוזים + קריטריונים. **הסוכנים מתכננים וכותבים את הקוד**; המתכנן סוקר ומכריע. (ב-Plan 0 הקוד היה בתכנית והסוכנים הקלידו.)
 
 ## שיעורים
 - Plan 0: `docs/lessons/00-foundations.md`
