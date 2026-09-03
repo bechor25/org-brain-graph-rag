@@ -3,6 +3,9 @@
 The report is *merged*, not overwritten: `brain harvest --source git` must not erase what
 the Jira run recorded yesterday. And the link-density table is always recomputed from the
 raw full pull on disk, so it stays true even on a run that only touched one source.
+
+`raw_layout` is the handover to `brain canon`: which directory is authoritative per
+source, which directories are incremental, and the key to deduplicate them on.
 """
 
 from __future__ import annotations
@@ -19,11 +22,49 @@ DENSITY_COLUMNS = (
     "n",
     "pct_formal_links",
     "pct_kip_mention",
-    "pct_changelog_present",
+    "pct_with_history",
     "avg_comments",
     "pct_assignee",
     "pct_fix_versions",
 )
+
+#: How canon must deduplicate the overlap between the full pull and any `--since` pull.
+#: Mirrors the contract documented in `brain.harvest.base`.
+DEDUPE = {
+    "jira": {"key": "key", "recency": "fields.updated"},
+    "confluence": {"key": "id", "recency": "version.number"},
+    "git": {"key": "sha", "recency": None},
+}
+
+LAYOUT_RULE = (
+    "Read the authoritative directory first, then each incremental directory in date "
+    "order, and deduplicate on dedupe_key keeping the record with the latest recency_field "
+    "(git needs no tie-break: a sha is content-addressed). Enumerate a directory's pages "
+    "from its checkpoint.json `files` list — never by globbing, because the page index "
+    "restarts at 0 when the query signature changes."
+)
+
+
+def raw_layout(raw_dir: Path) -> dict[str, Any]:
+    """Where the raw records are and how to fold the incremental pulls into the full one.
+
+    Canon reads `data/raw/` without knowing which runs produced it. Spelling the layout
+    out here means the overlap between a full pull and a `--since` pull is a documented
+    dedupe rule rather than something a mapper has to infer from directory names.
+    """
+    sources: dict[str, Any] = {}
+    for name in SOURCES:
+        base = raw_dir / name
+        if not base.exists():
+            continue
+        incremental = sorted(str(p) for p in base.glob("since-*") if p.is_dir())
+        sources[name] = {
+            "authoritative_dir": str(base),
+            "incremental_dirs": incremental,
+            "dedupe_key": DEDUPE[name]["key"],
+            "recency_field": DEDUPE[name]["recency"],
+        }
+    return {"rule": LAYOUT_RULE, "sources": sources}
 
 
 def link_density(raw_dir: Path, results: dict[str, HarvestResult], since: date | None) -> dict:
@@ -61,9 +102,11 @@ def build_report(
         bucket = dict(incremental.get(since.isoformat()) or {})
 
     for name, result in results.items():
-        entry = dict(bucket.get(name) or {})
-        previous_fetch = entry.get("last_fetch")
-        entry.update(result.as_dict())
+        # Rebuild the entry from this run rather than updating the old one in place, so a
+        # field that a previous version of the report wrote cannot survive as a stale
+        # value that looks current. `last_fetch` is the one thing carried forward.
+        previous_fetch = (bucket.get(name) or {}).get("last_fetch")
+        entry = result.as_dict()
         entry["since"] = since.isoformat() if since else None
         # `records`/`pages`/`duration_s` describe *this* run, so an idempotent re-run zeroes
         # them. Keep the last run that actually fetched, or the cold-pull cost — the number
@@ -84,6 +127,8 @@ def build_report(
     else:
         incremental[since.isoformat()] = bucket
         report["incremental"] = incremental
+
+    report["raw_layout"] = raw_layout(raw_dir)
 
     density = link_density(raw_dir, results, since)
     if density:
@@ -128,10 +173,14 @@ def summarize(report: dict[str, Any]) -> str:
         retries = sum(1 for e in entry.get("errors") or [] if e.get("kind") == "retry")
         note = {
             "jira": f"{stats.get('issues', 0)} issues, "
-            f"{stats.get('pct_with_changelog', 0)}% changelog, "
+            f"{stats.get('pct_changelog_expanded', 0)}% changelog expanded, "
             f"{stats.get('pct_with_comment_field', 0)}% comment field",
             "confluence": f"{stats.get('pages', 0)} pages, "
-            f"{stats.get('pct_with_body_storage', 0)}% with body.storage",
+            f"{stats.get('pct_with_body_storage', 0)}% with body.storage, "
+            f"{(stats.get('kip_key') or {}).get('pages_unparseable', 0)} keyless + "
+            f"{(stats.get('kip_key') or {}).get('pages_space_separated', 0)} 'KIP N', "
+            f"{(stats.get('kip_key') or {}).get('colliding_keys', 0)} colliding keys "
+            f"over {(stats.get('kip_key') or {}).get('pages_in_collisions', 0)} pages",
             "git": f"{stats.get('commits', 0)} commits, "
             f"{stats.get('with_issue_key', 0)} keyed "
             f"({stats.get('pct_of_keyed_with_pr_number', 0)}% of those carry a PR)",

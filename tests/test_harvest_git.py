@@ -129,6 +129,14 @@ def test_since_overrides_the_window_start_and_isolates_the_output(tmp_path):
     assert (tmp_path / "git" / "since-2025-06-01" / "commits.jsonl").exists()
 
 
+def test_since_drops_the_window_end(tmp_path):
+    """An incremental catch-up is open-ended; capping it would hide the newest commits."""
+    calls: list[list[str]] = []
+    connector(tmp_path, calls=calls).run(since=date(2025, 6, 1))
+    log_args = [a for a in calls if a[:2] == ["git", "log"] and "--name-only" in a][0]
+    assert not [a for a in log_args if a.startswith("--until")]
+
+
 def test_second_run_writes_nothing_new(tmp_path):
     first = connector(tmp_path).run()
     second = connector(tmp_path).run()

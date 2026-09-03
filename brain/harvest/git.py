@@ -114,7 +114,14 @@ class GitConnector(BaseConnector):
         return self.run_dir(since) / COMMITS_FILE
 
     def window(self, since: date | None) -> tuple[str, str | None]:
-        return (since.isoformat() if since else WINDOW_START), self.window_end
+        """The full pull is the corpus slice; `--since` is an open-ended catch-up.
+
+        Capping an incremental run at the slice's end date would silently drop every
+        commit made after it — the opposite of what "give me what is new" means.
+        """
+        if since is not None:
+            return since.isoformat(), None
+        return WINDOW_START, self.window_end
 
     # -- identity ----------------------------------------------------------
 

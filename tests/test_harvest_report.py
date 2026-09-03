@@ -9,8 +9,19 @@ import pytest
 
 from brain.cli import app
 from brain.harvest.base import HarvestResult, Page
-from brain.harvest.report import build_report, summarize, write_report
+from brain.harvest.report import build_report, raw_layout, summarize, write_report
 from brain.harvest.runner import resolve_sources, run_harvest
+
+
+def plant_jira_page(raw_dir, issues, name="issues-0000.json"):
+    """Write a raw page the way a real run would: page file + checkpoint listing it."""
+    run_dir = raw_dir / "jira"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / name).write_text(json.dumps({"issues": issues}), encoding="utf-8")
+    (run_dir / "checkpoint.json").write_text(
+        json.dumps({"source": "jira", "signature": "sig", "files": [name], "done": True}),
+        encoding="utf-8",
+    )
 
 
 def result(source: str, **over) -> HarvestResult:
@@ -123,8 +134,9 @@ def test_link_density_comes_from_the_jira_stats_on_a_full_run(tmp_path):
 
 
 def test_link_density_is_recomputed_from_raw_when_jira_did_not_run(tmp_path):
-    page = {
-        "issues": [
+    plant_jira_page(
+        tmp_path,
+        [
             {
                 "key": "KAFKA-1",
                 "fields": {
@@ -135,10 +147,8 @@ def test_link_density_is_recomputed_from_raw_when_jira_did_not_run(tmp_path):
                 },
                 "changelog": {"histories": [{"id": "1"}]},
             }
-        ]
-    }
-    (tmp_path / "jira").mkdir()
-    (tmp_path / "jira" / "issues-0000.json").write_text(json.dumps(page), encoding="utf-8")
+        ],
+    )
 
     report = build_report({"git": result("git")}, raw_dir=tmp_path, since=None, duration_s=1.0)
     assert report["link_density"]["clients"]["pct_formal_links"] == 100.0
@@ -164,11 +174,7 @@ def test_a_since_run_is_recorded_beside_the_full_pull_not_on_top_of_it(tmp_path)
 
 
 def test_a_since_run_does_not_overwrite_density_with_the_narrow_slice(tmp_path):
-    (tmp_path / "jira").mkdir()
-    (tmp_path / "jira" / "issues-0000.json").write_text(
-        json.dumps({"issues": [{"key": "K-1", "fields": {"components": [{"name": "streams"}]}}]}),
-        encoding="utf-8",
-    )
+    plant_jira_page(tmp_path, [{"key": "K-1", "fields": {"components": [{"name": "streams"}]}}])
     report = build_report(
         {"jira": result("jira", stats={"link_density": {"streams": {"n": 999}}})},
         raw_dir=tmp_path,
@@ -277,3 +283,45 @@ def test_cli_runs_a_source_and_reports(runner, tmp_path, monkeypatch):
 
 def test_page_len_counts_records():
     assert len(Page(index=0, records=[{}, {}])) == 2
+
+
+# --------------------------------------------------------------------------- raw layout
+
+
+def test_raw_layout_names_the_dedupe_key_and_the_directories(tmp_path):
+    plant_jira_page(tmp_path, [{"key": "KAFKA-1", "fields": {}}])
+    (tmp_path / "jira" / "since-2025-06-01").mkdir()
+    (tmp_path / "confluence").mkdir()
+
+    layout = raw_layout(tmp_path)
+
+    assert "never by globbing" in layout["rule"]
+    jira = layout["sources"]["jira"]
+    assert jira["authoritative_dir"] == str(tmp_path / "jira")
+    assert jira["incremental_dirs"] == [str(tmp_path / "jira" / "since-2025-06-01")]
+    assert jira["dedupe_key"] == "key"
+    assert jira["recency_field"] == "fields.updated"
+    assert layout["sources"]["confluence"]["dedupe_key"] == "id"
+    assert "git" not in layout["sources"]  # no directory, no claim
+
+
+def test_report_carries_the_raw_layout_for_canon(tmp_path):
+    plant_jira_page(tmp_path, [{"key": "KAFKA-1", "fields": {}}])
+    report = build_report({"jira": result("jira")}, raw_dir=tmp_path, since=None, duration_s=1.0)
+    assert report["raw_layout"]["sources"]["jira"]["dedupe_key"] == "key"
+
+
+def test_a_rebuilt_entry_drops_fields_an_older_report_version_wrote(tmp_path):
+    stale = {
+        "sources": {"jira": {"records": 5, "pages": 1, "skipped": True, "last_fetch": {"x": 1}}}
+    }
+    report = build_report(
+        {"jira": result("jira", records=0, pages=0)},
+        raw_dir=tmp_path,
+        since=None,
+        duration_s=1.0,
+        existing=stale,
+    )
+    entry = report["sources"]["jira"]
+    assert "skipped" not in entry  # rebuilt from this run, not patched over the old one
+    assert entry["last_fetch"] == {"x": 1}  # the one field carried forward
