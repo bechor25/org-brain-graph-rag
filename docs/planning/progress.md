@@ -17,7 +17,7 @@
 | 0 | 9 agents | ✅ | 35235e2 | 15 סוכנים: 5 הנדסה (כל הכלים), 7 סוכני-LLM (`Read, Write, Glob` בלבד), analyst (`Read`), reviewer, lesson-writer |
 | 0 | 10 templates + README | ✅ | 8149f11 | README בעברית עם 5 עקרונות; `.env.example` תוקן |
 | 1 | 01 probe | ✅ | — | 1,416 issues, 1,391 KIPs, 6,107 commits; search מחזיר changelog מלא; ADO לא נגיש; `"connect"` מילה שמורה |
-| 1 | 02 harvest | ⬜ | | |
+| 1 | 02 harvest | ✅ | 79099a0…2c19ca2 | 1,416/1,391/6,107 ב-2m14s; ריצה שנייה 0; `--no-renames` הוריד git log מ-6+ דק' ל-0.44s; צפיפות links מלאה 36% (probe אמר 38%) |
 | 1 | 03 canon | ⬜ | | |
 | 1 | 04 synthetic | ⬜ | | planner: לכתוב `synthetic_spec.md` לפני |
 | 1 | 05 load | ⬜ | | |
@@ -32,6 +32,7 @@
 
 ## שיעורים
 - Plan 0: `docs/lessons/00-foundations.md`
+- Plan 1 שלבים 01–02: `docs/lessons/01-harvest.md`
 
 ## ממצאים (findings)
 - סוכני `.claude/agents/` נטענים רק בתחילת סשן — בסשן הזה dispatch נעשה דרך general-purpose עם ההגדרה מודבקת; מסשן חדש הם זמינים ישירות.
@@ -40,6 +41,7 @@
 - ruff ≥0.16 מפרמט Python fences בתוך Markdown — לכן docs מוחרג מהפורמטר (lint עדיין רץ על הכל).
 
 ## ל-Plan 1 (מסקירת 7–8)
+- (harvest) `KAFKA-1` ב-69 עמודי KIP; 21 מספרי KIP על 45 עמודים; `KIP-1001` = שני KIPs שונים; `KIP-929` body ריק; `raw_layout` = חוזה dedupe בין base ל-`since-*/`.
 - regex issue תופס `UTF-8`, `SHA-256`, `COVID-19` → allowlist של project keys ידועים (מה-harvest) לפני טעינה לגרף.
 - `Ref(kind=pr, key=N)` ללא repo → להחליט `owner/repo#N` לפני ingest של יותר מריפו אחד.
 - `Link.direction` על שני הקצוות → loader חייב לאחד זוגות הדדיים לקשת אחת.
