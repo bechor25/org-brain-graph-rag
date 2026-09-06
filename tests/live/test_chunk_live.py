@@ -21,9 +21,9 @@ from pathlib import Path
 import pytest
 
 from brain.chunk import graph as chunk_graph
-from brain.chunk.embed import CountingEmbedder
 from brain.chunk.runner import run_chunk
 from brain.config import Settings
+from brain.embed.client import OllamaEmbedder
 from brain.graph.client import GraphClient
 from brain.graph.context import GraphContext
 from brain.graph.runner import run_load, wipe
@@ -57,7 +57,7 @@ def client(settings):
 
 @pytest.fixture(scope="module")
 def embedder(settings):
-    with CountingEmbedder(
+    with OllamaEmbedder(
         settings.ollama_url, settings.embed_model, settings.embed_dim, timeout=120
     ) as e:
         assert e.has_model(), f"{settings.embed_model} is not pulled in Ollama"
@@ -249,34 +249,47 @@ def test_a_hebrew_query_finds_english_rebalance_text(production, embedder):
     ]
 
 
-def kip_848_related(ctx, parent_key: str) -> bool:
-    """KIP-848 itself, or a record the graph already says points at it.
+def kip_848_hops(ctx, parent_key: str) -> int | None:
+    """How far the hit's record is from KIP-848 along *structural* edges, or None.
 
-    "848-related" is decided by an edge `brain load` wrote, not by a substring: the top
-    hit for this query is usually an issue about `group.coordinator.rebalance.protocols`,
-    which is KIP-848 work and is linked to it, and calling that a miss would be wrong.
+    "848-related" is decided by edges `brain load` wrote, never by a substring. Only
+    `REFERENCES` / `IMPLEMENTS_KIP` (this record names the KIP) and one hop of
+    `PARENT_OF` / `LINKS_TO` (its story or its linked issue does) count. Person-mediated
+    paths are deliberately excluded: two records sharing a reporter says nothing about
+    what they are about, and this assertion exists to be falsifiable.
     """
     if parent_key == "KIP-848":
-        return True
+        return 0
     rows = ctx.read(
-        "MATCH (n)-[r:REFERENCES|IMPLEMENTS_KIP]->(d:Document {key: 'KIP-848'}) "
-        "WHERE n.key = $key OR n.sha = $key RETURN count(r) AS c",
+        "MATCH (n) WHERE n.key = $key OR n.sha = $key "
+        "MATCH p = (n)-[:PARENT_OF|LINKS_TO*0..1]-()-[:REFERENCES|IMPLEMENTS_KIP]->"
+        "(:Document {key: 'KIP-848'}) "
+        "RETURN min(length(p)) AS hops",
         key=parent_key,
     )
-    return bool(rows and rows[0]["c"])
+    return rows[0]["hops"] if rows and rows[0]["hops"] is not None else None
 
 
 def test_the_english_query_lands_on_kip_848_or_something_that_names_it(production, embedder):
+    """The Graph RAG claim in one assertion: the vector finds the right neighbourhood and
+    the graph proves the connection.
+
+    The top hit here is a *synthetic* ADO task ("Document the consumer group member state
+    machine") that outscores KIP-848's own prose — the noise layer is doing its job. It is
+    not a miss: its parent story references KIP-848, which the graph can show and a
+    substring test could not.
+    """
     hits = search(production, embedder, ENGLISH_QUERY, k=5)
     top = hits[0]
     assert "rebalance" in top["text"].lower(), top["text"][:200]
-    assert kip_848_related(production, top["parent_key"]), (
+    hops = kip_848_hops(production, top["parent_key"])
+    assert hops is not None and hops <= 2, (
         top["parent_key"],
         top["kind"],
         top["heading"],
         top["text"][:200],
     )
-    # And KIP-848's own text is in the neighbourhood, not merely one linked issue.
+    # And KIP-848's own text is in the neighbourhood, not merely something linked to it.
     assert any(h["parent_key"] == "KIP-848" for h in hits), [h["parent_key"] for h in hits]
 
 

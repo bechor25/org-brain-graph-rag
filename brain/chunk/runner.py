@@ -24,15 +24,16 @@ from brain.chunk.chunker import TARGET_MAX, Chunk, ChunkStats
 from brain.chunk.embed import (
     MEASURE_BATCHES,
     MEASURE_SAMPLE,
-    CountingEmbedder,
     Throughput,
     measure,
     merge_tables,
 )
 from brain.chunk.scope import iter_chunks, select
+from brain.embed.client import OllamaEmbedder
 from brain.graph.client import GraphClient
 from brain.graph.context import GraphContext
 from brain.graph.corpus import load_corpus
+from brain.graph.report import canonical_inputs
 from brain.harvest.base import utc_now_iso, write_json_atomic
 
 REPORT_NAME = "chunk.json"
@@ -44,15 +45,20 @@ DEFAULT_BATCH_SIZE = 32
 DEFAULT_TIMEOUT_S = 120
 
 NOTES = [
-    "Token counts are estimates (`len(text)/4`): Ollama 0.32.6 answers /api/tokenize with "
-    "404 and no tokenizer is installed. `throughput.estimate_calibration` compares the "
-    "estimate with bge-m3's own `prompt_eval_count` over the 200-chunk measurement sample.",
+    "`chunking.tokens_est` is an estimate (`len(text)/4`): Ollama 0.32.6 answers "
+    "/api/tokenize with 404 and no tokenizer is installed. "
+    "`throughput.estimate_calibration` compares that estimate with bge-m3's own "
+    "`prompt_eval_count` over whatever sample was last measured (`sample_chunks`), and "
+    "`measured_chars_per_token` is the correction factor: below 4 means every estimate "
+    "in `chunking` is low by that ratio.",
     "A comment and a commit message are one chunk each whatever their length (brief §2), "
     "so the token distribution is bimodal: sections and descriptions sit in the 500-800 "
     "band, comments and messages are mostly under 150. Read `tokens_by_kind`, not the "
     "corpus-wide p50.",
-    "A code fence or a Markdown table is never cut, so a chunk containing one can exceed "
-    "the 800-token target; `oversize_chunks` counts them.",
+    "`chunking.oversize_by_cause` says why each chunk over the 800-token target is over "
+    "it: `atomic_block` is an uncuttable code fence or table, `single_unit` is a comment "
+    "or commit message that is one chunk by rule. Anything under `other` is a packer bug. "
+    "`fence_parity_violations` counts chunks holding an unclosed fence and must be 0.",
     "An orphaned chunk keeps its node. `brain extract` cites chunk ids as evidence, and "
     "deleting a chunk would turn that provenance into a dangling reference.",
     "`Chunk.heading` is one property beyond the brief's list: the `#`/`##` section a "
@@ -61,6 +67,11 @@ NOTES = [
     "`--measure --measure-sample N --batch-size B` times an embedding pass over N chunks "
     "and writes nothing, which is how the full-corpus row in the throughput table was "
     "produced without touching the vectors already in the graph.",
+    "`embedding` holds the last run that actually embedded something; a rerun that "
+    "embedded nothing is appended to `embedding_history` instead of overwriting it, so "
+    "the cost of building this index stays in the file. `inputs` fingerprints the "
+    "canonical files this run read — the same sha256 map `load.json` carries, so "
+    "under-coverage (a chunk run older than the load) is visible by comparing them.",
 ]
 
 
@@ -118,10 +129,17 @@ def chunking_report(chunks: Sequence[Chunk], stats: ChunkStats, seconds: float) 
         "rejected_short": stats.rejected_short,
         "rejected_empty": stats.rejected_empty,
         "oversize_chunks": stats.oversize_chunks,
+        "oversize_by_cause": dict(sorted(stats.oversize_by_cause.items())),
         "oversize_threshold_tokens": TARGET_MAX,
+        "fence_parity_violations": stats.fence_parity_violations,
         "hard_split_blocks": stats.hard_split_blocks,
+        "wrapped_long_lines": stats.wrapped_long_lines,
         "truncated": stats.truncated,
         "tokens_est": _percentiles([c.token_est for c in chunks]),
+        # The 500-800 target is a claim about the chunks the packer decides the size of.
+        # `tokens_est` also holds every uncuttable fence and every one-chunk-by-rule
+        # comment, so it describes the corpus, not the chunker.
+        "tokens_est_within_budget": _percentiles(stats.budgeted_tokens),
         "chars": _percentiles([c.char_len for c in chunks]),
         "tokens_by_kind": by_kind_tokens,
         "duplicate_ids": len(chunks) - len({c.id for c in chunks}),
@@ -129,28 +147,69 @@ def chunking_report(chunks: Sequence[Chunk], stats: ChunkStats, seconds: float) 
 
 
 def _merge_report(path: Path, section: dict[str, Any]) -> dict[str, Any]:
-    existing: dict[str, Any] = {}
-    if path.exists():
-        try:
-            existing = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            existing = {}
+    """Keep what a previous run recorded; replace only the keys this run produced."""
+    existing = _read_report(path)
     existing.update(section)
     return existing
 
 
-def _previous_throughput(path: Path) -> dict[str, Any] | None:
+#: How many past embedding runs the report keeps. Enough to see the shape of an
+#: incremental index being filled in; not so many that the file becomes a log.
+HISTORY_LIMIT = 20
+
+
+def _read_report(path: Path) -> dict[str, Any]:
     if not path.exists():
-        return None
+        return {}
     try:
-        return json.loads(path.read_text(encoding="utf-8")).get("throughput")
+        return json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
-        return None
+        return {}
+
+
+def _embedding_history(
+    path: Path, current: dict[str, Any]
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """`embedding` keeps the last run that did work; every run lands in the history.
+
+    A rerun embeds nothing — that is the point of the hash check — and letting it
+    overwrite `embedding` would erase the only record of what building this index cost.
+    """
+    previous = _read_report(path)
+    history = list(previous.get("embedding_history") or [])
+    history.append(
+        {
+            key: current.get(key)
+            for key in (
+                "at",
+                "requested",
+                "written",
+                "seconds",
+                "chunks_per_s",
+                "real_tokens",
+                "tokens_per_s",
+                "batch_size",
+                "chunks_in_scope",
+                "skipped_unchanged",
+            )
+        }
+    )
+    history = history[-HISTORY_LIMIT:]
+    if current["requested"]:
+        return current, history
+    kept = previous.get("embedding")
+    if not kept or not kept.get("requested"):
+        return current, history
+    return {**kept, "superseded_by_a_rerun_that_embedded_nothing": current["at"]}, history
+
+
+def _previous_throughput(path: Path) -> dict[str, Any] | None:
+    return _read_report(path).get("throughput")
 
 
 def embed_chunks(
     ctx: GraphContext,
-    embedder: CountingEmbedder,
+    embedder: OllamaEmbedder,
     pending: Sequence[Chunk],
     *,
     batch_size: int,
@@ -193,6 +252,35 @@ def embed_chunks(
     }
 
 
+def _coverage_check(inputs: dict[str, Any], reports_dir: Path) -> dict[str, Any]:
+    """Did we chunk the same canonical files the graph was loaded from?
+
+    Both reports fingerprint their inputs with the same sha256 map. When they disagree the
+    graph holds records this run never chunked (or the reverse), and the symptom — chunks
+    with no `HAS_CHUNK` edge, or parents with no chunks — is a lot harder to read than the
+    two hashes side by side.
+    """
+    load = _read_report(reports_dir / "load.json").get("inputs")
+    if not load:
+        return {
+            "name": "inputs_match_the_loaded_graph",
+            "expected": "same canonical files as load.json",
+            "actual": "load.json carries no input fingerprint",
+            "ok": True,
+            "note": "not comparable; rerun `brain load` to get one",
+        }
+    ours = {name: meta.get("sha256") for name, meta in inputs.items()}
+    theirs = {name: meta.get("sha256") for name, meta in load.items()}
+    differing = sorted(k for k in set(ours) | set(theirs) if ours.get(k) != theirs.get(k))
+    return {
+        "name": "inputs_match_the_loaded_graph",
+        "expected": 0,
+        "actual": len(differing),
+        "ok": not differing,
+        "note": f"files differing from load.json: {differing}" if differing else "",
+    }
+
+
 def _checks(
     census: dict[str, Any],
     index: dict[str, Any],
@@ -209,6 +297,26 @@ def _checks(
             "expected": 0,
             "actual": chunking["duplicate_ids"],
             "ok": chunking["duplicate_ids"] == 0,
+        },
+        {
+            "name": "no_chunk_splits_a_code_fence",
+            "expected": 0,
+            "actual": chunking["fence_parity_violations"],
+            "ok": chunking["fence_parity_violations"] == 0,
+        },
+        {
+            "name": "no_oversize_chunk_without_a_reason",
+            "expected": 0,
+            "actual": chunking["oversize_by_cause"].get("other", 0),
+            "ok": chunking["oversize_by_cause"].get("other", 0) == 0,
+            "note": "over 800 tokens is only allowed for an atomic block or a single unit",
+        },
+        {
+            "name": "budgeted_chunks_stay_inside_the_target",
+            "expected": TARGET_MAX,
+            "actual": chunking["tokens_est_within_budget"].get("max", 0),
+            "ok": chunking["tokens_est_within_budget"].get("max", 0) <= TARGET_MAX,
+            "note": "chunks whose size the packer decides — the overlap is inside the budget",
         },
         {
             "name": "every_chunk_has_an_embedding",
@@ -260,7 +368,7 @@ def _checks(
 def run_chunk(
     *,
     client: GraphClient,
-    embedder: CountingEmbedder,
+    embedder: OllamaEmbedder,
     canonical_dir: Path,
     reports_dir: Path,
     kinds: set[str] | None = None,
@@ -343,6 +451,7 @@ def run_chunk(
                     "duration_s": round(time.perf_counter() - started, 2),
                     "per_stage_s": timings.stages,
                 },
+                "inputs": canonical_inputs(canonical_dir),
                 "scope": scope.stats,
                 "chunking": chunking,
                 "throughput": {**throughput.report(), "projection": est_total},
@@ -363,7 +472,7 @@ def run_chunk(
 
     t0 = time.perf_counter()
     before = chunk_graph.state(ctx)
-    chunk_graph.write_nodes(ctx, chunks)
+    nodes = chunk_graph.write_nodes(ctx, chunks, before)
     # Snapshot here, not at the end: `IndexMeta` is created once and would otherwise make
     # the idempotency check read 1 on the first run and 0 on every run after it.
     created = {
@@ -373,9 +482,11 @@ def run_chunk(
     edges = chunk_graph.write_edges(ctx, chunks)
     created["relationships"] = ctx.counters["relationships_created"] - created["relationships"]
     timings.record("write_nodes", t0)
+    nodes["has_chunk_rows"] = sum(edges.values())
+    nodes.update(created_nodes=created["nodes"], created_relationships=created["relationships"])
     echo(
-        f"nodes: {len(chunks)} merged ({created['nodes']} new), "
-        f"HAS_CHUNK {sum(edges.values())} "
+        f"nodes: {nodes['written']} written, {nodes['skipped_unchanged']} unchanged "
+        f"({created['nodes']} new); HAS_CHUNK {nodes['has_chunk_rows']} "
         f"({created['relationships']} new) in {timings.stages['write_nodes']}s"
     )
 
@@ -386,18 +497,22 @@ def run_chunk(
     timings.record("embedding", t0)
     embedding.update(
         {
+            "at": utc_now_iso(),
             "model": embedder.model,
             "dim": embedder.dim,
             "batch_size": chosen_batch,
             "timeout_s": embedder.timeout_s,
+            "chunks_in_scope": len(chunks),
             "skipped_unchanged": len(chunks) - len(pending),
         }
     )
+    kept_embedding, history = _embedding_history(report_path, embedding)
 
     t0 = time.perf_counter()
     orphans = _mark_orphans(ctx, chunks, kinds=kinds, limit=limit, all_docs=all_docs)
     timings.record("orphans", t0)
 
+    inputs = canonical_inputs(canonical_dir)
     t0 = time.perf_counter()
     index = chunk_graph.index_status(ctx)
     census = chunk_graph.census(ctx)
@@ -427,6 +542,7 @@ def run_chunk(
         embedder.dim,
         embedder.model,
     )
+    checks.append(_coverage_check(inputs, reports_dir))
     total = round(time.perf_counter() - started, 2)
     report = _merge_report(
         report_path,
@@ -445,9 +561,12 @@ def run_chunk(
                 "counters": ctx.counters,
                 "created": created,
             },
+            "inputs": inputs,
             "scope": scope.stats,
             "chunking": chunking,
-            "embedding": embedding,
+            "nodes": nodes,
+            "embedding": kept_embedding,
+            "embedding_history": history,
             "schema": schema,
             "index": index,
             "index_meta": meta,
@@ -546,7 +665,7 @@ def chunk_from_settings(
         "chosen_timeout_s"
     )
     with GraphClient(s.neo4j_uri, s.neo4j_user, s.neo4j_password, s.neo4j_database) as client:
-        with CountingEmbedder(
+        with OllamaEmbedder(
             s.ollama_url, s.embed_model, s.embed_dim, timeout=chosen_timeout or DEFAULT_TIMEOUT_S
         ) as embedder:
             if not embedder.has_model():

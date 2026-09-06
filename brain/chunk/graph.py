@@ -37,13 +37,22 @@ PARENTS: dict[str, tuple[str, str]] = {
 
 @dataclass(frozen=True)
 class ChunkState:
-    """What the graph already knows: which ids exist, and which already carry a vector."""
+    """What the graph already knows: which ids exist, carry a vector, or are orphaned."""
 
     hashes: dict[str, str]
     embedded: set[str]
+    orphaned: frozenset[str] = frozenset()
 
     def needs_embedding(self, chunk: Chunk) -> bool:
         return chunk.id not in self.embedded or self.hashes.get(chunk.id) != chunk.hash
+
+    def is_current(self, chunk: Chunk) -> bool:
+        """True when the stored node is already byte-for-byte what we would write.
+
+        An orphaned node is never current even when its hash matches: the text came back,
+        so `orphaned` has to be cleared, and clearing it means writing the row.
+        """
+        return self.hashes.get(chunk.id) == chunk.hash and chunk.id not in self.orphaned
 
 
 def apply_chunk_schema(ctx: GraphContext, dim: int) -> dict[str, Any]:
@@ -126,14 +135,17 @@ def index_status(ctx: GraphContext) -> dict[str, Any]:
 
 
 def state(ctx: GraphContext) -> ChunkState:
-    """One pass over the existing chunks: their hashes and whether they carry a vector."""
+    """One pass over the existing chunks: hash, vector, orphan flag. No text is read back —
+    10,884 chunk bodies would be ~14 MB over the wire to decide three booleans."""
     rows = ctx.read(
         f"MATCH (c:{ctx.label(LABEL)}) "
-        f"RETURN c.id AS id, c.hash AS hash, c.{EMBEDDING_PROP} IS NOT NULL AS embedded"
+        f"RETURN c.id AS id, c.hash AS hash, c.{EMBEDDING_PROP} IS NOT NULL AS embedded, "
+        "coalesce(c.orphaned, false) AS orphaned"
     )
     return ChunkState(
         hashes={r["id"]: r["hash"] for r in rows},
         embedded={r["id"] for r in rows if r["embedded"]},
+        orphaned=frozenset(r["id"] for r in rows if r["orphaned"]),
     )
 
 
@@ -141,10 +153,28 @@ def existing_ids(ctx: GraphContext) -> set[str]:
     return {r["id"] for r in ctx.read(f"MATCH (c:{ctx.label(LABEL)}) RETURN c.id AS id")}
 
 
-def write_nodes(ctx: GraphContext, chunks: Sequence[Chunk]) -> int:
-    rows = [{"key": c.id, "props": c.props()} for c in chunks]
-    ctx.write_rows(node_merge(ctx, LABEL, KEY), rows)
-    return len(rows)
+def write_nodes(
+    ctx: GraphContext, chunks: Sequence[Chunk], state: ChunkState | None = None
+) -> dict[str, int]:
+    """MERGE the chunks the graph does not already hold unchanged.
+
+    `Chunk.id` is `sha1(parent_key|kind|position|text)` and `hash` is `sha1(text)`, so an
+    id already present with the same hash is byte-for-byte the node we would write. Sending
+    it anyway is not wrong — `MERGE` is idempotent — it is just 152,000 `properties_set`
+    for zero work, which buries a real rerun's counters in noise.
+    """
+    rows = [
+        {"key": c.id, "props": c.props()}
+        for c in chunks
+        if state is None or not state.is_current(c)
+    ]
+    if rows:
+        ctx.write_rows(node_merge(ctx, LABEL, KEY), rows)
+    return {
+        "total": len(chunks),
+        "written": len(rows),
+        "skipped_unchanged": len(chunks) - len(rows),
+    }
 
 
 def write_edges(ctx: GraphContext, chunks: Iterable[Chunk]) -> dict[str, int]:
@@ -239,18 +269,19 @@ def census(ctx: GraphContext) -> dict[str, Any]:
     unlinked = ctx.read(f"MATCH (c:{label}) WHERE NOT ()-[:HAS_CHUNK]->(c) RETURN count(c) AS c")[
         0
     ]["c"]
-    by_kind = {
-        r["k"]: r["c"]
-        for r in ctx.read(f"MATCH (c:{label}) RETURN c.kind AS k, count(c) AS c ORDER BY k")
-    }
-    by_parent = {
-        r["k"]: r["c"]
-        for r in ctx.read(f"MATCH (c:{label}) RETURN c.parent_kind AS k, count(c) AS c ORDER BY k")
-    }
-    by_lang = {
-        r["k"]: r["c"]
-        for r in ctx.read(f"MATCH (c:{label}) RETURN c.lang AS k, count(c) AS c ORDER BY k")
-    }
+    # Split live from orphaned: `chunks` counts everything the graph holds, and a reader
+    # comparing it with `chunking.by_kind` (this run's output) would otherwise read the
+    # difference as a bug rather than as the previous run's superseded text.
+    live = "WHERE NOT coalesce(c.orphaned, false)"
+
+    def census_by(prop: str, where: str = "") -> dict[str, int]:
+        rows = ctx.read(f"MATCH (c:{label}) {where} RETURN c.{prop} AS k, count(c) AS c ORDER BY k")
+        return {r["k"]: r["c"] for r in rows}
+
+    by_kind = census_by("kind", live)
+    by_parent = census_by("parent_kind", live)
+    by_lang = census_by("lang", live)
+    orphaned_by_kind = census_by("kind", "WHERE c.orphaned")
     edges = {}
     for parent_kind, (parent_label, _key) in PARENTS.items():
         edges[parent_kind] = ctx.read(
@@ -258,9 +289,11 @@ def census(ctx: GraphContext) -> dict[str, Any]:
         )[0]["c"]
     return {
         "chunks": total,
+        "live": total - orphaned,
         "embedded": embedded,
         "missing_embedding": total - embedded,
         "orphaned": orphaned,
+        "orphaned_by_kind": orphaned_by_kind,
         "without_has_chunk": unlinked,
         "by_kind": by_kind,
         "by_parent_kind": by_parent,
@@ -271,13 +304,34 @@ def census(ctx: GraphContext) -> dict[str, Any]:
 
 
 def query_similar(ctx: GraphContext, vector: Sequence[float], k: int = 5) -> list[dict[str, Any]]:
-    """Top-`k` by cosine similarity. Read-only, and the only query the sanity test needs."""
-    return ctx.read(
+    """Top-`k` live chunks by cosine similarity. Read-only.
+
+    Orphans stay in the index — they are still valid evidence for whatever `brain extract`
+    cited them for — but they are text that no longer exists on any page, so a search
+    result must never be one. The index is asked for extra candidates and the orphans are
+    dropped, rather than filtering after the fact and returning fewer than `k`.
+    """
+    rows = ctx.read(
         "CALL db.index.vector.queryNodes($name, $k, $vector) YIELD node, score "
+        "WHERE coalesce(node.orphaned, false) = false "
         "RETURN node.id AS id, node.parent_key AS parent_key, node.parent_kind AS parent_kind, "
         "node.kind AS kind, node.heading AS heading, node.text AS text, score "
-        "ORDER BY score DESC",
+        "ORDER BY score DESC LIMIT $k",
         name=index_name(ctx),
         k=k,
+        vector=list(vector),
+    )
+    if len(rows) == k:
+        return rows
+    # Some of the top `k` were orphans; widen once rather than paging blindly.
+    return ctx.read(
+        "CALL db.index.vector.queryNodes($name, $wide, $vector) YIELD node, score "
+        "WHERE coalesce(node.orphaned, false) = false "
+        "RETURN node.id AS id, node.parent_key AS parent_key, node.parent_kind AS parent_kind, "
+        "node.kind AS kind, node.heading AS heading, node.text AS text, score "
+        "ORDER BY score DESC LIMIT $k",
+        name=index_name(ctx),
+        k=k,
+        wide=k * 5,
         vector=list(vector),
     )

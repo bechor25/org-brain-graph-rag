@@ -23,9 +23,24 @@ def test_help_lists_every_pipeline_step(runner):
 
 
 def test_unimplemented_step_exits_2_and_names_plan(runner):
-    result = runner.invoke(app, ["extract"])
+    result = runner.invoke(app, ["resolve"])
     assert result.exit_code == NOT_IMPLEMENTED_EXIT
     assert "Plan 1" in result.output
+
+
+def test_extract_is_a_group_of_three_commands(runner):
+    """`extract` stopped being a stub in step 07; it is build / merge / sample now."""
+    result = runner.invoke(app, ["extract", "--help"])
+    assert result.exit_code in (0, NOT_IMPLEMENTED_EXIT)
+    for command in ("build", "merge", "sample"):
+        assert command in result.output
+
+
+def test_extract_build_rejects_a_missing_canonical_dir_before_touching_neo4j(runner, tmp_path):
+    result = runner.invoke(app, ["extract", "build", "--canonical-dir", str(tmp_path / "nope")])
+
+    assert result.exit_code == 2
+    assert "--canonical-dir" in result.output
 
 
 def test_chunk_rejects_an_unknown_kind_before_touching_neo4j_or_ollama(runner):
