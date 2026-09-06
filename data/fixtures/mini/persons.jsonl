@@ -1,3 +1,3 @@
-{"id":"jira:jrao","identities":[{"source":"jira","key":"jrao","display":"Jun Rao","email":null},{"source":"confluence","key":"rao.jun","display":"Rao, Jun","email":null},{"source":"git","key":"junrao@example.org","display":"Jun Rao","email":"junrao@example.org"}],"synthetic":false}
-{"id":"jira:dlee","identities":[{"source":"jira","key":"dlee","display":"Dana Lee","email":null}],"synthetic":false}
-{"id":"jira:mrivera","identities":[{"source":"jira","key":"mrivera","display":"M. Rivera","email":null}],"synthetic":false}
+{"id": "jira:jrao", "identities": [{"source": "jira", "key": "jrao", "display": "Jun Rao", "email": null}, {"source": "confluence", "key": "rao.jun", "display": "Rao, Jun", "email": null}, {"source": "git", "key": "junrao@example.org", "display": "Jun Rao", "email": "junrao@example.org"}], "synthetic": false}
+{"id": "jira:dlee", "identities": [{"source": "jira", "key": "dlee", "display": "Dana Lee", "email": null}, {"source": "git", "key": "dlee@example.org", "display": "Dana Lee", "email": "dlee@example.org"}], "synthetic": false}
+{"id": "jira:mrivera", "identities": [{"source": "jira", "key": "mrivera", "display": "M. Rivera", "email": null}], "synthetic": false}

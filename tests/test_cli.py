@@ -23,9 +23,17 @@ def test_help_lists_every_pipeline_step(runner):
 
 
 def test_unimplemented_step_exits_2_and_names_plan(runner):
-    result = runner.invoke(app, ["load"])
+    result = runner.invoke(app, ["chunk"])
     assert result.exit_code == NOT_IMPLEMENTED_EXIT
     assert "Plan 1" in result.output
+
+
+def test_load_rejects_a_missing_canonical_dir_before_touching_neo4j(runner, tmp_path):
+    """The guard runs first, so a typo'd path never opens a driver session."""
+    result = runner.invoke(app, ["load", "--canonical-dir", str(tmp_path / "nope")])
+
+    assert result.exit_code == 2
+    assert "--canonical-dir" in result.output
 
 
 def test_version(runner):

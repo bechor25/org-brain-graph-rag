@@ -6,6 +6,8 @@ so `brain --help` already documents the whole pipeline.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import typer
 
 app = typer.Typer(
@@ -17,7 +19,6 @@ app = typer.Typer(
 NOT_IMPLEMENTED_EXIT = 2
 
 _PLANNED: dict[str, tuple[str, str]] = {
-    "load": ("Load canonical data into Neo4j (structured nodes/edges, no LLM)", "Plan 1"),
     "chunk": ("Chunk texts, embed with local bge-m3, create :Chunk nodes + vector index", "Plan 1"),
     "extract": (
         "Prepare/merge schema-guided extraction batches produced by kg-extractor agents",
@@ -115,6 +116,42 @@ def canon(
         # A refusal to write, not a crash: the message says what to do about it.
         # On stderr, so a caller piping stdout still sees why nothing was written.
         typer.echo(f"canon: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    raise typer.Exit(code=code)
+
+
+@app.command()
+def load(
+    schema_only: bool = typer.Option(
+        False,
+        "--schema-only",
+        help="Only create constraints and indexes, load nothing.",
+    ),
+    canonical_dir: str | None = typer.Option(
+        None,
+        "--canonical-dir",
+        metavar="PATH",
+        help="Read the canonical JSONL from here instead of data/canonical "
+        "(e.g. data/fixtures/mini).",
+    ),
+) -> None:
+    """Load canonical data into Neo4j (structured nodes/edges, no LLM) [Plan 1]."""
+    from brain.config import get_settings
+    from brain.graph.runner import load_from_settings
+
+    settings = get_settings()
+    source = Path(canonical_dir) if canonical_dir else settings.canonical_dir
+    if not source.is_dir():
+        raise typer.BadParameter(f"{source} is not a directory", param_hint="--canonical-dir")
+    try:
+        _, code = load_from_settings(
+            source,
+            settings.reports_dir,
+            schema_only=schema_only,
+            echo=typer.echo,
+        )
+    except (OSError, ValueError) as exc:
+        typer.echo(f"load: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     raise typer.Exit(code=code)
 
