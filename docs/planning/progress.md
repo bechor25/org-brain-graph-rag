@@ -19,9 +19,9 @@
 | 1 | 01 probe | ✅ | — | 1,416 issues, 1,391 KIPs, 6,107 commits; search מחזיר changelog מלא; ADO לא נגיש; `"connect"` מילה שמורה |
 | 1 | 02 harvest | ✅ | 79099a0…2c19ca2 | 1,416/1,391/6,107 ב-2m14s; ריצה שנייה 0; `--no-renames` הוריד git log מ-6+ דק' ל-0.44s; צפיפות links מלאה 36% (probe אמר 38%) |
 | 1 | 03 canon | ✅ | 82db3e3…8d60a0c | 1,416/1,391(1,334 KIP+57 Page)/12,133/1,597/117 ב-6.9s; text-only refs 15% (any-mention 23.4%) — קריטריון תוקן; `[~user]` 1,972 אזכורים נוספים; resolution נוסף למודל |
-| 1 | 04 synthetic | 🟡 כלים ✅ (d8b1a11…d939176, בסקירה); 3 סוכני-תוכן רצים | | 1,021 items נבחרו → 27 batches / 3 shards, 143 Epics מוקצים מראש; מרחבי מפתחות נפרדים לכל shard |
-| 1 | 05 load | ✅ (re-review) | cc2ad87…47abc94 | 32,855 צמתים / 95,695 קשתות ב-3.6s; ריצה שנייה 0/0; LINKS_TO 298 זוגות; dangling issue refs 8,217 (גבול הפרוסה); StatusChange 7,607 (18.9k רעש הוסר); 725 מרווחי assignee בלי Person → canon ימנטס מ-changelog |
-| 1 | 06 chunk+embed | ⬜ | | |
+| 1 | 04 synthetic | ✅ merge 27/27, 0 נדחו | d8b1a11…0f0eba2 | 1,849 items (817 tests, 897 ADO), 420 זהויות ל-308 אנשים, truth: 315 text-only/69 stale/255 renames; 17/19 ratios; **589/1,021 items כוסו** (באג קריאה בכלי — 42% לא נראו); הוחלט לקבל; supplement אופציונלי | 1,021 items נבחרו → 27 batches / 3 shards, 143 Epics מוקצים מראש; מרחבי מפתחות נפרדים לכל shard |
+| 1 | 05 load | ✅ + סינתטי | cc2ad87…47abc94 | 35,410 צמתים / 109,623 קשתות; 2,385 סינתטיים עם provenance; TESTS 660 / HAS_RUN 609 / IN_PLAN 78; rerun 0/0 | 32,855 צמתים / 95,695 קשתות ב-3.6s; ריצה שנייה 0/0; LINKS_TO 298 זוגות; dangling issue refs 8,217 (גבול הפרוסה); StatusChange 7,607 (18.9k רעש הוסר); 725 מרווחי assignee בלי Person → canon ימנטס מ-changelog |
+| 1 | 06 chunk+embed | 🟡 בוצע, בסקירה | d1146be, 4e05c0a | 10,884 chunks (section 1,643 / desc 1,552 / comment 3,539 / commit 4,150), embedding מלא 416s @ 6.5k tok/s; 3.49 chars/token (לא 4); rerun 0/0; cross-lingual PASS |
 | 1 | 07 extract Phase A | ⬜ | | |
 | 1 | 08 resolve | ⬜ | | |
 | 1 | 09 communities | ⬜ | | |
@@ -61,6 +61,10 @@
 - `StatusChange.id` כולל `from` (אחרת 26→10 התנגשויות) — מאושר.
 - `IN_PLAN`/`HAS_RUN{status}`: load יפרסר דטרמיניסטית את שורות `"XT-n: PASS|FAIL (…)"` ב-comments של TestExecution → `HAS_RUN{status,reason}`; `IN_PLAN` מ-`parent`=TestPlan או links `tests` מה-plan. מיושם אחרי המיזוג הסינתטי.
 - `IN_SPACE` Document→Space (Space היה orphan).
+
+## הכרעות מתכנן — סינתטי
+- לקבל את השכבה כמות שהיא (589/1,021 items מכוסים): ההערכה צריכה gold, לא כיסוי מלא. supplement ל-432 הפריטים שלא נראו — אופציונלי אחרי Plan 2 אם ההערכה תראה פערים.
+- 3 אוצרות-מילים ארגוניים (Team A / KFK2 / Kafka\…) נשארים — זה בדיוק "צוותים שקוראים לאותו דבר בשמות שונים"; לא נרשם ב-truth, לא ייבדק ב-resolution.
 
 ## החלטות פתוחות
 - Ollama רץ כתהליך ידני (`ollama serve`), לא כ-service — README יסביר; LaunchAgent אופציונלי בהמשך.
