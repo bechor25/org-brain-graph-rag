@@ -19,7 +19,7 @@
 | 1 | 01 probe | ✅ | — | 1,416 issues, 1,391 KIPs, 6,107 commits; search מחזיר changelog מלא; ADO לא נגיש; `"connect"` מילה שמורה |
 | 1 | 02 harvest | ✅ | 79099a0…2c19ca2 | 1,416/1,391/6,107 ב-2m14s; ריצה שנייה 0; `--no-renames` הוריד git log מ-6+ דק' ל-0.44s; צפיפות links מלאה 36% (probe אמר 38%) |
 | 1 | 03 canon | ✅ | 82db3e3…8d60a0c | 1,416/1,391(1,334 KIP+57 Page)/12,133/1,597/117 ב-6.9s; text-only refs 15% (any-mention 23.4%) — קריטריון תוקן; `[~user]` 1,972 אזכורים נוספים; resolution נוסף למודל |
-| 1 | 04 synthetic | ⬜ | | planner: לכתוב `synthetic_spec.md` לפני |
+| 1 | 04 synthetic | 🟡 כלים בבנייה (הופסק ע"י המשתמש 13:40, חודש) | | `synthetic_spec.md` נכתב |
 | 1 | 05 load | ⬜ | | |
 | 1 | 06 chunk+embed | ⬜ | | |
 | 1 | 07 extract Phase A | ⬜ | | |
@@ -33,6 +33,7 @@
 ## שיעורים
 - Plan 0: `docs/lessons/00-foundations.md`
 - Plan 1 שלבים 01–02: `docs/lessons/01-harvest.md`
+- Plan 1 שלב 03: `docs/lessons/02-canon.md`
 
 ## ממצאים (findings)
 - סוכני `.claude/agents/` נטענים רק בתחילת סשן — בסשן הזה dispatch נעשה דרך general-purpose עם ההגדרה מודבקת; מסשן חדש הם זמינים ישירות.
