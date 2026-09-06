@@ -22,8 +22,9 @@ PACKAGE = Path("brain/resolve")
 #: The only module allowed to read ground truth.
 GOLD_MODULE = "gold.py"
 #: Modules on the measurement side. They may reach the gold *set*; only `gold.py` may
-#: reach the truth the gold set was built from.
-EVALUATION = {GOLD_MODULE, "evaluate.py"}
+#: reach the truth the gold set was built from. `sample.py` is here because it reads the
+#: gold only to know which merges the gold *cannot* grade — it never merges anything.
+EVALUATION = {GOLD_MODULE, "evaluate.py", "sample.py"}
 #: Everything `brain resolve` runs through on the way to a merge.
 PIPELINE_MODULES = sorted(p.name for p in PACKAGE.glob("*.py") if p.name != GOLD_MODULE)
 

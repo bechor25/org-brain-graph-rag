@@ -93,6 +93,7 @@ def _evidence_rows(ctx: GraphContext) -> list[dict[str, Any]]:
         f"WHERE {labels}\n"
         "RETURN p.id AS pid, type(r) AS role, "
         "coalesce(x.key, x.sha, toString(x.number)) AS key, "
+        "coalesce(x.synthetic, false) AS synthetic, "
         f"left(coalesce(x.title, x.message, ''), {TITLE_CHARS}) AS title"
     )
     incoming = (
@@ -100,6 +101,7 @@ def _evidence_rows(ctx: GraphContext) -> list[dict[str, Any]]:
         f"WHERE {labels}\n"
         "RETURN p.id AS pid, type(r) AS role, "
         "coalesce(x.key, x.sha, toString(x.number)) AS key, "
+        "coalesce(x.synthetic, false) AS synthetic, "
         f"left(coalesce(x.title, x.message, ''), {TITLE_CHARS}) AS title"
     )
     # The issue behind a commit: the one key space a git identity and a Jira identity can
@@ -110,6 +112,7 @@ def _evidence_rows(ctx: GraphContext) -> list[dict[str, Any]]:
         f"(w:{ctx.label('WorkItem')})\n"
         f"WHERE c:{ctx.label('Commit')} OR c:{ctx.label('PullRequest')}\n"
         "RETURN p.id AS pid, 'WORKED_ON' AS role, w.key AS key, "
+        "coalesce(w.synthetic, false) AS synthetic, "
         f"left(coalesce(w.title, ''), {TITLE_CHARS}) AS title"
     )
     return ctx.read(f"{outgoing}\nUNION\n{incoming}\nUNION\n{derived}")
@@ -117,19 +120,26 @@ def _evidence_rows(ctx: GraphContext) -> list[dict[str, Any]]:
 
 def _attach(rows: Iterable[dict[str, Any]]) -> dict[str, list[Evidence]]:
     """Group evidence per candidate, deterministically ordered and capped."""
-    grouped: dict[str, set[tuple[int, str, str, str]]] = {}
+    grouped: dict[str, set[tuple[int, str, str, bool, str]]] = {}
     for row in rows:
         key = row.get("key")
         if not row.get("pid") or not key:
             continue
         role = row.get("role") or ""
         grouped.setdefault(row["pid"], set()).add(
-            (ROLE_RANK.get(role, len(ROLE_RANK)), key, role, first_line(row.get("title")))
+            (
+                ROLE_RANK.get(role, len(ROLE_RANK)),
+                key,
+                role,
+                bool(row.get("synthetic")),
+                first_line(row.get("title")),
+            )
         )
     return {
-        pid: [Evidence(role=role, key=key, title=title) for _, key, role, title in sorted(items)][
-            :MAX_EVIDENCE
-        ]
+        pid: [
+            Evidence(role=role, key=key, synthetic=synthetic, title=title)
+            for _, key, role, synthetic, title in sorted(items)
+        ][:MAX_EVIDENCE]
         for pid, items in grouped.items()
     }
 
@@ -176,7 +186,7 @@ def read_entity_candidates(ctx: GraphContext) -> list[Candidate]:
     )
     quotes = ctx.read(
         f"MATCH (c:{ctx.label('Chunk')})-[m:MENTIONS]->(e:{ctx.label(ENTITY_LABEL)})\n"
-        "RETURN e.id AS pid, 'MENTIONS' AS role, c.id AS key, "
+        "RETURN e.id AS pid, 'MENTIONS' AS role, c.id AS key, false AS synthetic, "
         f"left(coalesce(m.quote, ''), {TITLE_CHARS}) AS title"
     )
     evidence = _attach(quotes)
@@ -417,3 +427,7 @@ def clear_embeddings(ctx: GraphContext, label: str, ids: Sequence[str]) -> int:
         ids=list(ids),
     )
     return counters.get("properties_set", 0)
+
+
+#: `--kinds` value -> the label it resolves. One place, so `reset` and the runner agree.
+LABELS_BY_KIND: dict[str, str] = {"person": PERSON_LABEL, "entity": ENTITY_LABEL}

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import pytest
+
 from brain.resolve.models import Candidate
 from brain.resolve.tiers import (
     ADJUDICATE_FLOOR,
     AUTO_THRESHOLD,
     band,
+    band_table,
     dedupe,
     entity_tier1,
     groups,
@@ -55,6 +58,47 @@ def test_identical_display_plus_a_shared_item_is_a_tier_one_merge():
         ]
     )
     assert rules(pairs) == {("git:jun@example.org", "jira:jrao"): "display_and_activity"}
+    assert "KAFKA-1" in pairs[0].reason
+
+
+def test_a_shared_synthetic_item_is_not_activity_tier_one_may_reason_from():
+    """The generator deliberately put two different "G. Harris" on ADO-20068; "both touched
+    it" there is a fact about the injected noise, not about who they are."""
+    pairs = person_tier1(
+        [
+            person("ado:a", "Greg Harris", evidence=[("ASSIGNED_TO", "ADO-20068", "t", True)]),
+            person("ado:b", "Greg Harris", evidence=[("ASSIGNED_TO", "ADO-20068", "t", True)]),
+        ]
+    )
+    assert pairs == []
+
+
+def test_an_initials_only_display_never_merges_at_tier_one_either():
+    pairs = person_tier1(
+        [
+            person("jira:a", "G. Harris", evidence=[("COMMENTED", "KAFKA-1", "t")]),
+            person("git:b@x.org", "G. Harris", evidence=[("AUTHORED", "KAFKA-1", "t")]),
+        ]
+    )
+    assert pairs == []
+
+
+def test_a_real_shared_item_still_merges_when_a_synthetic_one_is_also_present():
+    pairs = person_tier1(
+        [
+            person(
+                "jira:jrao",
+                "Jun Rao",
+                evidence=[("COMMENTED", "ADO-1", "t", True), ("COMMENTED", "KAFKA-1", "t")],
+            ),
+            person(
+                "git:jun@x.org",
+                "Jun Rao",
+                evidence=[("AUTHORED", "ADO-1", "t", True), ("AUTHORED", "KAFKA-1", "t")],
+            ),
+        ]
+    )
+    assert rules(pairs) == {("git:jun@x.org", "jira:jrao"): "display_and_activity"}
     assert "KAFKA-1" in pairs[0].reason
 
 
@@ -113,13 +157,13 @@ def test_tier2_splits_the_band_and_never_crosses_a_block():
     by_id = {
         c.id: c
         for c in [
-            entity("Feature|a", "a"),
-            entity("Feature|b", "b"),
-            entity("Feature|c", "c"),
-            entity("Technology|a", "a", block="Technology"),
+            entity("Feature|a", "one two"),
+            entity("Feature|b", "one two"),
+            entity("Feature|c", "one two"),
+            entity("Technology|a", "one two", block="Technology"),
         ]
     }
-    auto, grey = tier2_pairs(
+    auto, grey, _ = tier2_pairs(
         [
             ("Feature|a", "Feature|b", 0.95),
             ("Feature|a", "Feature|c", 0.85),
@@ -133,11 +177,78 @@ def test_tier2_splits_the_band_and_never_crosses_a_block():
 
 
 def test_tier2_keeps_the_higher_score_when_the_knn_returns_a_pair_twice():
-    by_id = {c.id: c for c in [entity("Feature|a", "a"), entity("Feature|b", "b")]}
-    auto, grey = tier2_pairs(
+    by_id = {c.id: c for c in [entity("Feature|a", "one two"), entity("Feature|b", "one two")]}
+    auto, grey, _ = tier2_pairs(
         [("Feature|a", "Feature|b", 0.85), ("Feature|b", "Feature|a", 0.93)], by_id
     )
     assert not grey and [p.score for p in auto] == [0.93]
+
+
+def test_an_initials_only_pair_is_demoted_to_the_band_not_merged_and_not_lost():
+    """The measured failure mode: bge-m3 scores "S. An" against "S. An" at 1.0, and they
+    are two different people. Demoted, not dropped — a reader can still merge them."""
+    by_id = {c.id: c for c in [person("ado:a", "S. An"), person("ado:b", "S. An")]}
+    auto, grey, filtered = tier2_pairs([("ado:a", "ado:b", 1.0)], by_id)
+
+    assert auto == []
+    assert [(p.a, p.b) for p in grey] == [("ado:a", "ado:b")]
+    assert filtered["demoted_by_name_guard"] == 1
+    assert "initials" in grey[0].reason
+
+
+def test_the_guard_can_be_turned_off_to_reproduce_the_briefed_behaviour():
+    by_id = {c.id: c for c in [person("ado:a", "S. An"), person("ado:b", "S. An")]}
+    auto, _grey, _ = tier2_pairs([("ado:a", "ado:b", 1.0)], by_id, guard=False)
+    assert [(p.a, p.b) for p in auto] == [("ado:a", "ado:b")]
+
+
+def test_blocking_drops_a_grey_pair_whose_names_share_nothing():
+    by_id = {c.id: c for c in [person("jira:a", "Jun Rao"), person("jira:b", "Bruno Cadonna")]}
+    _auto, grey, filtered = tier2_pairs([("jira:a", "jira:b", 0.85)], by_id)
+
+    assert grey == [] and filtered["dropped_by_blocking"] == 1
+    _auto, unblocked, _ = tier2_pairs([("jira:a", "jira:b", 0.85)], by_id, blocking=False)
+    assert len(unblocked) == 1
+
+
+@pytest.mark.parametrize(
+    ("name_a", "name_b", "kept"),
+    [
+        ("S. An", "Sanghyeok An", True),  # shared surname
+        ("S. An", "Shichao An", True),  # the hard pair the adjudicator exists for
+        ("Cadonna, Bruno", "Bruno Cadonna", True),  # permutation
+        ("Jun Rao", "Bruno Cadonna", False),  # nothing in common
+    ],
+)
+def test_blocking_keeps_every_name_a_person_would_recognise(name_a, name_b, kept):
+    by_id = {c.id: c for c in [person("jira:a", name_a), person("jira:b", name_b)]}
+    _auto, grey, _ = tier2_pairs([("jira:a", "jira:b", 0.85)], by_id)
+    assert bool(grey) is kept
+
+
+def test_blocking_matches_on_a_username_stem_when_the_displays_do_not():
+    a = person("jira:chickenchickenlove", "Sanghyeok An")
+    b = person("ado:x.10115", "someone else", identities=["ado:chickenchickenlove.10115"])
+    _auto, grey, _ = tier2_pairs([(a.id, b.id, 0.85)], {a.id: a, b.id: b})
+    assert len(grey) == 1
+
+
+def test_the_band_table_prices_every_floor_with_and_without_blocking():
+    by_id = {
+        c.id: c
+        for c in [
+            person("jira:a", "Jun Rao"),
+            person("jira:b", "Bruno Cadonna"),
+            person("jira:c", "Jun Rao Two"),
+        ]
+    }
+    rows = band_table(
+        [("jira:a", "jira:b", 0.84), ("jira:a", "jira:c", 0.84)], by_id, floors=(0.80, 0.85)
+    )
+    by = {(r["floor"], r["blocking"]): r for r in rows}
+    assert by[(0.80, True)]["grey_pairs"] == 1  # the unrelated pair is blocked out
+    assert by[(0.80, False)]["grey_pairs"] == 2
+    assert by[(0.85, True)]["grey_pairs"] == 0  # both are under the floor
 
 
 def test_dedupe_keeps_the_earlier_tier():

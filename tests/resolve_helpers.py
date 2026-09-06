@@ -9,7 +9,11 @@ from brain.resolve.models import Candidate, Evidence
 
 def person(node_id: str, name: str, **kw: Any) -> Candidate:
     evidence = [
-        e if isinstance(e, Evidence) else Evidence(role=e[0], key=e[1], title=e[2])
+        e
+        if isinstance(e, Evidence)
+        else Evidence(
+            role=e[0], key=e[1], title=e[2], synthetic=bool(e[3]) if len(e) > 3 else False
+        )
         for e in kw.pop("evidence", [])
     ]
     return Candidate(

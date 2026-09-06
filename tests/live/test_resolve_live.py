@@ -436,3 +436,40 @@ def test_the_reload_points_every_edge_at_the_survivor(ctx):
         gone=["git:junrao@example.org", "confluence:rao.jun"],
     )
     assert orphaned == []
+
+
+def test_reset_drops_the_person_layer_and_load_rebuilds_it(ctx, split_corpus, workdir):
+    """There is no unmerge, so a threshold change means reset -> load -> resolve."""
+    from brain.resolve.ledger import ResolutionLedger
+    from brain.resolve.reset import run_reset
+
+    plan, code = run_reset(
+        ctx, canonical_dir=split_corpus, kind="person", confirmed=False, echo=lambda _m: None
+    )
+    assert code == 0 and plan["applied"] is False
+    assert plan["nodes_to_delete"] == 3 and plan["ledger_rows_to_drop"] == 3
+    assert len(persons(ctx)) == 3  # a dry preview changes nothing
+
+    done, code = run_reset(
+        ctx, canonical_dir=split_corpus, kind="person", confirmed=True, echo=lambda _m: None
+    )
+    assert code == 0 and done["applied"] is True
+    assert persons(ctx) == {}
+    assert ResolutionLedger.load(split_corpus).counts()["persons"] == 0
+    # …and nothing else went with them
+    assert ctx.read(f"MATCH (w:{ctx.label('WorkItem')}) RETURN count(w) AS n") == [{"n": 7}]
+
+    report, code = run_load(
+        client=ctx.client,
+        canonical_dir=split_corpus,
+        reports_dir=workdir["reports"],
+        prefix=PREFIX,
+        write_report=False,
+        echo=lambda _m: None,
+    )
+    # A rebuild legitimately creates everything, so only that one check fails — and it
+    # is the one `run_load` deliberately keeps out of the exit code.
+    assert code == 0
+    assert [c["name"] for c in report["checks"] if not c["ok"]] == ["second_run_creates_nothing"]
+    assert report["census"]["nodes_by_label"]["Person"] == 6
+    assert report["resolution"]["identities_folded"] == 0

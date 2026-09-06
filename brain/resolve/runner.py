@@ -31,6 +31,8 @@ from brain.resolve.names import survivor
 from brain.resolve.tiers import (
     ADJUDICATE_FLOOR,
     AUTO_THRESHOLD,
+    MIN_SUBSTANTIVE_TOKENS,
+    band_table,
     dedupe,
     entity_tier1,
     person_tier1,
@@ -286,14 +288,18 @@ def score_tier2(
         ctx, label, candidates, embedder, evidence=vector_evidence, echo=echo
     )
     scored = resolve_graph.knn(ctx, label, k=k, floor=ADJUDICATE_FLOOR)
-    auto, grey = tier2_pairs(scored, by_id, text_note=usage["text_choice"])
+    auto, grey, filtered = tier2_pairs(scored, by_id, text_note=usage["text_choice"])
     stats = {
         "k": k,
         "band": [ADJUDICATE_FLOOR, AUTO_THRESHOLD],
+        "min_substantive_tokens": MIN_SUBSTANTIVE_TOKENS,
         "embedding": usage,
         "scored_pairs": len(scored),
         "auto": len(auto),
         "grey": len(grey),
+        "filtered": filtered,
+        # Reported, never applied: what the adjudicator's bill would be at other floors.
+        "band_table": band_table(scored, by_id),
     }
     return auto, grey, stats
 

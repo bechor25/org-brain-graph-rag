@@ -563,6 +563,81 @@ def resolve_gold(
     raise typer.Exit(code=code)
 
 
+@resolve_app.command("reset")
+def resolve_reset(
+    kinds: str = typer.Option("person", "--kinds", help="person | entity (one at a time)."),
+    yes: bool = typer.Option(
+        False, "--yes", help="Actually do it. Without this the command only says what it would do."
+    ),
+) -> None:
+    """Drop the resolved layer so `brain load` can rebuild it — there is no unmerge."""
+    from brain.config import get_settings
+    from brain.graph.client import GraphClient
+    from brain.graph.context import GraphContext
+    from brain.resolve.reset import ResetError, run_reset
+    from brain.resolve.runner import resolve_kinds
+
+    try:
+        chosen = resolve_kinds(kinds)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--kinds") from exc
+    if len(chosen) != 1:
+        raise typer.BadParameter("pick one kind at a time", param_hint="--kinds")
+
+    s = get_settings()
+    try:
+        with GraphClient(s.neo4j_uri, s.neo4j_user, s.neo4j_password, s.neo4j_database) as client:
+            _, code = run_reset(
+                GraphContext(client),
+                canonical_dir=s.canonical_dir,
+                kind=chosen[0],
+                confirmed=yes,
+                echo=typer.echo,
+            )
+    except (ResetError, OSError, ValueError, RuntimeError) as exc:
+        typer.echo(f"resolve reset: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    raise typer.Exit(code=code)
+
+
+@resolve_app.command("sample")
+def resolve_sample(
+    n: int = typer.Option(40, "--n", min=1, help="How many merged groups to print."),
+    seed: int = typer.Option(7, "--seed", help="Same seed, same sample — so it can be re-read."),
+    kinds: str = typer.Option("person", "--kinds", help="person | entity (one at a time)."),
+) -> None:
+    """Print merged groups the gold cannot grade, for a human precision check."""
+    from brain.config import get_settings
+    from brain.graph.client import GraphClient
+    from brain.graph.context import GraphContext
+    from brain.resolve.runner import resolve_kinds
+    from brain.resolve.sample import run_sample
+
+    try:
+        chosen = resolve_kinds(kinds)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--kinds") from exc
+    if len(chosen) != 1:
+        raise typer.BadParameter("pick one kind at a time", param_hint="--kinds")
+
+    s = get_settings()
+    try:
+        with GraphClient(s.neo4j_uri, s.neo4j_user, s.neo4j_password, s.neo4j_database) as client:
+            _, code = run_sample(
+                GraphContext(client),
+                canonical_dir=s.canonical_dir,
+                eval_dir=s.eval_dir,
+                kind=chosen[0],
+                n=n,
+                seed=seed,
+                echo=typer.echo,
+            )
+    except (OSError, ValueError, RuntimeError) as exc:
+        typer.echo(f"resolve sample: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    raise typer.Exit(code=code)
+
+
 @resolve_app.command("eval")
 def resolve_eval(
     kinds: str = typer.Option("all", "--kinds", help="person | entity | all."),

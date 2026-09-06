@@ -16,14 +16,24 @@ from __future__ import annotations
 import itertools
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
+from typing import Any
 
 from brain.resolve.models import Candidate, Pair, make_pair
-from brain.resolve.names import norm_display, source_of
+from brain.resolve.names import display_tokens, key_of, norm_display, source_of
 
 #: Cosine at or above which tier 2 merges without asking (spec 3.6, brief decision 3).
 AUTO_THRESHOLD = 0.92
 #: Cosine below which tier 2 does not even ask.
 ADJUDICATE_FLOOR = 0.80
+#: Substantive name words (initials do not count) a display must carry before any tier is
+#: allowed to merge it *without asking*. Measured: "S. An", "J. Wang", "N. Kumar" are one
+#: surname and one letter, bge-m3 scores them 0.93-1.00 against a different person of the
+#: same surname, and every graded false positive tier 2 made was a pair like that. Below
+#: this the pair is not dropped — it is demoted to the adjudicator, which can read context.
+MIN_SUBSTANTIVE_TOKENS = 2
+#: Shortest identity-key stem that counts as a name in the grey-band blocking. Three
+#: characters match by accident; four rarely do.
+MIN_STEM = 4
 
 #: Tier-1 rule names, in the order the report lists them.
 PERSON_RULES: tuple[str, ...] = (
@@ -38,6 +48,65 @@ ENTITY_RULES: tuple[str, ...] = ("norm_name",)
 
 def _index(candidates: Iterable[Candidate]) -> dict[str, Candidate]:
     return {c.id: c for c in candidates}
+
+
+def substantive(name: str | None) -> int:
+    """How many words of the display are more than an initial."""
+    return len(display_tokens(name))
+
+
+def auto_guard(a: Candidate, b: Candidate) -> bool:
+    """May this pair be merged without a reader looking at it?
+
+    Only when both sides name a person in more than one word. An initials-plus-surname
+    display carries no evidence a machine can weigh — see `MIN_SUBSTANTIVE_TOKENS`.
+    """
+    return (
+        substantive(a.name) >= MIN_SUBSTANTIVE_TOKENS
+        and substantive(b.name) >= MIN_SUBSTANTIVE_TOKENS
+    )
+
+
+def stems(candidate: Candidate) -> frozenset[str]:
+    """Name-shaped words from every identity key this candidate holds.
+
+    `ado:an.sanghyeok.10115` gives {`sanghyeok`}; `jira:chickenchickenlove` gives
+    {`chickenchickenlove`}. Digits and short fragments are dropped: they match by accident.
+    """
+    words: set[str] = set()
+    for identity in candidate.identities or [candidate.id]:
+        for word in norm_display(key_of(identity)).split(" "):
+            if len(word) >= MIN_STEM and not word.isdigit():
+                words.add(word)
+    return frozenset(words)
+
+
+def initials_key(name: str | None) -> tuple[str, str] | None:
+    """`"S. An"` and `"Sanghyeok An"` both give `("s", "an")`. `None` for a one-word name.
+
+    This is what makes the *hard* pairs reachable: the whole point of the grey band is that
+    the adjudicator sees "S. An" beside "Shichao An" and beside "Sanghyeok An" and decides
+    which is which. Blocking them out to save batches would remove the question.
+    """
+    words = [w for w in norm_display(name).split(" ") if w]
+    if len(words) < 2:
+        return None
+    return (words[0][0], words[-1])
+
+
+def name_blocked(a: Candidate, b: Candidate) -> bool:
+    """Do these two names share anything a person would recognise as the same name?
+
+    A cosine of 0.83 between two short unrelated names is noise the embedding cannot help
+    with; a shared surname, a shared username stem or the same initial-plus-surname is a
+    question worth an agent's time. Applied to the grey band only — never to a merge.
+    """
+    if display_tokens(a.name) & display_tokens(b.name):
+        return True
+    if stems(a) & stems(b):
+        return True
+    key = initials_key(a.name)
+    return key is not None and key == initials_key(b.name)
 
 
 def _pairs_from_buckets(
@@ -120,15 +189,18 @@ def person_tier1(
                 )
             )
 
-    # (b2) identical display *and* at least one item both of them touched.
+    # (b2) identical display *and* at least one REAL item both of them touched, and a
+    # display that says more than one word. The synthetic layer is excluded because the
+    # generator deliberately puts two different people of one name on one ADO item, so
+    # "both touched it" there is a statement about the injected noise, not about identity.
     by_display: dict[str, list[str]] = defaultdict(list)
     for c in candidates:
         if name := norm_display(c.name):
             by_display[name].append(c.id)
     for name, ids in sorted(by_display.items()):
         for a, b in itertools.combinations(sorted(set(ids)), 2):
-            shared = by_id[a].touched & by_id[b].touched
-            if not shared:
+            shared = by_id[a].touched_real & by_id[b].touched_real
+            if not shared or not auto_guard(by_id[a], by_id[b]):
                 continue
             pairs.append(
                 make_pair(
@@ -221,21 +293,36 @@ def tier2_pairs(
     by_id: dict[str, Candidate],
     *,
     text_note: str = "the embedded text",
-) -> tuple[list[Pair], list[Pair]]:
-    """Split scored candidate pairs into (auto-merge, adjudicate). Same block only.
+    guard: bool = True,
+    blocking: bool = True,
+    floor: float = ADJUDICATE_FLOOR,
+) -> tuple[list[Pair], list[Pair], dict[str, int]]:
+    """Split scored candidate pairs into (auto-merge, adjudicate) plus what was filtered.
 
     `text_note` says what was embedded, so a merge reason in the ledger still means
     something a year later — `--vector-evidence` changes what a cosine of 0.94 is about.
+
+    `guard` demotes an auto pair whose names are initials to the grey band (it is not
+    dropped: a reader may still merge it). `blocking` drops grey pairs whose names share
+    nothing at all, which is the only filter here that removes a question rather than
+    moving it.
     """
     auto: dict[tuple[str, str], Pair] = {}
     grey: dict[tuple[str, str], Pair] = {}
+    filtered = {"demoted_by_name_guard": 0, "dropped_by_blocking": 0}
     for a, b, score in scored:
         if a == b or a not in by_id or b not in by_id:
             continue
         if by_id[a].block != by_id[b].block:
             continue
-        where = band(score)
-        if where == "reject":
+        if score < floor:
+            continue
+        where = "auto" if score >= AUTO_THRESHOLD else "grey"
+        demoted = where == "auto" and guard and not auto_guard(by_id[a], by_id[b])
+        if demoted:
+            where = "grey"
+        if where == "grey" and blocking and not name_blocked(by_id[a], by_id[b]):
+            filtered["dropped_by_blocking"] += 1
             continue
         pair = make_pair(
             a,
@@ -243,10 +330,15 @@ def tier2_pairs(
             kind=by_id[a].kind,
             block=by_id[a].block,
             tier=2,
-            rule=f"embedding_{where}",
+            rule="embedding_auto" if where == "auto" else "embedding_grey",
             score=round(score, 4),
-            reason=f"cosine {score:.4f} on {text_note}",
+            reason=(
+                f"cosine {score:.4f} on {text_note}"
+                + (" — names are initials, so not merged unasked" if demoted else "")
+            ),
         )
+        if demoted:
+            filtered["demoted_by_name_guard"] += 1
         target = auto if where == "auto" else grey
         prior = target.get(pair.key)
         if prior is None or pair.score > prior.score:
@@ -256,7 +348,34 @@ def tier2_pairs(
     return (
         sorted(auto.values(), key=lambda p: (-p.score, p.a, p.b)),
         sorted(grey.values(), key=lambda p: (-p.score, p.a, p.b)),
+        filtered,
     )
+
+
+def band_table(
+    scored: Iterable[tuple[str, str, float]],
+    by_id: dict[str, Candidate],
+    *,
+    floors: Sequence[float] = (0.80, 0.83, 0.85),
+) -> list[dict[str, Any]]:
+    """Grey-band size at each floor, with and without blocking — the adjudicator's bill.
+
+    Reported, never applied: the floor stays what the spec says until a brief moves it.
+    """
+    rows: list[dict[str, Any]] = []
+    scored = list(scored)
+    for floor in floors:
+        for blocking in (True, False):
+            _auto, grey, filtered = tier2_pairs(scored, by_id, blocking=blocking, floor=floor)
+            rows.append(
+                {
+                    "floor": floor,
+                    "blocking": blocking,
+                    "grey_pairs": len(grey),
+                    "dropped_by_blocking": filtered["dropped_by_blocking"],
+                }
+            )
+    return rows
 
 
 def dedupe(pairs: Iterable[Pair]) -> list[Pair]:

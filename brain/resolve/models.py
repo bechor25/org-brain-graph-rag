@@ -14,13 +14,20 @@ KINDS: tuple[str, ...] = ("person", "entity")
 
 
 class Evidence(BaseModel):
-    """One thing a candidate touched: what it is, and how the candidate touched it."""
+    """One thing a candidate touched: what it is, and how the candidate touched it.
+
+    `synthetic` marks an item the `synthetic-org-generator` agents invented. Real activity
+    and invented activity are both evidence to a reader, but only real activity is evidence
+    to the deterministic tier: the generator deliberately put two different people called
+    "G. Harris" on ADO-20068, so "they touched the same item" is a fact about the noise.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     role: str
     key: str
     title: str
+    synthetic: bool = False
 
 
 class Candidate(BaseModel):
@@ -50,8 +57,13 @@ class Candidate(BaseModel):
 
     @property
     def touched(self) -> frozenset[str]:
-        """Every item key this candidate is attached to — the activity-overlap test."""
+        """Every item key this candidate is attached to."""
         return frozenset(e.key for e in self.evidence if e.key)
+
+    @property
+    def touched_real(self) -> frozenset[str]:
+        """The same, minus the synthetic layer — what tier 1 is allowed to reason from."""
+        return frozenset(e.key for e in self.evidence if e.key and not e.synthetic)
 
     def embed_text(self, max_evidence: int = 5) -> str:
         """What tier 2 embeds. Brief 08 decision 3: the name is never enough on its own.
