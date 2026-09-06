@@ -46,7 +46,8 @@ def node_rows(documents: list[Document], prov: SyntheticProvenance) -> list[dict
             "synthetic": d.synthetic,
             "raw_url": d.raw_url,
         }
-        props.update(prov.props(d.key))
+        # the ledger is keyed by canonical id (`confluence:5001`), not by `key`
+        props.update(prov.props(d.id))
         rows.append({"key": d.key, "props": props})
     return rows
 
@@ -64,12 +65,15 @@ def load_edges(ctx: GraphContext, corpus: Corpus) -> dict[str, Any]:
     authored: list[dict[str, Any]] = []
     child_of: list[dict[str, Any]] = []
     variant_of: list[dict[str, Any]] = []
+    in_space: list[dict[str, Any]] = []
     stats = {
         "authors_unknown": 0,
         "ancestors_total": 0,
         "ancestors_outside_corpus": 0,
         "kip_of_dangling": 0,
+        "space_unknown": 0,
     }
+    known_spaces = corpus.container_names.get("Space", set())
 
     for d in corpus.documents:
         person = corpus.person(d.source, d.author)
@@ -92,10 +96,17 @@ def load_edges(ctx: GraphContext, corpus: Corpus) -> dict[str, Any]:
             else:
                 stats["kip_of_dangling"] += 1
 
+        if d.space:
+            if d.space in known_spaces:
+                in_space.append({"src": d.key, "dst": d.space})
+            else:
+                stats["space_unknown"] += 1
+
     person_node = ("Person", "id")
     return {
         **stats,
         "AUTHORED": emit(ctx, person_node, "AUTHORED", NODE, authored),
         "CHILD_OF": emit(ctx, NODE, "CHILD_OF", NODE, child_of),
         "VARIANT_OF": emit(ctx, NODE, "VARIANT_OF", NODE, variant_of),
+        "IN_SPACE": emit(ctx, NODE, "IN_SPACE", ("Space", "name"), in_space),
     }

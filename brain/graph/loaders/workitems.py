@@ -25,10 +25,13 @@ from brain.graph.loaders import emit
 from brain.graph.mapping import (
     IGNORED_CHANGELOG_FIELDS,
     STATUS_CHANGE_FIELDS,
-    assignment_intervals,
+    TEST_PLAN_LABEL,
+    LinkEdge,
+    assignment_history,
     dedupe_link_edges,
     is_known_link_type,
     link_edge,
+    parse_test_runs,
     statuschange_id,
     workitem_label,
 )
@@ -70,7 +73,8 @@ def node_rows(
             "synthetic": w.synthetic,
             "raw_url": w.raw_url,
         }
-        props.update(prov.props(w.key))
+        # the ledger is keyed by canonical id (`xray:XT-10007`), not by `key`
+        props.update(prov.props(w.id))
         grouped.setdefault(label, []).append({"key": w.key, "props": props})
     return grouped, types, unknown
 
@@ -124,7 +128,7 @@ def _status_change_rows(
                 "by": entry.by,
                 "synthetic": w.synthetic,
             }
-            props.update(prov.props(w.key))
+            props.update(prov.props(w.id))
             nodes[sid] = {"key": sid, "props": props}
             edges.append({"src": w.key, "dst": sid})
     stats = {
@@ -146,12 +150,13 @@ def _link_rows(corpus: Corpus) -> tuple[dict[str, list[dict[str, Any]]], dict[st
     dangling = 0
     self_links = 0
     declared = 0
+    labels = {w.key: workitem_label(w.type, w.source) for w in corpus.workitems}
     for w in corpus.workitems:
         for link in w.links:
             declared += 1
             if not is_known_link_type(link.type):
                 unknown[link.type] += 1
-            edge = link_edge(w.key, link)
+            edge = link_edge(w.key, link, labels.get(w.key), labels.get(link.target))
             if edge is None:
                 self_links += 1
                 continue
@@ -159,6 +164,12 @@ def _link_rows(corpus: Corpus) -> tuple[dict[str, list[dict[str, Any]]], dict[st
                 dangling += 1
                 continue
             edges.append(edge)
+
+    # A Test or Execution filed under a TestPlan states its membership through the item
+    # hierarchy instead of a link; both spellings mean the same edge.
+    for w in corpus.workitems:
+        if w.parent and labels.get(w.parent) == TEST_PLAN_LABEL and w.parent != w.key:
+            edges.append(LinkEdge(rel="IN_PLAN", src=w.key, dst=w.parent, raw_type="parent"))
 
     deduped = dedupe_link_edges(edges)
     grouped: dict[str, list[dict[str, Any]]] = {}
@@ -193,21 +204,30 @@ def load_edges(ctx: GraphContext, corpus: Corpus, prov: SyntheticProvenance) -> 
     affects: list[dict[str, Any]] = []
     parents: list[dict[str, Any]] = []
     commented: list[dict[str, Any]] = []
+    undated_comments: list[dict[str, Any]] = []
+    runs: list[dict[str, Any]] = []
     stats: dict[str, Any] = {
         "reporters_unknown": 0,
         "assignments_derived": 0,
         "assignments_unknown_person": 0,
         "assignments_from_field": 0,
+        "assignments_zero_length_dropped": 0,
         "parent_dangling": 0,
         "comments": 0,
         "comment_authors_unknown": 0,
         "comments_without_timestamp": 0,
         "components_unknown": 0,
         "versions_unknown": 0,
+        "runs_parsed": 0,
+        "runs_dangling_test": 0,
     }
     known_components = corpus.container_names.get("Component", set())
     known_versions = corpus.container_names.get("Version", set())
     seen_comments: set[tuple[str, str, Any]] = set()
+    seen_undated: set[tuple[str, str]] = set()
+    seen_runs: set[tuple[str, str]] = set()
+    alias_candidates: Counter = Counter()
+    alias_examples: dict[tuple[str, str], list[str]] = {}
 
     for w in corpus.workitems:
         reporter = corpus.person(w.source, w.reporter)
@@ -216,20 +236,26 @@ def load_edges(ctx: GraphContext, corpus: Corpus, prov: SyntheticProvenance) -> 
         elif reporter:
             reported.append({"src": w.key, "dst": reporter})
 
-        for a in assignment_intervals(w):
+        history = assignment_history(w)
+        stats["assignments_zero_length_dropped"] += history.zero_length_dropped
+        for cand in history.alias_candidates:
+            pair = (f"{w.source}:{cand.changelog_key}", f"{w.source}:{cand.field_key}")
+            alias_candidates[pair] += 1
+            alias_examples.setdefault(pair, []).append(cand.work_item)
+        for a in history.intervals:
             stats["assignments_derived"] += 1
             person = corpus.person(w.source, a.person_key)
             if not person:
                 stats["assignments_unknown_person"] += 1
                 continue
-            if a.from_field:
+            if a.source == "field":
                 stats["assignments_from_field"] += 1
             assigned.append(
                 {
                     "src": w.key,
                     "dst": person,
                     "valid_from": a.valid_from,
-                    "props": {"valid_to": a.valid_to},
+                    "props": {"valid_to": a.valid_to, "source": a.source},
                 }
             )
 
@@ -257,14 +283,34 @@ def load_edges(ctx: GraphContext, corpus: Corpus, prov: SyntheticProvenance) -> 
 
         for c in w.comments:
             stats["comments"] += 1
+            for run in parse_test_runs(c.body):
+                if run.test_key not in corpus.workitem_keys or run.test_key == w.key:
+                    stats["runs_dangling_test"] += 1
+                    continue
+                if (w.key, run.test_key) in seen_runs:
+                    continue
+                seen_runs.add((w.key, run.test_key))
+                stats["runs_parsed"] += 1
+                runs.append(
+                    {
+                        "src": w.key,
+                        "dst": run.test_key,
+                        "props": {"status": run.status, "reason": run.reason, "at": c.at},
+                    }
+                )
             author = corpus.person(w.source, c.author)
             if not author:
                 stats["comment_authors_unknown"] += 1
                 continue
             if c.at is None:
-                # No timestamp, no merge key: one edge for every undated comment this
-                # person left on this item, rather than a new edge on every run.
+                # An undated comment still happened. It merges without a key property, so
+                # every undated comment by this person on this item shares one edge rather
+                # than minting a new one on every run — the alternative is a MERGE on a
+                # null property, which matches nothing and duplicates for ever.
                 stats["comments_without_timestamp"] += 1
+                if (author, w.key) not in seen_undated:
+                    seen_undated.add((author, w.key))
+                    undated_comments.append({"src": author, "dst": w.key})
                 continue
             k = (author, w.key, c.at)
             if k in seen_comments:
@@ -285,8 +331,14 @@ def load_edges(ctx: GraphContext, corpus: Corpus, prov: SyntheticProvenance) -> 
         "FIX_VERSION": emit(ctx, NODE, "FIX_VERSION", ("Version", "name"), fix_versions),
         "AFFECTS_VERSION": emit(ctx, NODE, "AFFECTS_VERSION", ("Version", "name"), affects),
         "PARENT_OF": emit(ctx, NODE, "PARENT_OF", NODE, parents),
-        "COMMENTED": emit(ctx, PERSON, "COMMENTED", NODE, commented, key_props=("at",)),
+        "COMMENTED": (
+            emit(ctx, PERSON, "COMMENTED", NODE, commented, key_props=("at",))
+            + emit(ctx, PERSON, "COMMENTED", NODE, undated_comments)
+        ),
         "HAS_CHANGE": emit(ctx, NODE, "HAS_CHANGE", STATUS_CHANGE, sc_edges),
+        # One run per (execution, test): the pair is deduplicated above, so the edge
+        # needs no key property to stay a single edge across runs.
+        "HAS_RUN": emit(ctx, NODE, "HAS_RUN", NODE, runs, set_props=True),
     }
     for rel, rows in sorted(link_groups.items()):
         key_props = ("type",) if rel == "LINKS_TO" else ()
@@ -298,5 +350,14 @@ def load_edges(ctx: GraphContext, corpus: Corpus, prov: SyntheticProvenance) -> 
         **stats,
         "links": link_stats,
         "status_changes": {**sc_stats, "nodes": len(sc_nodes)},
+        "alias_candidates": [
+            {
+                "changelog_identity": pair[0],
+                "field_identity": pair[1],
+                "work_items": count,
+                "examples": sorted(alias_examples[pair])[:3],
+            }
+            for pair, count in alias_candidates.most_common()
+        ],
         "edges": edges,
     }

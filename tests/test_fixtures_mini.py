@@ -12,8 +12,8 @@ def test_mini_corpus_parses_and_has_expected_shape():
     people = list(read_jsonl(MINI / "persons.jsonl", Person))
     changes = list(read_jsonl(MINI / "changes.jsonl", Change))
     containers = list(read_jsonl(MINI / "containers.jsonl", Container))
-    assert len(wis) == 6 and len(docs) == 1 and len(people) == 3
-    assert len(changes) == 4 and len(containers) == 4
+    assert len(wis) == 7 and len(docs) == 1 and len(people) == 3
+    assert len(changes) == 4 and len(containers) == 5
     # the text-only reference: KAFKA-100 mentions KIP-5 only in its description
     k100 = next(w for w in wis if w.key == "KAFKA-100")
     assert ("kip", "KIP-5") in {(r.kind, r.key) for r in k100.refs}

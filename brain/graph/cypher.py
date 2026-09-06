@@ -16,13 +16,26 @@ from brain.graph.context import GraphContext
 
 
 def node_merge(
-    ctx: GraphContext, label: str, key_prop: str, extra_labels: Sequence[str] = ()
+    ctx: GraphContext,
+    label: str,
+    key_prop: str,
+    extra_labels: Sequence[str] = (),
+    *,
+    on_create: bool = False,
 ) -> str:
-    """`MERGE (n:Label {key: row.key}) SET n += row.props` (+ optional extra labels)."""
+    """`MERGE (n:Label {key: row.key}) SET n += row.props` (+ optional extra labels).
+
+    `on_create` adds `ON CREATE SET n += row.on_create` for properties a *later* step
+    owns: `brain resolve` sets `Person.resolved = true`, and a rerun of `brain load` must
+    not quietly undo it. Anything load itself owns stays in `props` and is rewritten every
+    run, because there the canonical file is the truth.
+    """
     extra = "".join(f"\nSET n:{ctx.label(x)}" for x in extra_labels)
+    created = "\nON CREATE SET n += row.on_create" if on_create else ""
     return (
         "UNWIND $rows AS row\n"
-        f"MERGE (n:{ctx.label(label)} {{`{key_prop}`: row.key}})\n"
+        f"MERGE (n:{ctx.label(label)} {{`{key_prop}`: row.key}})"
+        f"{created}\n"
         "SET n += row.props"
         f"{extra}"
     )

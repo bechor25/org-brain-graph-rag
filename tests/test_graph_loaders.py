@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-from brain.canon.models import Identity, Ref
+from typing import get_args
+
+from brain.canon.models import Container, Identity, Ref
 from brain.graph.corpus import load_corpus
 from brain.graph.loaders import changes as changes_loader
 from brain.graph.loaders import containers as containers_loader
 from brain.graph.loaders import refs as refs_loader
+from brain.graph.mapping import CONTAINER_LABELS
 from brain.graph.provenance import SyntheticProvenance
 from tests.graph_helpers import (
     change,
@@ -104,12 +107,26 @@ def test_a_person_with_several_identities_is_found_by_each_of_them():
     assert c.person("jira", "unknown") is None
 
 
-def test_container_kinds_without_a_label_are_reported_not_guessed():
+def test_every_container_kind_the_canonical_model_allows_has_a_label():
+    """The closed set in `Container.kind` and the label map are one decision, not two."""
+    kinds = get_args(Container.model_fields["kind"].annotation)
+    assert set(kinds) == set(CONTAINER_LABELS)
     grouped, unknown = containers_loader.node_rows(
-        [container("component", "clients"), container("testset", "regression")], NO_PROV
+        [container(kind, f"{kind}-1") for kind in kinds], NO_PROV
+    )
+    assert sorted(grouped) == sorted(set(CONTAINER_LABELS.values()))
+    assert unknown == {}
+
+
+def test_a_kind_the_label_map_does_not_know_is_reported_not_guessed():
+    """Unreachable through the model today; the guard is what keeps it unreachable."""
+    plan = container("testplan", "3.7.0 regression")
+    object.__setattr__(plan, "kind", "iteration")
+    grouped, unknown = containers_loader.node_rows(
+        [container("component", "clients"), plan], NO_PROV
     )
     assert list(grouped) == ["Component"]
-    assert unknown == {"testset": 1}
+    assert unknown == {"iteration": 1}
 
 
 def test_the_same_container_name_from_two_sources_is_one_node():
@@ -136,7 +153,7 @@ def test_commit_and_pull_request_rows_split_one_canonical_type_into_two_labels()
 
 def test_the_mini_fixture_loads_as_a_corpus():
     c = load_corpus_from_fixture()
-    assert len(c.workitems) == 6
+    assert len(c.workitems) == 7
     assert c.pr_numbers == {14001}
     assert c.person("git", "junrao@example.org") == "jira:jrao"
 

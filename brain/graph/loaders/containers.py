@@ -37,7 +37,9 @@ def node_rows(
             "parent": c.parent,
             "synthetic": c.synthetic,
         }
-        props.update(prov.props(c.name))
+        # the ledger is keyed by canonical id (`xray:testplan:3.7.0 regression`), never
+        # by the name the node merges on
+        props.update(prov.props(c.id))
         # Two sources naming the same component produce one node; last writer wins on the
         # descriptive properties, and the name is the identity either way.
         grouped.setdefault(label, {})[c.name] = {"key": c.name, "props": props}

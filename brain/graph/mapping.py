@@ -64,12 +64,18 @@ def workitem_label(item_type: str, source: str) -> str | None:
 
 
 #: Container kind → node label. A kind with no label here is reported, never guessed at.
+#: `testplan`/`testset` are containers *and* work item types (`XP-12` is a `TestPlan`
+#: work item, `xray:testplan:3.7.0 regression` is the grouping it belongs to). They share
+#: a label by planner decision; they never share a node, because a container merges on
+#: `name` and a work item on `key`, and neither carries the other's property.
 CONTAINER_LABELS: dict[str, str] = {
     "component": "Component",
     "version": "Version",
     "sprint": "Sprint",
     "area": "Area",
     "space": "Space",
+    "testplan": "TestPlan",
+    "testset": "TestSet",
 }
 
 #: The property each container label merges on. All of them are the container's name.
@@ -86,13 +92,17 @@ def container_label(kind: str) -> str | None:
 #: `LINKS_TO.type` vocabulary. Every value is oriented *from the issue that declared the
 #: link to the issue it named*, which is what Jira's own outward description says:
 #: `Blocker` reads "blocks", `Cloners` reads "is a clone of", `Required` reads "requires".
-#: The nine real Kafka types are from `data/reports/canon.json` → `link_types`; `related`
-#: and `defect` arrive with the synthetic Xray layer.
+#: The nine real Kafka types are from `data/reports/canon.json` → `link_types`; `related`,
+#: `defect`, `blocks` and `duplicates` are the synthetic layer's spellings — it states the
+#: relation the way the graph does, not the way Jira names the link type, and every value
+#: of the link enum in `brain/synth/schema.json` has to land somewhere on purpose.
 LINK_TYPE_MAP: dict[str, str] = {
     "reference": "relates",
     "related": "relates",
     "duplicate": "duplicates",
+    "duplicates": "duplicates",
     "blocker": "blocks",
+    "blocks": "blocks",
     "problem/incident": "causes",
     "cloners": "clones",
     "supercedes": "supersedes",
@@ -120,29 +130,54 @@ DEDICATED_LINK_RELS: dict[str, tuple[str, Literal["forward", "reverse"]]] = {
     "parent": ("PARENT_OF", "reverse"),
 }
 
+#: The work item label that turns a `tests` link into membership instead of coverage.
+#: A `Test` that declares `tests → KAFKA-100` covers that issue; a `TestPlan` that
+#: declares `tests → XT-10007` contains that test, which is `IN_PLAN`, not `TESTS`.
+TEST_PLAN_LABEL = "TestPlan"
+
 
 @dataclass(frozen=True)
 class LinkEdge:
     """One directed edge a formal link asks for, before duplicates are collapsed."""
 
-    rel: str  # LINKS_TO | TESTS | EXECUTED_IN | PARENT_OF
+    rel: str  # LINKS_TO | TESTS | EXECUTED_IN | IN_PLAN | PARENT_OF
     src: str
     dst: str
     type: str | None = None  # LINKS_TO only
     raw_type: str = ""
 
 
-def link_edge(owner_key: str, link: Link) -> LinkEdge | None:
+def link_edge(
+    owner_key: str,
+    link: Link,
+    owner_label: str | None = None,
+    target_label: str | None = None,
+) -> LinkEdge | None:
     """The edge a single canonical `Link` asks for, or None for a self-link.
 
     Both ends of a Jira link reach us as separate records — the declaring issue with
     `direction="out"`, the named issue with `direction="in"` — and both produce the same
     ordered pair here. Collapsing the pair is :func:`dedupe_link_edges`.
+
+    The labels are needed only because `tests` means two different things depending on
+    which kind of item is at each end (see `TEST_PLAN_LABEL`); both are passed so the
+    routing is the same whichever side declared the link.
     """
     raw = str(link.type or "").strip().lower()
     src, dst = (owner_key, link.target) if link.direction == "out" else (link.target, owner_key)
     if src == dst:
         return None
+    if raw == "tests" and TEST_PLAN_LABEL in (owner_label, target_label):
+        # the plan names its tests; the graph says test IN_PLAN plan
+        plan, member = (
+            (owner_key, link.target)
+            if owner_label == TEST_PLAN_LABEL
+            else (
+                link.target,
+                owner_key,
+            )
+        )
+        return LinkEdge(rel="IN_PLAN", src=member, dst=plan, raw_type=raw)
     if dedicated := DEDICATED_LINK_RELS.get(raw):
         rel, orientation = dedicated
         if orientation == "reverse":
@@ -206,6 +241,11 @@ def statuschange_id(item_key: str, entry: ChangelogEntry) -> str:
 # ------------------------------------------------------------------ assignee history
 
 
+#: Where an interval's identity came from. `field` means `WorkItem.assignee`, which is
+#: the only place the *current* owner is spelled the way `Person.id` spells it.
+AssignmentSource = Literal["changelog", "field"]
+
+
 @dataclass(frozen=True)
 class Assignment:
     """One `ASSIGNED_TO{valid_from, valid_to}` interval. `valid_to=None` = still open."""
@@ -213,9 +253,30 @@ class Assignment:
     person_key: str  # identity key in the source, e.g. the Jira username
     valid_from: datetime
     valid_to: datetime | None = None
-    #: True when the interval comes from `WorkItem.assignee` rather than from a
-    #: changelog transition — see :func:`assignment_intervals`.
-    from_field: bool = False
+    source: AssignmentSource = "changelog"
+
+
+@dataclass(frozen=True)
+class AliasCandidate:
+    """Two spellings of what is almost certainly one person, for `brain resolve`.
+
+    Produced when the changelog's last assignee identity and `fields.assignee` disagree:
+    Jira wrote `JIRAUSER298607` in the history and `kirktrue` in the issue, and the
+    interval they describe is the same one. This step does not merge them — resolution is
+    measured against gold pairs and must not be handed silent merges — it only records the
+    pair with the evidence that produced it.
+    """
+
+    changelog_key: str
+    field_key: str
+    work_item: str
+
+
+@dataclass(frozen=True)
+class AssignmentHistory:
+    intervals: list[Assignment]
+    alias_candidates: list[AliasCandidate]
+    zero_length_dropped: int = 0
 
 
 def assignee_events(item: WorkItem) -> list[ChangelogEntry]:
@@ -224,21 +285,24 @@ def assignee_events(item: WorkItem) -> list[ChangelogEntry]:
     return sorted(rows, key=lambda e: e.at)
 
 
-def assignment_intervals(item: WorkItem) -> list[Assignment]:
+def assignment_history(item: WorkItem) -> AssignmentHistory:
     """Who held this work item, and when — from identity keys only.
 
     Built from `from_id`/`to_id`, never from the display strings: 9 display names in this
     corpus are shared by 18 different people, so `to` cannot identify anyone.
 
-    Three rules, in order:
+    Four rules, in order:
     1. If the first transition names a predecessor, that person held the item from
        `created` until that transition.
     2. Every transition that names a new assignee opens an interval, closed by the next
        transition (or left open).
-    3. The current `assignee` always ends up with the open interval. It is needed because
-       Jira spells the same person two ways: `fields.assignee.name` is `kirktrue` while
-       the changelog says `JIRAUSER298607`. Without this rule 486 of the 1,102 assigned
-       items in this corpus would have no current owner in the graph.
+    3. If the open interval's identity is not the one `WorkItem.assignee` names, the two
+       are the same tenure spelled two ways (`JIRAUSER298607` vs `kirktrue`), so the
+       *interval is replaced*, not closed and re-opened: closing it would leave a
+       zero-length edge asserting a hand-over that never happened. The displaced pair
+       leaves as an `AliasCandidate`.
+    4. An interval that still ends where it starts is dropped and counted; nothing in this
+       graph should claim somebody owned an item for no time at all.
     """
     events = assignee_events(item)
     intervals: list[Assignment] = []
@@ -251,26 +315,73 @@ def assignment_intervals(item: WorkItem) -> list[Assignment]:
             end = events[i + 1].at if i + 1 < len(events) else None
             intervals.append(Assignment(e.to_id, e.at, end))
     elif item.assignee:
-        intervals.append(Assignment(item.assignee, item.created))
+        intervals.append(Assignment(item.assignee, item.created, None, source="field"))
 
+    aliases: list[AliasCandidate] = []
     current = item.assignee
     if current and not any(a.person_key == current and a.valid_to is None for a in intervals):
-        start = events[-1].at if events else item.created
-        intervals = [
-            a if a.valid_to is not None else Assignment(a.person_key, a.valid_from, start)
-            for a in intervals
-        ]
-        intervals.append(Assignment(current, start, None, from_field=True))
+        open_idx = next((i for i, a in enumerate(intervals) if a.valid_to is None), None)
+        if open_idx is None:
+            # the history ends with an *un*assignment, so the field opens a new interval
+            start = events[-1].at if events else item.created
+            intervals.append(Assignment(current, start, None, source="field"))
+        else:
+            displaced = intervals[open_idx]
+            intervals[open_idx] = Assignment(current, displaced.valid_from, None, source="field")
+            aliases.append(AliasCandidate(displaced.person_key, current, item.key))
 
     seen: set[tuple[str, datetime]] = set()
     out: list[Assignment] = []
+    dropped = 0
     for a in intervals:
+        if a.valid_to is not None and a.valid_to <= a.valid_from:
+            dropped += 1
+            continue
         k = (a.person_key, a.valid_from)
         if k in seen:
             continue
         seen.add(k)
         out.append(a)
-    return out
+    return AssignmentHistory(intervals=out, alias_candidates=aliases, zero_length_dropped=dropped)
+
+
+def assignment_intervals(item: WorkItem) -> list[Assignment]:
+    """Just the intervals — see :func:`assignment_history` for the rest."""
+    return assignment_history(item).intervals
+
+
+# ------------------------------------------------------------------------- test runs
+
+#: One line of an Xray execution's comments: `"XT-10007: FAIL (assignment never arrived)"`.
+#: The synthetic layer states runs this way (`brain/canon/synthetic_spec.md`), so reading
+#: them is deterministic parsing of a stated format, not extraction — no LLM is involved.
+_RUN_LINE = re.compile(
+    r"^\s*(?P<key>(?:XT)-\d+)\s*:\s*(?P<status>PASS|FAIL)\s*(?:\((?P<reason>[^)]*)\))?\s*$",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class TestRun:
+    test_key: str
+    status: str  # PASS | FAIL
+    reason: str | None = None
+
+
+def parse_test_runs(body: str) -> list[TestRun]:
+    """Every `"<XT-n>: PASS|FAIL (<reason>)"` line in an execution comment, in order.
+
+    A line that does not match the format is not a run and is left alone: the comment is
+    also where a human writes prose, and guessing at prose is what `brain extract` is for.
+    """
+    runs: list[TestRun] = []
+    for line in (body or "").splitlines():
+        m = _RUN_LINE.match(line)
+        if not m:
+            continue
+        reason = (m.group("reason") or "").strip() or None
+        runs.append(TestRun(m.group("key").upper(), m.group("status").upper(), reason))
+    return runs
 
 
 # ------------------------------------------------------------------------- pr numbers

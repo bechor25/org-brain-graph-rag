@@ -31,17 +31,18 @@ def node_rows(persons: list[Person], prov: SyntheticProvenance) -> list[dict[str
             "display": next((i.display for i in p.identities if i.display), None),
             "email": next((i.email for i in p.identities if i.email), None),
             "identity_keys": [f"{i.source}:{i.key}" for i in p.identities],
-            "resolved": p.resolved,
             "synthetic": p.synthetic,
         }
         props.update(prov.props(p.id))
-        rows.append({"key": p.id, "props": props})
+        # `resolved` belongs to `brain resolve`. Canon always says False, so rewriting it
+        # on every run would undo the merge decisions of the step after this one.
+        rows.append({"key": p.id, "props": props, "on_create": {"resolved": p.resolved}})
     return rows
 
 
 def load_nodes(ctx: GraphContext, corpus: Corpus, prov: SyntheticProvenance) -> dict[str, Any]:
     rows = node_rows(corpus.persons, prov)
-    ctx.write_rows(node_merge(ctx, LABEL, KEY), rows)
+    ctx.write_rows(node_merge(ctx, LABEL, KEY, on_create=True), rows)
     return {
         "persons": len(rows),
         "stamped": sum(1 for r in rows if r["props"].get("batch_id")),
