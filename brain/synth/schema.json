@@ -50,6 +50,11 @@
       "description": "A key of a real record (KAFKA-n, KIP-n) or a synthetic one.",
       "pattern": "^[A-Za-z][A-Za-z0-9]{1,9}-[0-9]+$"
     },
+    "nullable_any_key": {
+      "type": ["string", "null"],
+      "description": "An `any_key` or nothing. Spelled out rather than `$ref`-ed because a $ref replaces its siblings, and null has to stay allowed.",
+      "pattern": "^[A-Za-z][A-Za-z0-9]{1,9}-[0-9]+$"
+    },
     "identity_id": {
       "type": "string",
       "description": "\"<source>:<key>\" — the id of a Person record.",
@@ -61,9 +66,8 @@
       "additionalProperties": false,
       "properties": {
         "type": {
-          "type": "string",
-          "description": "tests | executes | defect | related | blocks | duplicates | parent",
-          "minLength": 1
+          "description": "The closed set of link types this layer may state. `brain load` maps each to a relation; a type outside the set has nowhere to go.",
+          "enum": ["tests", "executes", "defect", "related", "blocks", "duplicates", "parent"]
         },
         "target": { "$ref": "#/$defs/any_key" },
         "direction": { "enum": ["out", "in"] }
@@ -141,7 +145,7 @@
         "labels": { "type": "array", "items": { "type": "string" } },
         "fix_versions": { "type": "array", "items": { "type": "string" } },
         "affects_versions": { "type": "array", "items": { "type": "string" } },
-        "parent": { "type": ["string", "null"] },
+        "parent": { "$ref": "#/$defs/nullable_any_key" },
         "links": { "type": "array", "items": { "$ref": "#/$defs/link" } },
         "comments": { "type": "array", "items": { "$ref": "#/$defs/comment" } },
         "changelog": { "type": "array", "items": { "type": "object" } },

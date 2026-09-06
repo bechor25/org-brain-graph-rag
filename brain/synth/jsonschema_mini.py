@@ -6,10 +6,12 @@ risk of a hand-rolled validator — *silently* accepting a keyword it does not i
 is removed by :func:`unsupported_keywords`, which the test suite runs over the real schema
 so an unimplemented keyword is a failing test rather than a validation hole.
 
-Not implemented on purpose (and therefore rejected by the guard): `allOf`, `oneOf`, `not`,
-`if/then/else`, `dependentRequired`, `patternProperties`, `propertyNames`, `format`,
-`multipleOf`, `exclusiveMinimum`/`exclusiveMaximum`, remote `$ref`. If the schema ever
-needs one of these, add it here with a test — or take the brief and add `jsonschema`.
+Not implemented on purpose (and therefore rejected by the guard): `allOf`, `anyOf`,
+`oneOf`, `not`, `if/then/else`, `dependentRequired`, `patternProperties`, `propertyNames`,
+`format`, `multipleOf`, `exclusiveMinimum`/`exclusiveMaximum`, remote `$ref`. A union is
+spelled as a type list (`"type": ["string", "null"]`) instead, which covers every case the
+contract has. If the schema ever needs one of these, add it here with a test — or take the
+brief and add `jsonschema`.
 """
 
 from __future__ import annotations
@@ -35,7 +37,6 @@ SUPPORTED: frozenset[str] = frozenset(
         "pattern",
         "minimum",
         "maximum",
-        "anyOf",
         "$ref",
         "$defs",
     }
@@ -86,7 +87,7 @@ def unsupported_keywords(schema: Any) -> set[str]:
                 found.add(key)
             if key in {"properties", "$defs"}:
                 walk(value, in_properties=True)
-            elif key in {"items", "additionalProperties", "anyOf"}:
+            elif key in {"items", "additionalProperties"}:
                 walk(value)
 
     walk(schema)
@@ -147,14 +148,6 @@ def _check(value: Any, schema: dict[str, Any], path: str, root: dict[str, Any], 
         _check(value, _resolve(schema["$ref"], root), path, root, out)
         return
 
-    if "anyOf" in schema:
-        branches = [[] for _ in schema["anyOf"]]
-        for sub, errs in zip(schema["anyOf"], branches, strict=True):
-            _check(value, sub, path, root, errs)
-        if all(branches):
-            out.append(f"{path}: matches none of the allowed shapes ({branches[0][0]})")
-            return
-
     if "type" in schema:
         names = schema["type"] if isinstance(schema["type"], list) else [schema["type"]]
         if not any(_matches_type(value, n) for n in names):
@@ -179,12 +172,23 @@ def _check(value: Any, schema: dict[str, Any], path: str, root: dict[str, Any], 
             out.append(f"{path}: {value} > maximum {schema['maximum']}")
 
 
+#: An unescaped `$` at the end of a pattern. Python's `$` also matches *before* a final
+#: newline, so `"ADO-1\n"` satisfies `^ADO-[0-9]+$` and a key with a stray newline would
+#: reach `brain load`. `\Z` is the end of the string and nothing else.
+_TRAILING_DOLLAR = re.compile(r"(?<!\\)\$$")
+
+
+def anchored(pattern: str) -> str:
+    """`^ADO-[0-9]+$` -> `^ADO-[0-9]+\\Z`. Any other pattern is left as written."""
+    return _TRAILING_DOLLAR.sub(r"\\Z", pattern)
+
+
 def _check_string(value: str, schema: dict[str, Any], path: str, out: list[str]) -> None:
     if "minLength" in schema and len(value) < schema["minLength"]:
         out.append(f"{path}: shorter than {schema['minLength']} characters")
     if "maxLength" in schema and len(value) > schema["maxLength"]:
         out.append(f"{path}: longer than {schema['maxLength']} characters")
-    if "pattern" in schema and not re.search(schema["pattern"], value):
+    if "pattern" in schema and not re.search(anchored(schema["pattern"]), value):
         out.append(f"{path}: {value!r} does not match {schema['pattern']}")
 
 

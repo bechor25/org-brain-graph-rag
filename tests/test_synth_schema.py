@@ -169,3 +169,31 @@ def test_an_ado_item_still_needs_a_description():
     payload = batch_output(workitems=[ado_item("ADO-10001", description="")])
 
     assert any("description" in e for e in errors(payload))
+
+
+# ------------------------------------------------------------------------- anchoring
+
+
+def test_a_key_with_a_trailing_newline_does_not_pass_a_dollar_anchored_pattern():
+    """Python's `$` matches before a final newline; `\\Z` is what the contract means."""
+    assert validate("ADO-1\n", {"type": "string", "pattern": "^ADO-[0-9]+$"})
+    assert validate("ADO-1", {"type": "string", "pattern": "^ADO-[0-9]+$"}) == []
+
+
+def test_an_unanchored_pattern_is_left_alone():
+    assert validate("see KIP-848 here", {"type": "string", "pattern": "KIP-[0-9]+"}) == []
+
+
+def test_anyof_is_no_longer_implemented_so_it_cannot_pass_quietly():
+    """Unions are spelled as a type list; a schema that reaches for anyOf must fail loudly."""
+    with pytest.raises(SchemaError, match="anyOf"):
+        validate({}, {"type": "object", "anyOf": [{"type": "object"}]})
+
+
+def test_a_parent_is_a_key_or_nothing():
+    assert errors(batch_output(workitems=[xray_test("XT-10001", parent="ADO-10001")])) == []
+    assert errors(batch_output(workitems=[xray_test("XT-10001", parent=None)])) == []
+    assert any(
+        "does not match" in e
+        for e in errors(batch_output(workitems=[xray_test("XT-10001", parent="not a key")]))
+    )
