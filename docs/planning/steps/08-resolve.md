@@ -23,6 +23,7 @@
 6. **סט זהב** (`brain resolve gold`): (א) אנשים — כל זוגות `identity_map` (חיובי) + זוגות שליליים קשים: זהויות סינתטיות של אנשים *שונים* עם display דומה (מ-truth); (ב) ישויות — 100 זוגות מהתחום האפור שהשופט סימן + 10 שהמשתמש דוגם (המתכנן מכין רשימה). P/R/F1 לכל kind ולכל tier.
 7. **מדידה בדוח:** כפילויות לפני/אחרי (אנשים: זהויות/אדם; ישויות: שמות דומים באותו kind), מיזוגים לפי tier, P/R/F1 מול זהב, `unsure` count, זמן.
 8. **לא מאחדים:** בין kinds; Person↔Entity; Document↔Document (KIP variants כבר מטופלים ב-`VARIANT_OF`).
+9. **עמידות מול `brain load` חוזר (ledger):** resolve כותב `data/canonical/resolution_ledger.json` (`identity_id → canonical_person_id`, tier, score, resolved_at; וכן לישויות). `brain load` קורא את ה-ledger ומנתב כל זהות ממוזגת ל-canonical לפני MERGE — כך load חוזר לא מחזיר כפילויות. הצמתים שנבלעו נמחקים (`apoc.refactor.mergeNodes`), והמידע שלהם חי ב-`identities[]`/`merged_from[]` על השורד + ב-ledger.
 
 ## קריטריוני קבלה
 - [ ] P/R ≥0.85 על זהב האנשים (יעד הקורס). אם לא — לדווח ולעצור למתכנן, לא להוריד סף.
