@@ -7,16 +7,21 @@ from pathlib import Path
 
 import pytest
 
+from brain.synth.build import MANIFEST_NAME, SCHEMA_PATH
 from brain.synth.merge import (
     LEDGER_NAME,
+    LINK_TYPES,
     MAX_RETRIES,
     QUARANTINE_DIR,
     RETRY_DIR,
     TRUTH_NAME,
+    Batch,
     MergeError,
+    check_keys,
     normalise_truth,
     run_merge,
 )
+from brain.synth.models import BatchOutput
 from tests.synth_helpers import (
     ado_item,
     batch_output,
@@ -41,6 +46,14 @@ def merge(tmp_path: Path, **corpus) -> tuple[dict, int]:
         reports_dir=tmp_path / "reports",
         echo=lambda _: None,
     )
+
+
+def write_manifest(batches: Path, **over) -> Path:
+    """A MANIFEST.json with just what merge reads out of it."""
+    path = batches / "synthetic" / MANIFEST_NAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"step": "synth.build", "batches": [], **over}), encoding="utf-8")
+    return path
 
 
 def synthetic(tmp_path: Path, name: str = "workitems") -> list[dict]:
@@ -81,8 +94,9 @@ def test_the_truth_file_is_written_and_names_the_batches_it_came_from(tmp_path):
                     {
                         "test_key": "XT-10001",
                         "jira_key": "KAFKA-100",
-                        "test_phrase": "GroupCoordinator",
-                        "jira_phrase": "group coordinator",
+                        # the phrase has to be in the Test's own text — merge checks
+                        "test_phrase": "assignment path",
+                        "jira_phrase": "partition assignment",
                     }
                 ],
             )
@@ -334,6 +348,53 @@ def test_a_link_into_a_batch_that_was_rejected_is_reported_not_silently_merged(t
     assert report["warnings"]["orphaned_per_batch"] == {"shard-01/001": ["XT-10001 -> XT-20001"]}
 
 
+def test_a_link_into_a_batch_that_did_not_even_parse_is_an_orphan_not_an_invention(tmp_path):
+    """A schema-broken batch still says which keys it meant to write; a citation is not a lie."""
+    root = tmp_path / "batches"
+    write_output(
+        root,
+        batch_output(
+            workitems=[
+                xray_test("XT-10001", links=[{"type": "executes", "target": "XT-20001"}]),
+                ado_item("ADO-10001"),
+            ]
+        ),
+    )
+    write_output(
+        root,
+        batch_output(
+            "shard-02/001",
+            workitems=[xray_test("XT-20001", type="Spike")],  # schema rejects: unknown type
+            persons=[synthetic_person("dana.lee", "jira:dlee", "Lee, Dana")],
+            truth=truth(identity_map={"ado:dana.lee": "jira:dlee"}),
+        ),
+    )
+
+    report, code = merge(tmp_path)
+
+    assert [r["batch"] for r in report["rejected"]] == ["shard-02/001"]
+    assert report["warnings"]["orphaned_per_batch"] == {"shard-01/001": ["XT-10001 -> XT-20001"]}
+    assert {r["key"] for r in synthetic(tmp_path)} == {"XT-10001", "ADO-10001"}
+
+
+def test_a_link_to_a_pre_assigned_epic_another_shard_owns_is_not_an_error(tmp_path):
+    """`epics[]` told this batch to link the key and not emit it; the owner merges later."""
+    root = tmp_path / "batches"
+    write_manifest(root, epics=[{"key": "ADO-1", "kip": "KIP-5", "title": "KIP-5"}])
+    write_output(
+        root,
+        batch_output(
+            workitems=[ado_item("ADO-10001", links=[{"type": "parent", "target": "ADO-1"}])]
+        ),
+    )
+
+    report, code = merge(tmp_path)
+
+    assert code == 0
+    assert report["warnings"]["orphaned_per_batch"] == {"shard-01/001": ["ADO-10001 -> ADO-1"]}
+    assert report["epics"]["missing"] == ["ADO-1"]
+
+
 def test_next_ids_that_would_collide_next_batch_warns(tmp_path):
     write_output(tmp_path / "batches", batch_output(next_ids={"XT": 10001}))
 
@@ -412,8 +473,9 @@ def test_a_fixed_batch_clears_its_retry_copy(tmp_path):
 
 
 def test_the_specs_own_spelling_of_a_text_only_link_is_accepted_and_noted(tmp_path):
+    # KAFKA-101, not KAFKA-100: the record formally links the latter, so it is not text-only
     raw = batch_output(
-        truth=truth(text_only_links=[{"ado_key": "ADO-10001", "jira_key": "KAFKA-100"}])
+        truth=truth(text_only_links=[{"ado_key": "ADO-10001", "jira_key": "KAFKA-101"}])
     )
     write_output(tmp_path / "batches", raw)
 
@@ -422,7 +484,7 @@ def test_the_specs_own_spelling_of_a_text_only_link_is_accepted_and_noted(tmp_pa
     assert code == 0
     assert any("normalised" in n for n in report["notes"]["shard-01/001"])
     written = json.loads((tmp_path / "canonical" / TRUTH_NAME).read_text())
-    assert written["text_only_links"] == [{"from_key": "ADO-10001", "to_key": "KAFKA-100"}]
+    assert written["text_only_links"] == [{"from_key": "ADO-10001", "to_key": "KAFKA-101"}]
 
 
 def test_normalise_truth_leaves_an_already_correct_link_alone():
@@ -430,3 +492,342 @@ def test_normalise_truth_leaves_an_already_correct_link_alone():
 
     assert normalise_truth(raw) == []
     assert raw["truth"]["text_only_links"] == [{"from_key": "XT-1", "to_key": "KAFKA-1"}]
+
+
+# ------------------------------------------------------------------ the closed link set
+
+
+def test_a_link_type_outside_the_closed_set_is_rejected(tmp_path):
+    write_output(
+        tmp_path / "batches",
+        batch_output(
+            workitems=[xray_test("XT-10001", links=[{"type": "verifies", "target": "KAFKA-100"}])]
+        ),
+    )
+
+    report, code = merge(tmp_path)
+
+    assert code == 1
+    # the schema catches it first; `check_keys` is the second lock, asserted below
+    assert any("'verifies' is not one of" in e for e in report["rejected"][0]["errors"])
+
+
+def test_check_keys_rejects_a_link_type_the_schema_would_have_caught_first():
+    """The second lock has to be real: a schema someone loosens must not open the gate."""
+    batch = Batch(batch_id="shard-01/001", shard="shard-01", index=1, path=Path("x"), sha256="x")
+    batch.output = BatchOutput.model_validate(
+        batch_output(
+            workitems=[xray_test("XT-10001", links=[{"type": "verifies", "target": "KAFKA-100"}])]
+        )
+    )
+
+    check_keys(batch)
+
+    assert any("link type 'verifies'" in e for e in batch.errors)
+
+
+def test_the_schema_and_the_merge_agree_on_the_link_types():
+    """Two places enforce it; a drift between them is a hole, so assert they are one list."""
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+
+    assert set(schema["$defs"]["link"]["properties"]["type"]["enum"]) == set(LINK_TYPES)
+
+
+def test_a_parent_that_names_nothing_is_rejected_like_a_link(tmp_path):
+    write_output(
+        tmp_path / "batches", batch_output(workitems=[xray_test("XT-10001", parent="XT-10404")])
+    )
+
+    report, code = merge(tmp_path)
+
+    assert code == 1
+    assert any(
+        "parent target XT-10404 is not in the layer" in e for e in report["rejected"][0]["errors"]
+    )
+
+
+def test_a_parent_outside_the_slice_warns_like_a_link(tmp_path):
+    write_output(
+        tmp_path / "batches", batch_output(workitems=[xray_test("XT-10001", parent="KAFKA-40404")])
+    )
+
+    report, code = merge(tmp_path)
+
+    assert code == 0
+    assert report["warnings"]["top_dangling"] == [["KAFKA-40404", 1]]
+
+
+# ------------------------------------------------------- the reserved block is Epics only
+
+
+def test_a_non_epic_key_from_the_reserved_block_is_rejected(tmp_path):
+    """`ADO-1…ADO-143` are build's pre-assigned Epics; nothing else may mint below 10000."""
+    write_output(tmp_path / "batches", batch_output(workitems=[xray_test("XT-7")]))
+
+    report, code = merge(tmp_path)
+
+    assert code == 1
+    assert any("reserved block" in e for e in report["rejected"][0]["errors"])
+
+
+def test_a_pre_assigned_epic_key_is_accepted_when_the_manifest_says_so(tmp_path):
+    root = tmp_path / "batches"
+    write_manifest(root, epics=[{"key": "ADO-1", "kip": "KIP-5", "title": "KIP-5"}])
+    write_output(root, batch_output(workitems=[ado_item("ADO-1", "Epic")]))
+
+    report, code = merge(tmp_path)
+
+    assert code == 0
+    assert report["epics"] == {
+        "expected": 1,
+        "present": 1,
+        "missing": [],
+        "duplicated": [],
+        "extra": [],
+        "ok": True,
+    }
+
+
+def test_a_pre_assigned_key_used_for_something_that_is_not_an_epic_is_rejected(tmp_path):
+    root = tmp_path / "batches"
+    write_manifest(root, epics=[{"key": "ADO-1", "kip": "KIP-5", "title": "KIP-5"}])
+    write_output(root, batch_output(workitems=[ado_item("ADO-1", "Feature")]))
+
+    report, code = merge(tmp_path)
+
+    assert code == 1
+    assert any("must be an Epic" in e for e in report["rejected"][0]["errors"])
+
+
+def test_a_missing_pre_assigned_epic_is_reported_not_merged_away(tmp_path):
+    root = tmp_path / "batches"
+    write_manifest(
+        root,
+        epics=[
+            {"key": "ADO-1", "kip": "KIP-5", "title": "KIP-5"},
+            {"key": "ADO-2", "kip": "KIP-6", "title": "KIP-6"},
+        ],
+    )
+    write_output(root, batch_output(workitems=[ado_item("ADO-1", "Epic")]))
+
+    report, code = merge(tmp_path)
+
+    assert code == 0, "a partly-merged layer is not a failure; the gap is a report line"
+    assert report["epics"]["missing"] == ["ADO-2"]
+    assert report["epics"]["ok"] is False
+
+
+def test_an_epic_the_manifest_never_assigned_is_reported_as_extra(tmp_path):
+    root = tmp_path / "batches"
+    write_manifest(root, epics=[{"key": "ADO-1", "kip": "KIP-5", "title": "KIP-5"}])
+    write_output(
+        root, batch_output(workitems=[ado_item("ADO-1", "Epic"), ado_item("ADO-10001", "Epic")])
+    )
+
+    report, code = merge(tmp_path)
+
+    assert report["epics"]["extra"] == ["ADO-10001"]
+
+
+# ------------------------------------------------------------ truth checked against fact
+
+
+def test_a_stale_state_that_the_record_contradicts_is_rejected(tmp_path):
+    write_output(
+        tmp_path / "batches",
+        batch_output(
+            workitems=[ado_item("ADO-10001", status="Closed")],
+            truth=truth(
+                stale_states=[
+                    {
+                        "ado_key": "ADO-10001",
+                        "jira_key": "KAFKA-100",
+                        "ado_status": "Active",
+                        "jira_status": "Resolved",
+                    }
+                ]
+            ),
+        ),
+    )
+
+    report, code = merge(tmp_path)
+
+    assert code == 1
+    assert any(
+        "is 'Closed', not the claimed 'Active'" in e for e in report["rejected"][0]["errors"]
+    )
+
+
+def test_a_stale_state_that_misreports_the_real_jira_status_is_rejected(tmp_path):
+    write_output(
+        tmp_path / "batches",
+        batch_output(
+            truth=truth(
+                stale_states=[
+                    {
+                        "ado_key": "ADO-10001",
+                        "jira_key": "KAFKA-100",
+                        "ado_status": "Active",
+                        "jira_status": "Open",  # KAFKA-100 is Resolved in the corpus
+                    }
+                ]
+            )
+        ),
+    )
+
+    report, code = merge(tmp_path)
+
+    assert code == 1
+    assert any("KAFKA-100 is 'Resolved'" in e for e in report["rejected"][0]["errors"])
+
+
+def test_a_text_only_link_the_record_also_states_formally_is_rejected(tmp_path):
+    write_output(
+        tmp_path / "batches",
+        batch_output(
+            truth=truth(text_only_links=[{"from_key": "ADO-10001", "to_key": "KAFKA-100"}])
+        ),
+    )
+
+    report, code = merge(tmp_path)
+
+    assert code == 1
+    assert any("not text-only" in e for e in report["rejected"][0]["errors"])
+
+
+def test_a_rename_phrase_that_appears_in_no_test_is_rejected(tmp_path):
+    write_output(
+        tmp_path / "batches",
+        batch_output(
+            truth=truth(
+                renames=[
+                    {
+                        "test_key": "XT-10001",
+                        "jira_key": "KAFKA-100",
+                        "test_phrase": "quorum controller",
+                        "jira_phrase": "KRaft",
+                    }
+                ]
+            )
+        ),
+    )
+
+    report, code = merge(tmp_path)
+
+    assert code == 1
+    assert any("does not say 'quorum controller'" in e for e in report["rejected"][0]["errors"])
+
+
+def test_a_rename_phrase_is_matched_past_case_and_spacing(tmp_path):
+    write_output(
+        tmp_path / "batches",
+        batch_output(
+            truth=truth(
+                renames=[
+                    {
+                        "test_key": "XT-10001",
+                        "jira_key": "KAFKA-100",
+                        "test_phrase": "Assignment   Path",
+                        "jira_phrase": "partition assignment",
+                    }
+                ]
+            )
+        ),
+    )
+
+    report, code = merge(tmp_path)
+
+    assert code == 0
+
+
+def test_a_duplicate_pair_naming_something_that_is_not_a_test_is_rejected(tmp_path):
+    write_output(
+        tmp_path / "batches",
+        batch_output(truth=truth(duplicate_tests=[{"a": "XT-10001", "b": "ADO-10001"}])),
+    )
+
+    report, code = merge(tmp_path)
+
+    assert code == 1
+    assert any("is a User Story, not a Test" in e for e in report["rejected"][0]["errors"])
+
+
+def test_a_synthetic_identity_that_reuses_the_real_username_is_rejected(tmp_path):
+    """`ado:jrao` -> `jira:jrao` gives entity resolution nothing to resolve."""
+    write_output(
+        tmp_path / "batches",
+        batch_output(
+            workitems=[xray_test("XT-10001", reporter="jrao")],
+            persons=[synthetic_person("jrao", "jira:jrao", "Rao, Jun")],
+            truth=truth(identity_map={"ado:jrao": "jira:jrao"}),
+        ),
+    )
+
+    report, code = merge(tmp_path)
+
+    assert code == 1
+    assert any("reuses 'jrao'" in e for e in report["rejected"][0]["errors"])
+
+
+# ------------------------------------------------------------ what the agents themselves say
+
+
+def test_a_failure_the_agent_recorded_in_status_json_is_a_rejection_not_a_gap(tmp_path):
+    root = tmp_path / "batches"
+    write_output(root, batch_output())
+    (root / "synthetic" / "shard-01" / "status.json").write_text(
+        json.dumps(
+            {
+                "shard": "shard-01",
+                "done": ["shard-01/001"],
+                "failed": [{"batch": "shard-01/002", "reason": "no eligible bug for the defect"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report, code = merge(tmp_path)
+
+    assert code == 1
+    assert report["batches"]["reported_failed"] == 1
+    reported = [r for r in report["rejected"] if r["source"] == "status.json"]
+    assert reported == [
+        {
+            "batch": "shard-01/002",
+            "source": "status.json",
+            "output": None,
+            "errors": ["no eligible bug for the defect"],
+            "error_count": 1,
+        }
+    ]
+    assert len(synthetic(tmp_path)) == 2, "the valid batch still merges"
+
+
+def test_a_batch_marked_done_with_no_output_on_disk_warns(tmp_path):
+    root = tmp_path / "batches"
+    write_output(root, batch_output())
+    (root / "synthetic" / "shard-01" / "status.json").write_text(
+        json.dumps({"shard": "shard-01", "done": ["shard-01/001", "shard-01/002"], "failed": []}),
+        encoding="utf-8",
+    )
+
+    report, code = merge(tmp_path)
+
+    assert code == 0
+    assert report["warnings"]["done_without_output"] == ["shard-01/002"]
+
+
+# --------------------------------------------------------------------------- provenance
+
+
+def test_the_ledger_carries_the_batch_shard_and_time_per_record(tmp_path):
+    """`brain load` stamps a synthetic node with the batch that wrote it from this map."""
+    write_output(tmp_path / "batches", batch_output())
+
+    merge(tmp_path)
+
+    ledger = json.loads((tmp_path / "canonical" / LEDGER_NAME).read_text())
+    assert set(ledger["provenance"]) == {"xray:XT-10001", "ado:ADO-10001", "ado:rao.jun"}
+    entry = ledger["provenance"]["xray:XT-10001"]
+    assert entry["batch_id"] == "shard-01/001" and entry["shard"] == "shard-01"
+    assert entry["merged_at"] == ledger["updated_at"]

@@ -15,18 +15,25 @@ claims, or ids the current batches carry, are ever removed.
 
 What fails a batch and what merely warns
 ----------------------------------------
-Fail (the batch goes to `retry/`, then `quarantine/`): unreadable JSON, a schema or
-pydantic violation, `synthetic` not true, a key outside the `XT|XE|XP|XS|ADO` allowlist or
-outside the shard's reserved number block, a key or Person id that already exists (real or
-in an earlier batch), and a `truth` entry about a synthetic key the layer does not contain
-— a truth claim with no record is worse than no claim.
+Fail (the batch goes to `retry/`, then `quarantine/`): unreadable JSON, a schema or pydantic
+violation, `synthetic` not true, a link type outside the closed set, a key outside the
+`XT|XE|XP|XS|ADO` allowlist or outside the shard's number block, a key below `RESERVED_MAX`
+that is not one of build's pre-assigned Epics, a key or Person id that already exists (real
+or in an earlier batch), a synthetic identity that just repeats the real person's username,
+and any `truth` entry the records contradict — a stale state whose ADO item is not in the
+claimed status, a "text-only" link the record also states in `links[]`, a rename phrase that
+appears in no Test, a duplicate pair naming something that is not a Test. Truth that does not
+describe the records is worse than no truth: evaluation would score correct answers wrong.
 
-Warn (counted, merged anyway): a link, ref or truth entry pointing at a *real* key that is
-not in the corpus. The slice is a scoped subset of Jira, so a plausible reference to an
-issue outside it is expected noise, not a defect — but the count is a quality signal and
-belongs in the report. Also a warning: a `next_ids` that would make the next batch collide,
-and a valid batch's link into a batch this same run rejected (`orphaned_by_rejection`) —
-rejecting the citing batch too would cascade over a whole shard for one bad file.
+Warn (counted, merged anyway): a link, ref, parent or truth entry pointing at a *real* key
+that is not in the corpus — the slice is a scoped subset of Jira, so a plausible reference
+outside it is expected noise. Also a warning: a `next_ids` that would make the next batch
+collide; a batch an agent marked `done` with no `.out.json` on disk; and a valid batch's
+link into a batch this same run rejected (`orphaned_by_rejection`) — rejecting the citing
+batch too would cascade over a whole shard for one bad file.
+
+Reported as a rejection without a file: a batch the agent recorded in `status.json` under
+`failed`. It has nothing to quarantine, and it must not be read as "not written yet".
 """
 
 from __future__ import annotations
@@ -34,7 +41,7 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter, defaultdict
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -64,9 +71,16 @@ RETRY_DIR = "retry"
 QUARANTINE_DIR = "quarantine"
 RETRY_FIELD = "_synth_retry"
 
-KEY_RE = re.compile(r"^(XT|XE|XP|XS|ADO)-(\d+)$")
-BATCH_ID_RE = re.compile(r"^shard-(\d{2})/(\d{3})$")
-CONTAINER_ID_RE = re.compile(r"^(xray|ado):(testplan|testset|sprint|area):.+$")
+KEY_RE = re.compile(r"^(XT|XE|XP|XS|ADO)-(\d+)\Z")
+BATCH_ID_RE = re.compile(r"^shard-(\d{2})/(\d{3})\Z")
+CONTAINER_ID_RE = re.compile(r"^(xray|ado):(testplan|testset|sprint|area):.+\Z")
+
+#: The closed set of link types, same list as `schema.json`. `brain load` maps each to a
+#: relation; a type outside the set has nowhere to go, so it is caught here as well as
+#: there — the schema check and this one must never disagree, and a test asserts they do not.
+LINK_TYPES: frozenset[str] = frozenset(
+    {"tests", "executes", "defect", "related", "blocks", "duplicates", "parent"}
+)
 
 #: The canonical files the synthetic layer contributes to. `documents` and `changes` are
 #: untouched: the layer produces neither KIPs nor commits.
@@ -202,14 +216,20 @@ def parse_batch(batch: Batch, schema: dict[str, Any]) -> None:
         batch.errors.extend(f"model: {e['loc']}: {e['msg']}" for e in exc.errors()[:50])
 
 
-def check_keys(batch: Batch) -> None:
-    """Prefix allowlist, source/prefix agreement, id form, and the shard's number block."""
+def check_keys(batch: Batch, *, epic_keys: Collection[str] = ()) -> None:
+    """Prefix allowlist, source/prefix agreement, id form, link types, the number block.
+
+    `epic_keys` are the ADO Epic keys `brain synth build` pre-assigned out of the reserved
+    block. They are the *only* reason a key below `RESERVED_MAX` is allowed: the exemption
+    exists so a KIP cited from two shards gets one Epic, and nothing else may use it.
+    """
     output = batch.output
     if output is None:
         return
     match = BATCH_ID_RE.match(batch.batch_id)
     shard_index = int(match.group(1)) - 1 if match else 0
     low, high = shard_range(shard_index)
+    reserved = set(epic_keys)
 
     for item in output.workitems:
         key_match = KEY_RE.match(item.key)
@@ -224,12 +244,23 @@ def check_keys(batch: Batch) -> None:
             batch.errors.append(f"{item.key}: id must be {item.source}:{item.key}, got {item.id!r}")
         if not item.synthetic:
             batch.errors.append(f"{item.key}: synthetic must be true")
-        in_reserved = 1 <= number <= RESERVED_MAX
-        if not (in_reserved or low <= number <= high):
-            batch.errors.append(
-                f"{item.key}: number outside this shard's block {low}-{high} "
-                f"(and outside the build-reserved 1-{RESERVED_MAX})"
-            )
+        for link in item.links:
+            if link.type not in LINK_TYPES:
+                batch.errors.append(
+                    f"{item.key}: link type {link.type!r} is not one of {sorted(LINK_TYPES)}"
+                )
+        if number <= RESERVED_MAX:
+            if item.key not in reserved:
+                batch.errors.append(
+                    f"{item.key}: the reserved block 1-{RESERVED_MAX} holds only the Epic keys "
+                    "build pre-assigned; mint from this shard's block instead"
+                )
+            elif item.type != "Epic":
+                batch.errors.append(
+                    f"{item.key}: a pre-assigned key must be an Epic, not {item.type!r}"
+                )
+        elif not low <= number <= high:
+            batch.errors.append(f"{item.key}: number outside this shard's block {low}-{high}")
 
     for container in output.containers:
         if not container.synthetic:
@@ -296,7 +327,11 @@ class RealCorpus:
     person_ids: set[str] = field(default_factory=set)
     container_ids: set[str] = field(default_factory=set)
     eligible: list[WorkItem] = field(default_factory=list)
-    persons_by_real_id: dict[str, str] = field(default_factory=dict)
+    #: real Person id -> the identity keys that person is known by, so a synthetic identity
+    #: that just repeats the real username can be caught (it would give resolution nothing).
+    identity_keys: dict[str, set[str]] = field(default_factory=dict)
+    #: real work item key -> status, for the `stale_states` cross-check
+    status_of: dict[str, str] = field(default_factory=dict)
 
 
 def load_real(canonical_dir: Path, *, synthetic_ids: set[str]) -> RealCorpus:
@@ -311,6 +346,7 @@ def load_real(canonical_dir: Path, *, synthetic_ids: set[str]) -> RealCorpus:
         if item.synthetic or item.id in synthetic_ids:
             continue
         real.workitem_keys.add(item.key)
+        real.status_of[item.key] = item.status
     real.eligible = select_items(items)
 
     for name, model, sink in (
@@ -327,7 +363,8 @@ def load_real(canonical_dir: Path, *, synthetic_ids: set[str]) -> RealCorpus:
             field_name = "key" if sink == "document_keys" else "id"
             getattr(real, sink).add(getattr(record, field_name))
             if sink == "person_ids":
-                real.persons_by_real_id[record.id] = record.id
+                assert isinstance(record, Person)
+                real.identity_keys[record.id] = {i.key for i in record.identities}
     return real
 
 
@@ -361,20 +398,45 @@ def check_uniqueness(batches: Sequence[Batch], real: RealCorpus) -> None:
                 seen_ids[container.id] = batch.batch_id
 
 
-def check_targets(batches: Sequence[Batch], real: RealCorpus) -> Counter:
+def declared_keys(batch: Batch) -> set[str]:
+    """The keys a batch says it writes — read from the raw JSON when it did not parse.
+
+    A batch that fails the schema still tells us which keys it *was* going to mint. Another
+    batch's link to one of them is then a citation of a rejected sibling, not an invented
+    key, and the two deserve different verdicts.
+    """
+    if batch.output is not None:
+        return {w.key for w in batch.output.workitems}
+    items = (batch.raw or {}).get("workitems")
+    if not isinstance(items, list):
+        return set()
+    return {i["key"] for i in items if isinstance(i, dict) and isinstance(i.get("key"), str)}
+
+
+def check_targets(
+    batches: Sequence[Batch], real: RealCorpus, *, expected_keys: Collection[str] = ()
+) -> Counter:
     """Links, refs and truth entries: synthetic targets must exist, real ones may not.
 
-    Returns the dangling counter the report prints. A dangling *synthetic* key is an error
-    (the layer is self-contained and the writer controls both ends); a dangling real key is
-    a warning (the corpus is a scoped slice of Jira).
+    Returns the dangling counter the report prints. Three verdicts, not two:
+
+    * a real key outside the scoped Jira slice — a **warning**, counted;
+    * a synthetic key some batch on disk declares, or that build reserved for an Epic —
+      **allowed here**, because the target is a real part of the layer that this run may
+      simply not have merged yet. If it ends up unmerged, `orphans_of_rejected_batches`
+      reports it after the verdict rather than cascading a rejection through a shard;
+    * a synthetic key nobody anywhere writes — an **error**. The writer controls both ends.
     """
     all_synthetic_keys = {item.key for b in batches if b.output for item in b.output.workitems}
+    plausible = all_synthetic_keys | {k for b in batches for k in declared_keys(b)}
+    plausible |= set(expected_keys)
     known = real.workitem_keys | all_synthetic_keys
+    by_key = {i.key: i for b in batches if b.output for i in b.output.workitems}
     dangling: Counter = Counter()
 
     def note(batch: Batch, kind: str, target: str, owner: str) -> None:
         if KEY_RE.match(target):
-            if target not in all_synthetic_keys:
+            if target not in plausible:
                 batch.errors.append(f"{owner}: {kind} target {target} is not in the layer")
             return
         if target not in known:
@@ -387,33 +449,66 @@ def check_targets(batches: Sequence[Batch], real: RealCorpus) -> Counter:
         for item in batch.output.workitems:
             for link in item.links:
                 note(batch, "link", link.target, item.key)
+            if item.parent:
+                note(batch, "parent", item.parent, item.key)
             for ref in item.refs:
                 if ref.kind == "issue":
                     note(batch, "ref", ref.key, item.key)
                 elif ref.kind == "kip" and ref.key not in real.document_keys:
                     dangling[ref.key] += 1
                     batch.warnings.append(f"{item.key}: KIP ref {ref.key} is not in the corpus")
-        _check_truth(batch, batch.output.truth, real, all_synthetic_keys, dangling)
+        _check_truth(batch, batch.output.truth, real, plausible, dangling, by_key=by_key)
     return dangling
+
+
+def _norm(text: str) -> str:
+    """Casefolded, whitespace-collapsed, for comparing a planted phrase to the text."""
+    return " ".join((text or "").split()).casefold()
 
 
 def _check_truth(
     batch: Batch,
     truth: Truth,
     real: RealCorpus,
-    all_synthetic_keys: set[str],
+    plausible: set[str],
     dangling: Counter,
+    *,
+    by_key: dict[str, WorkItem],
 ) -> None:
+    """Every truth claim, checked against the record it is a claim about.
+
+    A truth file is only worth what its weakest entry is worth: evaluation scores retrieval
+    against it, so an entry that does not describe the records — a stale state whose ADO
+    item is not actually `Active`, a "text-only" link the record also states formally, a
+    rename phrase that appears in no test — would silently mark a correct answer wrong.
+    Checking the claim against the record is the only way the file stays ground truth.
+
+    Where the record lives in a batch this run could not parse, the cross-check is skipped
+    rather than guessed at; the shape checks below still apply.
+    """
     batch_person_ids = {p.id for p in batch.output.persons} if batch.output else set()
+    identity_key_of = (
+        {p.id: p.identities[0].key for p in batch.output.persons if p.identities}
+        if batch.output
+        else {}
+    )
     for new_id, real_id in truth.identity_map.items():
         if new_id not in batch_person_ids:
             batch.errors.append(f"truth.identity_map: {new_id} is not a person this batch emits")
         if real_id not in real.person_ids:
             batch.errors.append(f"truth.identity_map: {real_id} is not a real person id")
+            continue
+        new_key = identity_key_of.get(new_id)
+        if new_key and new_key in real.identity_keys.get(real_id, set()):
+            batch.errors.append(
+                f"truth.identity_map: {new_id} reuses {new_key!r}, a key {real_id} is already "
+                "known by — a new identity has to be a different form or resolution has no work"
+            )
 
-    def synthetic_side(value: str, where: str) -> None:
-        if value not in all_synthetic_keys:
+    def synthetic_side(value: str, where: str) -> WorkItem | None:
+        if value not in plausible:
             batch.errors.append(f"truth.{where}: {value} is not a record this layer contains")
+        return by_key.get(value)
 
     def real_side(value: str, where: str) -> None:
         if KEY_RE.match(value):
@@ -423,17 +518,48 @@ def _check_truth(
             batch.warnings.append(f"truth.{where}: {value} is outside the slice")
 
     for link in truth.text_only_links:
-        synthetic_side(link.from_key, "text_only_links")
+        record = synthetic_side(link.from_key, "text_only_links")
         real_side(link.to_key, "text_only_links")
+        if record is not None and any(x.target == link.to_key for x in record.links):
+            batch.errors.append(
+                f"truth.text_only_links: {link.from_key} states {link.to_key} in links[] too, "
+                "so the reference is not text-only"
+            )
+
     for stale in truth.stale_states:
-        synthetic_side(stale.ado_key, "stale_states")
+        record = synthetic_side(stale.ado_key, "stale_states")
         real_side(stale.jira_key, "stale_states")
+        if record is not None and record.status != stale.ado_status:
+            batch.errors.append(
+                f"truth.stale_states: {stale.ado_key} is {record.status!r}, "
+                f"not the claimed {stale.ado_status!r}"
+            )
+        actual = real.status_of.get(stale.jira_key)
+        if actual is not None and actual != stale.jira_status:
+            batch.errors.append(
+                f"truth.stale_states: {stale.jira_key} is {actual!r}, "
+                f"not the claimed {stale.jira_status!r}"
+            )
+
     for rename in truth.renames:
-        synthetic_side(rename.test_key, "renames")
+        record = synthetic_side(rename.test_key, "renames")
         real_side(rename.jira_key, "renames")
+        if record is None:
+            continue
+        haystack = _norm(f"{record.title}\n{record.description}")
+        if _norm(rename.test_phrase) not in haystack:
+            batch.errors.append(
+                f"truth.renames: {rename.test_key} does not say {rename.test_phrase!r} "
+                "in its title or description"
+            )
+
     for pair in truth.duplicate_tests:
-        synthetic_side(pair.a, "duplicate_tests")
-        synthetic_side(pair.b, "duplicate_tests")
+        for side, value in (("a", pair.a), ("b", pair.b)):
+            record = synthetic_side(value, "duplicate_tests")
+            if record is not None and record.type != "Test":
+                batch.errors.append(
+                    f"truth.duplicate_tests.{side}: {value} is a {record.type}, not a Test"
+                )
 
 
 def orphans_of_rejected_batches(
@@ -455,10 +581,82 @@ def orphans_of_rejected_batches(
         for item in batch.output.workitems:
             targets = {link.target for link in item.links}
             targets |= {ref.key for ref in item.refs if ref.kind == "issue"}
+            if item.parent:
+                targets.add(item.parent)
             for target in sorted(targets):
                 if KEY_RE.match(target) and target not in present:
                     orphans[batch.batch_id].append(f"{item.key} -> {target}")
     return dict(sorted(orphans.items()))
+
+
+# ----------------------------------------------------------------- what the agents report
+
+
+def read_shard_status(root: Path) -> dict[str, dict[str, Any]]:
+    """Each shard's agent-owned `status.json`. Missing or unreadable is an empty shard."""
+    found: dict[str, dict[str, Any]] = {}
+    for path in sorted(root.glob("shard-[0-9][0-9]/status.json")):
+        found[path.parent.name] = _read_json(path) or {}
+    return found
+
+
+def agent_failures(status: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """The batches the agents themselves gave up on. A `failed` entry is not a silence.
+
+    The conventions tell an LLM-role agent to record a reason rather than write an invalid
+    file, so these never appear as a bad `.out.json` — which means without reading
+    `status.json` a merge would report them as *missing outputs* at worst, and the
+    difference between "not written yet" and "the writer could not do it" would be lost.
+    """
+    out: list[dict[str, Any]] = []
+    for shard, block in sorted(status.items()):
+        for entry in block.get("failed") or []:
+            if not isinstance(entry, dict):
+                continue
+            out.append(
+                {
+                    "batch": str(entry.get("batch") or f"{shard}/?"),
+                    "shard": shard,
+                    "reason": str(entry.get("reason") or "no reason given"),
+                }
+            )
+    return out
+
+
+def done_without_output(status: dict[str, dict[str, Any]], batches: Sequence[Batch]) -> list[str]:
+    """Batch ids an agent marked `done` for which no `.out.json` is on disk."""
+    present = {b.batch_id for b in batches}
+    claimed = {
+        str(item)
+        for block in status.values()
+        for item in (block.get("done") or [])
+        if isinstance(item, str)
+    }
+    return sorted(claimed - present)
+
+
+def epic_coverage(manifest: dict[str, Any] | None, merged: Sequence[WorkItem]) -> dict[str, Any]:
+    """The pre-assigned Epics, checked against what the layer actually contains.
+
+    "One ADO Epic per KIP the slice references" is the one rule sharding cannot enforce, so
+    build pre-assigned the keys and exactly one batch was told to write each. This is the
+    other half of that bargain: each key present exactly once, and nothing else claiming a
+    key out of the reserved block.
+    """
+    expected = {e["key"] for e in (manifest or {}).get("epics") or []}
+    seen: Counter = Counter(w.key for w in merged if w.type == "Epic")
+    present = set(seen)
+    missing = sorted(expected - present, key=lambda k: int(k.split("-")[1]))
+    duplicated = sorted(k for k, n in seen.items() if n > 1)
+    return {
+        "expected": len(expected),
+        "present": len(present & expected),
+        "missing": missing,
+        "duplicated": duplicated,
+        "extra": sorted(present - expected),
+        # None until there is a manifest to check against — "unknown", never a silent pass.
+        "ok": None if not expected else (not missing and not duplicated),
+    }
 
 
 # --------------------------------------------------------------------------- retry flow
@@ -618,10 +816,13 @@ def run_merge(
         raise MergeError(f"no batches to merge: {root} does not exist (run `brain synth build`)")
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
 
+    manifest = load_manifest(batches_dir)
+    epic_keys = {e["key"] for e in (manifest or {}).get("epics") or []}
+
     batches = discover(root)
     for batch in batches:
         parse_batch(batch, schema)
-        check_keys(batch)
+        check_keys(batch, epic_keys=epic_keys)
 
     ledger = _read_json(canonical_dir / LEDGER_NAME) or {}
     ledger_batches: dict[str, Any] = dict(ledger.get("batches") or {})
@@ -631,12 +832,12 @@ def run_merge(
         for entry in ledger_batches.values()
         for name in TARGET_FILES
         for rid in (entry.get(name) or [])
-    }
+    } | set(ledger.get("provenance") or {})
     current_ids = {rid for b in batches for ids in b.ids().values() for rid in ids}
 
     real = load_real(canonical_dir, synthetic_ids=claimed_ids | current_ids)
     check_uniqueness(batches, real)
-    dangling = check_targets(batches, real)
+    dangling = check_targets(batches, real, expected_keys=epic_keys)
 
     valid = [b for b in batches if b.ok]
     invalid = [b for b in batches if not b.ok]
@@ -654,13 +855,22 @@ def run_merge(
     truth = merge_truth(valid)
     write_json_atomic(canonical_dir / TRUTH_NAME, truth)
 
+    merged_at = utc_now_iso()
     new_ledger_batches: dict[str, Any] = {}
+    provenance: dict[str, dict[str, str]] = {}
     for batch in valid:
         new_ledger_batches[batch.batch_id] = {
             "sha256": batch.sha256,
-            "merged_at": utc_now_iso(),
+            "shard": batch.shard,
+            "merged_at": merged_at,
             **batch.ids(),
         }
+        for rid in (r for ids in batch.ids().values() for r in ids):
+            provenance[rid] = {
+                "batch_id": batch.batch_id,
+                "shard": batch.shard,
+                "merged_at": merged_at,
+            }
         clear_failure_files(batch)
     new_failed: dict[str, Any] = {}
     for batch in invalid:
@@ -670,7 +880,12 @@ def run_merge(
         canonical_dir / LEDGER_NAME,
         {
             "step": "synth.merge",
-            "updated_at": utc_now_iso(),
+            "updated_at": merged_at,
+            # Per-record provenance, keyed by canonical id: `brain load` stamps a synthetic
+            # node with the batch that wrote it the same way an LLM-derived node carries
+            # `batch_id` (conventions, iron rule 3). The per-batch lists above are the same
+            # facts grouped the other way, which is what this step's own rerun needs.
+            "provenance": dict(sorted(provenance.items())),
             "batches": dict(sorted(new_ledger_batches.items())),
             "failed": dict(sorted(new_failed.items())),
         },
@@ -690,6 +905,7 @@ def run_merge(
         persons_by_id=dict(persons_by_id),
     )
 
+    status = read_shard_status(root)
     report = build_report(
         batches=batches,
         valid=valid,
@@ -699,15 +915,19 @@ def run_merge(
         dangling=dangling,
         orphaned=orphaned,
         ratios=measured,
-        manifest=load_manifest(batches_dir),
+        manifest=manifest,
         real=real,
+        reported_failures=agent_failures(status),
+        done_missing=done_without_output(status, batches),
+        epics=epic_coverage(manifest, [w for w in records["workitems"] if isinstance(w, WorkItem)]),
     )
     reports_dir.mkdir(parents=True, exist_ok=True)
     write_json_atomic(reports_dir / "synth.json", report)
 
     echo(summarize(report))
     echo(f"report: {reports_dir / 'synth.json'}")
-    return report, (1 if invalid else 0)
+    # A batch the agent gave up on is a failure too, even though no bad file exists for it.
+    return report, (1 if invalid or report["batches"]["reported_failed"] else 0)
 
 
 # --------------------------------------------------------------------------- reporting
@@ -725,6 +945,9 @@ def build_report(
     ratios: Sequence[ratios_mod.Ratio],
     manifest: dict[str, Any] | None,
     real: RealCorpus,
+    reported_failures: Sequence[dict[str, Any]] = (),
+    done_missing: Sequence[str] = (),
+    epics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     items = [w for b in valid if b.output for w in b.output.workitems]
     expected = {b["id"] for b in (manifest or {}).get("batches", [])}
@@ -737,6 +960,7 @@ def build_report(
             "valid": len(valid),
             "invalid": len(invalid),
             "expected": len(expected),
+            "reported_failed": len(reported_failures),
             "missing_outputs": sorted(expected - seen),
             "unexpected_outputs": sorted(seen - expected) if expected else [],
         },
@@ -757,17 +981,33 @@ def build_report(
             # links a merged record makes into a batch that was rejected in this same run
             "orphaned_by_rejection": sum(len(v) for v in orphaned.values()),
             "orphaned_per_batch": {k: v[:10] for k, v in orphaned.items()},
+            # an agent said `done` but the file is not there — a lost write, not a gap
+            "done_without_output": list(done_missing),
         },
         "notes": {b.batch_id: b.notes for b in batches if b.notes},
         "rejected": [
             {
                 "batch": b.batch_id,
+                "source": "merge",
                 "output": str(b.path),
                 "errors": b.errors[:20],
                 "error_count": len(b.errors),
             }
             for b in invalid
+        ]
+        + [
+            # The agent refused to write this one and said why in status.json. It has no
+            # bad file to quarantine, and it must not be read as "not written yet".
+            {
+                "batch": f["batch"],
+                "source": "status.json",
+                "output": None,
+                "errors": [f["reason"]],
+                "error_count": 1,
+            }
+            for f in reported_failures
         ],
+        "epics": epics or {},
         "ratios": ratios_mod.summarize(ratios),
         "slice": {
             "eligible_real_items": len(real.eligible),
@@ -796,11 +1036,27 @@ def summarize(report: dict[str, Any]) -> str:
         f"ratios: {r['passed']}/{r['checked']} within tolerance"
         + (f" — FAILED: {', '.join(r['failed'])}" if r["failed"] else ""),
     ]
+    epics = report["epics"]
+    if epics.get("ok") is not None:
+        lines.append(
+            f"epics: {epics['present']}/{epics['expected']} pre-assigned present"
+            + (f", missing {len(epics['missing'])}" if epics["missing"] else "")
+            + (f", duplicated {len(epics['duplicated'])}" if epics["duplicated"] else "")
+            + (f", {len(epics['extra'])} not in the manifest" if epics["extra"] else "")
+        )
     if report["rejected"]:
         lines.append(
             "rejected: "
-            + ", ".join(f"{x['batch']} ({x['error_count']} errors)" for x in report["rejected"])
+            + ", ".join(
+                f"{x['batch']} ({x['error_count']} errors via {x['source']})"
+                for x in report["rejected"]
+            )
         )
     if b["missing_outputs"]:
         lines.append(f"missing outputs: {', '.join(b['missing_outputs'])}")
+    if report["warnings"]["done_without_output"]:
+        lines.append(
+            "marked done but no output on disk: "
+            + ", ".join(report["warnings"]["done_without_output"])
+        )
     return "\n".join(lines)
