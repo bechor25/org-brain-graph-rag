@@ -23,7 +23,7 @@
 | 1 | 05 load | ✅ + סינתטי | cc2ad87…47abc94 | 35,410 צמתים / 109,623 קשתות; 2,385 סינתטיים עם provenance; TESTS 660 / HAS_RUN 609 / IN_PLAN 78; rerun 0/0 | 32,855 צמתים / 95,695 קשתות ב-3.6s; ריצה שנייה 0/0; LINKS_TO 298 זוגות; dangling issue refs 8,217 (גבול הפרוסה); StatusChange 7,607 (18.9k רעש הוסר); 725 מרווחי assignee בלי Person → canon ימנטס מ-changelog |
 | 1 | 06 chunk+embed | ✅ (re-review; 651 בדיקות) | d1146be…636a83a | 12,915 chunks חיים (section 1,713 / desc 3,423 / comment 3,629 / commit 4,150) + 931 orphaned; embedding 416s+142s @ 6.5k tok/s; 3.49 chars/token; fences מוזחים 12→0; rerun 0/0; guard ברשת ב-conftest תפס בדיקות harvest שפנו לאינטרנט |
 | 1 | 07 extract Phase A | 🟡 כלים ✅ אחרי תיקונים (d552262, 913168c); **8 מחלצים רצים** | | 2,743 chunks (1,713 KIP sections + 1,030 descriptions) → 195 batches ≤40KB רב-שורתיים, ~24/סוכן, ~187k tokens קלט לסוכן; schema+examples אושרו ע"י המתכנן |
-| 1 | 08 resolve | 🟡 כלים ✅ (79f75cc, 2ef926a); Persons tier 1–2 רץ | | 2,187→1,425 Persons (762 מיזוגים: 275 דטרמיניסטי, 487 embedding); P=0.847 R=0.263 לפני tier 3; תחום אפור 2,354 זוגות → מצמצמים ב-blocking + guard של ≥2 tokens בשם (P→0.955); embedding עם "מה עבד עליו" **הפך** את הסיגנל (true pairs 0.76→0.63) → display בלבד |
+| 1 | 08 resolve | 🟡 Persons: tiers 1–2 עם guard (185915b) — P=0.990 R=0.168; **4 שופטים רצים** על 1,188 זוגות / 52 batches (תקרת recall 0.851) | 79f75cc…185915b | 2,187→1,425 Persons (762 מיזוגים: 275 דטרמיניסטי, 487 embedding); P=0.847 R=0.263 לפני tier 3; תחום אפור 2,354 זוגות → מצמצמים ב-blocking + guard של ≥2 tokens בשם (P→0.955); embedding עם "מה עבד עליו" **הפך** את הסיגנל (true pairs 0.76→0.63) → display בלבד |
 | 1 | 09 communities | ⬜ | | |
 | 1 | 10 index + gate | ⬜ | | |
 | 1 | 11 modularity (registry, auth env, reset, guide) | ⬜ | | ADR-0005; אחרי chunk |
@@ -64,6 +64,10 @@
 - `StatusChange.id` כולל `from` (אחרת 26→10 התנגשויות) — מאושר.
 - `IN_PLAN`/`HAS_RUN{status}`: load יפרסר דטרמיניסטית את שורות `"XT-n: PASS|FAIL (…)"` ב-comments של TestExecution → `HAS_RUN{status,reason}`; `IN_PLAN` מ-`parent`=TestPlan או links `tests` מה-plan. מיושם אחרי המיזוג הסינתטי.
 - `IN_SPACE` Document→Space (Space היה orphan).
+
+## הכרעות מתכנן — resolve
+- Floor 0.80 + blocking (1,188 זוגות) — השורה היחידה שמשאירה תקרת recall ≥0.85; כל אופציה ≤600 זוגות מגבילה ל-≤0.78. דיוק ב-auto-tier שווה יותר מ-recall (ל-recall יש הזדמנות שנייה ב-tier 3, לדיוק אין).
+- embedding ל-Person = display בלבד (לא + פריטים): הקשר של "מה עבד עליו" מודד עבודה משותפת, לא זהות משותפת.
 
 ## הכרעות מתכנן — סינתטי
 - לקבל את השכבה כמות שהיא (589/1,021 items מכוסים): ההערכה צריכה gold, לא כיסוי מלא. supplement ל-432 הפריטים שלא נראו — אופציונלי אחרי Plan 2 אם ההערכה תראה פערים.
