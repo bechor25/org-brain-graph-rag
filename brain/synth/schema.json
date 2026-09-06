@@ -1,0 +1,287 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://org-brain.local/brain/synth/schema.json",
+  "title": "synthetic batch output (NNN.out.json)",
+  "description": "The contract between `synthetic-org-generator` and `brain synth merge`. It checks the batch envelope, the key shapes, the source/prefix pairing and the truth block. The *full* canonical validation is `brain/canon/models.py` (pydantic), which merge runs straight after this — so a record that passes here can still be rejected for, say, a malformed date. Both must pass.",
+  "type": "object",
+  "required": ["batch_id", "workitems", "truth"],
+  "additionalProperties": false,
+  "properties": {
+    "batch_id": {
+      "type": "string",
+      "description": "Exactly the `batch_id` of the .in.json this answers, e.g. \"shard-01/003\".",
+      "pattern": "^shard-[0-9]{2}/[0-9]{3}$"
+    },
+    "workitems": {
+      "type": "array",
+      "description": "Canonical WorkItems. Xray: Test / TestPlan / TestSet / TestExecution. ADO: Epic / Feature / User Story / Task / Bug.",
+      "items": { "$ref": "#/$defs/workitem" }
+    },
+    "containers": {
+      "type": "array",
+      "description": "Canonical Containers the items refer to: testplan / testset (xray), sprint / area (ado).",
+      "items": { "$ref": "#/$defs/container" }
+    },
+    "persons": {
+      "type": "array",
+      "description": "One Person per NEW identity of an EXISTING real person. Never a new human.",
+      "items": { "$ref": "#/$defs/person" }
+    },
+    "truth": { "$ref": "#/$defs/truth" },
+    "next_ids": {
+      "type": "object",
+      "description": "Optional bookkeeping: the next free number per prefix after this batch. Merge cross-checks it against the keys actually used; `status.json` is what the next batch reads.",
+      "additionalProperties": { "type": "integer", "minimum": 1 }
+    },
+    "notes": {
+      "type": "array",
+      "description": "Free-text remarks for the report. Never a place to hide a rule you could not follow — that is a `failed` entry in status.json.",
+      "items": { "type": "string" }
+    }
+  },
+  "$defs": {
+    "synthetic_key": {
+      "type": "string",
+      "description": "A key this layer mints. No other prefix may appear.",
+      "pattern": "^(XT|XE|XP|XS|ADO)-[0-9]+$"
+    },
+    "any_key": {
+      "type": "string",
+      "description": "A key of a real record (KAFKA-n, KIP-n) or a synthetic one.",
+      "pattern": "^[A-Za-z][A-Za-z0-9]{1,9}-[0-9]+$"
+    },
+    "identity_id": {
+      "type": "string",
+      "description": "\"<source>:<key>\" — the id of a Person record.",
+      "pattern": "^[a-z]+:.+$"
+    },
+    "link": {
+      "type": "object",
+      "required": ["type", "target"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "tests | executes | defect | related | blocks | duplicates | parent",
+          "minLength": 1
+        },
+        "target": { "$ref": "#/$defs/any_key" },
+        "direction": { "enum": ["out", "in"] }
+      }
+    },
+    "comment": {
+      "type": "object",
+      "required": ["body"],
+      "additionalProperties": false,
+      "properties": {
+        "author": { "type": ["string", "null"] },
+        "at": { "type": ["string", "null"] },
+        "body": { "type": "string", "minLength": 1 }
+      }
+    },
+    "ref": {
+      "type": "object",
+      "required": ["kind", "key"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "enum": ["issue", "kip", "pr", "url", "user"] },
+        "key": { "type": "string", "minLength": 1 },
+        "via": { "enum": ["text", "link"] }
+      }
+    },
+    "workitem": {
+      "type": "object",
+      "required": [
+        "id",
+        "key",
+        "source",
+        "type",
+        "title",
+        "description",
+        "status",
+        "created",
+        "synthetic"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "\"<source>:<key>\", e.g. \"xray:XT-10007\".",
+          "pattern": "^(xray|ado):(XT|XE|XP|XS|ADO)-[0-9]+$"
+        },
+        "key": { "$ref": "#/$defs/synthetic_key" },
+        "source": { "enum": ["xray", "ado"] },
+        "type": {
+          "enum": [
+            "Test",
+            "TestPlan",
+            "TestSet",
+            "TestExecution",
+            "Epic",
+            "Feature",
+            "User Story",
+            "Task",
+            "Bug"
+          ]
+        },
+        "title": { "type": "string", "minLength": 1 },
+        "description": { "type": "string", "minLength": 1 },
+        "status": { "type": "string", "minLength": 1 },
+        "resolution": { "type": ["string", "null"] },
+        "resolved_at": { "type": ["string", "null"] },
+        "priority": { "type": ["string", "null"] },
+        "created": { "type": "string", "minLength": 10 },
+        "updated": { "type": ["string", "null"] },
+        "reporter": {
+          "type": ["string", "null"],
+          "description": "A SYNTHETIC identity key (the `key` of one of this batch's persons), not the real Jira username — resolution has to have work to do."
+        },
+        "assignee": { "type": ["string", "null"] },
+        "components": { "type": "array", "items": { "type": "string" } },
+        "labels": { "type": "array", "items": { "type": "string" } },
+        "fix_versions": { "type": "array", "items": { "type": "string" } },
+        "affects_versions": { "type": "array", "items": { "type": "string" } },
+        "parent": { "type": ["string", "null"] },
+        "links": { "type": "array", "items": { "$ref": "#/$defs/link" } },
+        "comments": { "type": "array", "items": { "$ref": "#/$defs/comment" } },
+        "changelog": { "type": "array", "items": { "type": "object" } },
+        "refs": { "type": "array", "items": { "$ref": "#/$defs/ref" } },
+        "synthetic": { "const": true },
+        "raw_url": { "type": ["string", "null"] }
+      }
+    },
+    "container": {
+      "type": "object",
+      "required": ["id", "source", "kind", "name", "synthetic"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "\"<source>:<kind>:<name>\".",
+          "pattern": "^(xray|ado):(testplan|testset|sprint|area):.+$"
+        },
+        "source": { "enum": ["xray", "ado"] },
+        "kind": { "enum": ["testplan", "testset", "sprint", "area"] },
+        "name": { "type": "string", "minLength": 1 },
+        "parent": { "type": ["string", "null"] },
+        "synthetic": { "const": true }
+      }
+    },
+    "identity": {
+      "type": "object",
+      "required": ["source", "key", "display"],
+      "additionalProperties": false,
+      "properties": {
+        "source": { "enum": ["xray", "ado"] },
+        "key": {
+          "type": "string",
+          "description": "A slug the synthetic system would use. Must not equal the real Jira username.",
+          "minLength": 1
+        },
+        "display": {
+          "type": "string",
+          "description": "The variant form: \"Rao, Jun\" | \"jrao\" | \"J. Rao\".",
+          "minLength": 1
+        },
+        "email": {
+          "type": "null",
+          "description": "Always null. Never invent an email for a real person."
+        }
+      }
+    },
+    "person": {
+      "type": "object",
+      "required": ["id", "identities", "synthetic"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "\"<source>:<key>\" of its single identity.",
+          "pattern": "^(xray|ado):.+$"
+        },
+        "identities": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": { "$ref": "#/$defs/identity" }
+        },
+        "resolved": { "const": false },
+        "synthetic": { "const": true }
+      }
+    },
+    "truth": {
+      "type": "object",
+      "description": "Ground truth by construction. Used ONLY by evaluation (Plan 3) and by the resolution gold set — never by the pipeline.",
+      "required": [
+        "identity_map",
+        "text_only_links",
+        "stale_states",
+        "renames",
+        "duplicate_tests"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "identity_map": {
+          "type": "object",
+          "description": "new identity id -> real Person id, e.g. {\"ado:rao.jun\": \"jira:jrao\"}.",
+          "additionalProperties": { "$ref": "#/$defs/identity_id" }
+        },
+        "text_only_links": {
+          "type": "array",
+          "description": "A reference that exists ONLY in prose: no links[] entry states it. One shape for both directions of the contract — an ADO Story naming a Jira key, and a Test naming the story it covers.",
+          "items": {
+            "type": "object",
+            "required": ["from_key", "to_key"],
+            "additionalProperties": false,
+            "properties": {
+              "from_key": { "$ref": "#/$defs/synthetic_key" },
+              "to_key": { "$ref": "#/$defs/any_key" }
+            }
+          }
+        },
+        "stale_states": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["ado_key", "jira_key", "ado_status", "jira_status"],
+            "additionalProperties": false,
+            "properties": {
+              "ado_key": { "$ref": "#/$defs/synthetic_key" },
+              "jira_key": { "$ref": "#/$defs/any_key" },
+              "ado_status": { "type": "string", "minLength": 1 },
+              "jira_status": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "renames": {
+          "type": "array",
+          "description": "The Test titles that say the same thing as the Jira summary in different words.",
+          "items": {
+            "type": "object",
+            "required": ["test_key", "jira_key", "test_phrase", "jira_phrase"],
+            "additionalProperties": false,
+            "properties": {
+              "test_key": { "$ref": "#/$defs/synthetic_key" },
+              "jira_key": { "$ref": "#/$defs/any_key" },
+              "test_phrase": { "type": "string", "minLength": 1 },
+              "jira_phrase": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "duplicate_tests": {
+          "type": "array",
+          "description": "Same steps, different key, created months apart.",
+          "items": {
+            "type": "object",
+            "required": ["a", "b"],
+            "additionalProperties": false,
+            "properties": {
+              "a": { "$ref": "#/$defs/synthetic_key" },
+              "b": { "$ref": "#/$defs/synthetic_key" }
+            }
+          }
+        }
+      }
+    }
+  }
+}
