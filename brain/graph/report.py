@@ -79,8 +79,6 @@ PRIMARY_LABELS: tuple[str, ...] = (
     "Sprint",
     "Area",
     "Space",
-    "TestPlan",
-    "TestSet",
 )
 
 
@@ -99,9 +97,9 @@ def existing_labels(ctx: GraphContext) -> set[str]:
 def node_census(ctx: GraphContext, secondary: list[str], present: set[str]) -> dict[str, int]:
     """Raw per-label counts — what `MATCH (n:Label)` actually returns.
 
-    `TestPlan` and `TestSet` are both a container label and a work item type, so those two
-    rows cover two kinds of node. They are still the honest answer to "how many nodes wear
-    this label"; :func:`node_total` is what counts each node once.
+    Secondary work item labels (`Bug`, `TestPlan`, …) are listed beside the primary ones,
+    so summing this map double-counts every work item; :func:`node_total` counts each node
+    once.
     """
     counts: dict[str, int] = {}
     for label in (*PRIMARY_LABELS, *sorted(secondary)):

@@ -107,7 +107,7 @@ def test_a_container_is_stamped_by_its_id_not_its_name(tmp_path):
                 "step": "synth.merge",
                 "updated_at": "2026-09-06T10:00:00Z",
                 "provenance": {
-                    "xray:testplan:3.7.0 regression": {
+                    "ado:sprint:Sprint 2024-03": {
                         "batch_id": "shard-02/004",
                         "shard": "shard-02",
                         "merged_at": "2026-09-06T10:00:00Z",
@@ -120,10 +120,11 @@ def test_a_container_is_stamped_by_its_id_not_its_name(tmp_path):
         encoding="utf-8",
     )
     prov = SyntheticProvenance.load(tmp_path)
-    plan = container("testplan", "3.7.0 regression", synthetic=True)
-    plan.id = "xray:testplan:3.7.0 regression"
-    plan.source = "xray"
-    grouped, _unknown = container_rows([plan], prov)
-    (row,) = grouped["TestPlan"]
-    assert row["key"] == "3.7.0 regression"
+    sprint = container("sprint", "Sprint 2024-03", synthetic=True)
+    sprint.id = "ado:sprint:Sprint 2024-03"
+    sprint.source = "ado"
+    grouped, skipped, _unknown = container_rows([sprint], prov)
+    (row,) = grouped["Sprint"]
+    assert row["key"] == "Sprint 2024-03"
     assert row["props"]["batch_id"] == "shard-02/004"
+    assert skipped == {}

@@ -18,7 +18,7 @@ from pathlib import Path
 
 from brain.canon.io import read_jsonl
 from brain.canon.models import Change, Container, Document, Person, WorkItem
-from brain.graph.mapping import container_label, pr_number
+from brain.graph.mapping import container_label, is_skipped_container, pr_number
 
 CANONICAL_FILES: dict[str, type] = {
     "workitems": WorkItem,
@@ -53,6 +53,8 @@ class Corpus:
     person_by_bare_key: dict[str, str] = field(default_factory=dict)
     container_names: dict[str, set[str]] = field(default_factory=dict)
     unknown_container_kinds: Counter = field(default_factory=Counter)
+    #: Kinds the graph deliberately does not hold — see `SKIPPED_CONTAINER_KINDS`.
+    skipped_container_kinds: Counter = field(default_factory=Counter)
 
     @property
     def commits(self) -> list[Change]:
@@ -102,6 +104,9 @@ def _index(corpus: Corpus) -> Corpus:
     corpus.person_by_bare_key = {k: next(iter(v)) for k, v in claims.items() if len(v) == 1}
 
     for c in corpus.containers:
+        if is_skipped_container(c.kind):
+            corpus.skipped_container_kinds[c.kind] += 1
+            continue
         label = container_label(c.kind)
         if label is None:
             corpus.unknown_container_kinds[c.kind] += 1

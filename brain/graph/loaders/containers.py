@@ -15,17 +15,21 @@ from brain.canon.models import Container
 from brain.graph.context import GraphContext
 from brain.graph.corpus import Corpus
 from brain.graph.cypher import node_merge
-from brain.graph.mapping import CONTAINER_KEY, container_label
+from brain.graph.mapping import CONTAINER_KEY, container_label, is_skipped_container
 from brain.graph.provenance import SyntheticProvenance
 
 
 def node_rows(
     containers: list[Container], prov: SyntheticProvenance
-) -> tuple[dict[str, list[dict[str, Any]]], Counter]:
-    """Rows grouped by node label, plus the kinds that have no label."""
+) -> tuple[dict[str, list[dict[str, Any]]], Counter, Counter]:
+    """Rows grouped by node label, the kinds deliberately skipped, and the unknown ones."""
     grouped: dict[str, dict[str, dict[str, Any]]] = {}
+    skipped: Counter = Counter()
     unknown: Counter = Counter()
     for c in containers:
+        if is_skipped_container(c.kind):
+            skipped[c.kind] += 1
+            continue
         label = container_label(c.kind)
         if label is None:
             unknown[c.kind] += 1
@@ -43,11 +47,15 @@ def node_rows(
         # Two sources naming the same component produce one node; last writer wins on the
         # descriptive properties, and the name is the identity either way.
         grouped.setdefault(label, {})[c.name] = {"key": c.name, "props": props}
-    return {label: list(rows.values()) for label, rows in grouped.items()}, unknown
+    return (
+        {label: list(rows.values()) for label, rows in grouped.items()},
+        skipped,
+        unknown,
+    )
 
 
 def load_nodes(ctx: GraphContext, corpus: Corpus, prov: SyntheticProvenance) -> dict[str, Any]:
-    grouped, unknown = node_rows(corpus.containers, prov)
+    grouped, skipped, unknown = node_rows(corpus.containers, prov)
     counts: dict[str, int] = {}
     stamped = 0
     for label, rows in sorted(grouped.items()):
@@ -56,6 +64,7 @@ def load_nodes(ctx: GraphContext, corpus: Corpus, prov: SyntheticProvenance) -> 
         stamped += sum(1 for r in rows if r["props"].get("batch_id"))
     return {
         "by_label": counts,
+        "skipped_container_kinds": dict(skipped),
         "unknown_kinds": dict(unknown),
         "stamped": stamped,
     }

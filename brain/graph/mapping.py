@@ -64,19 +64,25 @@ def workitem_label(item_type: str, source: str) -> str | None:
 
 
 #: Container kind → node label. A kind with no label here is reported, never guessed at.
-#: `testplan`/`testset` are containers *and* work item types (`XP-12` is a `TestPlan`
-#: work item, `xray:testplan:3.7.0 regression` is the grouping it belongs to). They share
-#: a label by planner decision; they never share a node, because a container merges on
-#: `name` and a work item on `key`, and neither carries the other's property.
 CONTAINER_LABELS: dict[str, str] = {
     "component": "Component",
     "version": "Version",
     "sprint": "Sprint",
     "area": "Area",
     "space": "Space",
-    "testplan": "TestPlan",
-    "testset": "TestSet",
 }
+
+#: Container kinds that are deliberately not loaded (planner decision). The synthetic
+#: layer states a test plan twice — as the work item `XP-12` and as a container
+#: `xray:testplan:<name>` — and the work item is the node: it has the links, the
+#: hierarchy and the key everything else points at. Loading the container too would put
+#: two different nodes behind `MATCH (p:TestPlan)`. They are counted, never silent.
+SKIPPED_CONTAINER_KINDS: frozenset[str] = frozenset({"testplan", "testset"})
+
+
+def is_skipped_container(kind: str) -> bool:
+    return str(kind or "").lower() in SKIPPED_CONTAINER_KINDS
+
 
 #: The property each container label merges on. All of them are the container's name.
 CONTAINER_KEY = "name"
@@ -133,6 +139,7 @@ DEDICATED_LINK_RELS: dict[str, tuple[str, Literal["forward", "reverse"]]] = {
 #: The work item label that turns a `tests` link into membership instead of coverage.
 #: A `Test` that declares `tests → KAFKA-100` covers that issue; a `TestPlan` that
 #: declares `tests → XT-10007` contains that test, which is `IN_PLAN`, not `TESTS`.
+#: `IN_PLAN` therefore always targets a work item, by key — never a container.
 TEST_PLAN_LABEL = "TestPlan"
 
 

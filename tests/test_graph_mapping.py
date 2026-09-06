@@ -17,6 +17,7 @@ from brain.graph.mapping import (
     container_label,
     dedupe_link_edges,
     is_known_link_type,
+    is_skipped_container,
     link_edge,
     parse_test_runs,
     pr_number,
@@ -75,10 +76,17 @@ def test_jira_test_and_xray_test_are_different_labels():
 def test_container_label_is_closed():
     assert container_label("component") == "Component"
     assert container_label("AREA") == "Area"
-    # a container kind and a work item type can share a label; they never share a node
-    assert container_label("testplan") == "TestPlan"
-    assert container_label("testset") == "TestSet"
     assert container_label("iteration") is None
+
+
+def test_test_plans_and_sets_are_work_items_not_containers():
+    """The synthetic layer states a plan twice; only the work item becomes a node, so
+    `MATCH (p:TestPlan)` cannot return two different kinds of thing."""
+    assert container_label("testplan") is None
+    assert container_label("testset") is None
+    assert is_skipped_container("testplan") and is_skipped_container("TestSet")
+    assert not is_skipped_container("sprint")
+    assert workitem_label("TestPlan", "xray") == "TestPlan"
 
 
 # ------------------------------------------------------------------- links

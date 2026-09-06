@@ -9,7 +9,7 @@ from brain.graph.corpus import load_corpus
 from brain.graph.loaders import changes as changes_loader
 from brain.graph.loaders import containers as containers_loader
 from brain.graph.loaders import refs as refs_loader
-from brain.graph.mapping import CONTAINER_LABELS
+from brain.graph.mapping import CONTAINER_LABELS, SKIPPED_CONTAINER_KINDS
 from brain.graph.provenance import SyntheticProvenance
 from tests.graph_helpers import (
     change,
@@ -107,30 +107,42 @@ def test_a_person_with_several_identities_is_found_by_each_of_them():
     assert c.person("jira", "unknown") is None
 
 
-def test_every_container_kind_the_canonical_model_allows_has_a_label():
-    """The closed set in `Container.kind` and the label map are one decision, not two."""
-    kinds = get_args(Container.model_fields["kind"].annotation)
-    assert set(kinds) == set(CONTAINER_LABELS)
-    grouped, unknown = containers_loader.node_rows(
-        [container(kind, f"{kind}-1") for kind in kinds], NO_PROV
+def test_every_container_kind_the_model_allows_is_either_loaded_or_counted():
+    """The closed set in `Container.kind`, the label map and the skip list are one
+    decision. A kind that belonged to none of them would vanish without a number."""
+    kinds = set(get_args(Container.model_fields["kind"].annotation))
+    assert kinds == set(CONTAINER_LABELS) | set(SKIPPED_CONTAINER_KINDS)
+    grouped, skipped, unknown = containers_loader.node_rows(
+        [container(kind, f"{kind}-1") for kind in sorted(kinds)], NO_PROV
     )
     assert sorted(grouped) == sorted(set(CONTAINER_LABELS.values()))
+    assert skipped == {"testplan": 1, "testset": 1}
+    assert unknown == {}
+
+
+def test_a_test_plan_container_never_becomes_a_node():
+    grouped, skipped, unknown = containers_loader.node_rows(
+        [container("component", "clients"), container("testplan", "3.7.0 regression")], NO_PROV
+    )
+    assert list(grouped) == ["Component"]
+    assert skipped == {"testplan": 1}
     assert unknown == {}
 
 
 def test_a_kind_the_label_map_does_not_know_is_reported_not_guessed():
     """Unreachable through the model today; the guard is what keeps it unreachable."""
-    plan = container("testplan", "3.7.0 regression")
-    object.__setattr__(plan, "kind", "iteration")
-    grouped, unknown = containers_loader.node_rows(
-        [container("component", "clients"), plan], NO_PROV
+    odd = container("sprint", "Sprint 12")
+    object.__setattr__(odd, "kind", "iteration")
+    grouped, skipped, unknown = containers_loader.node_rows(
+        [container("component", "clients"), odd], NO_PROV
     )
     assert list(grouped) == ["Component"]
+    assert skipped == {}
     assert unknown == {"iteration": 1}
 
 
 def test_the_same_container_name_from_two_sources_is_one_node():
-    grouped, _ = containers_loader.node_rows(
+    grouped, _skipped, _unknown = containers_loader.node_rows(
         [container("component", "clients"), container("component", "clients")], NO_PROV
     )
     assert len(grouped["Component"]) == 1

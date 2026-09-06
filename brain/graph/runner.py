@@ -194,6 +194,7 @@ def run_load(
             "source_link_types": link_type_census(corpus),
             "unknown_link_types": stats["workitem_edges"]["links"]["unknown_link_types"],
             "dangling_refs": stats["refs"]["dangling_refs"],
+            "skipped_container_kinds": stats["containers"]["skipped_container_kinds"],
             "synthetic_provenance": prov.report(stamped),
             "checks": checks,
             "notes": NOTES,
