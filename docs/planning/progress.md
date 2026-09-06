@@ -35,6 +35,7 @@
 - Plan 0: `docs/lessons/00-foundations.md`
 - Plan 1 שלבים 01–02: `docs/lessons/01-harvest.md`
 - Plan 1 שלב 03: `docs/lessons/02-canon.md`
+- Plan 1 שלב 05: `docs/lessons/04-load.md`
 
 ## ממצאים (findings)
 - **(synth) כלי Read של הסוכנים חותך קובץ ~49KB בשורה אחת** — `.in.json` של 80–98KB בשורה אחת נקרא חלקית (הסוכן ראה 21–27 מ-40 פריטים, לא ראה `documents/persons`). חובה לכל batch builder עתידי (extract!): JSON מודפס-יפה רב-שורות (Read עם offset/limit עובד לפי שורות) ו/או batches ≤40KB. shard-02 פיצה מ-`persons.jsonl` ומיצג יחסים לפי 40.
