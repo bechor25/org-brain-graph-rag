@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from brain.synth.jsonschema_mini import validate as schema_validate
+from brain.common.jsonschema_mini import validate as schema_validate
 from brain.extract.models import BatchInput, BatchOutput
 from brain.extract.names import quote_found
 

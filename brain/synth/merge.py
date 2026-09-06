@@ -51,6 +51,7 @@ from pydantic import BaseModel, ValidationError
 from brain.canon.io import read_jsonl, write_jsonl
 from brain.canon.models import Container, Document, Person, WorkItem
 from brain.canon.runner import sort_key
+from brain.common.jsonschema_mini import validate as schema_validate
 from brain.harvest.base import utc_now_iso, write_json_atomic
 from brain.synth import ratios as ratios_mod
 from brain.synth.build import (
@@ -61,7 +62,6 @@ from brain.synth.build import (
     sha256_of,
     shard_range,
 )
-from brain.synth.jsonschema_mini import validate as schema_validate
 from brain.synth.models import PREFIX_SOURCE, BatchOutput, Truth
 
 MAX_RETRIES = 2

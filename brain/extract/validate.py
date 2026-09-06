@@ -33,7 +33,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from brain.synth.jsonschema_mini import validate as schema_validate
+from brain.common.jsonschema_mini import validate as schema_validate
 from brain.extract import names as names_mod
 from brain.extract.models import QUOTE_MAX, BatchInput, Entity, Relation
 

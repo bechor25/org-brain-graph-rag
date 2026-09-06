@@ -14,8 +14,8 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from brain.synth.jsonschema_mini import unsupported_keywords
-from brain.synth.jsonschema_mini import validate as schema_validate
+from brain.common.jsonschema_mini import unsupported_keywords
+from brain.common.jsonschema_mini import validate as schema_validate
 from brain.extract.models import KINDS, RELATION_TYPES, BatchOutput
 from tests.extract_helpers import batch_output, entity, relation
 

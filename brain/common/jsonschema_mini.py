@@ -1,4 +1,7 @@
-"""A JSON Schema validator for exactly the subset `brain/synth/schema.json` uses.
+"""A JSON Schema validator for exactly the subset this repo's `schema.json` files use.
+
+Two callers: `brain/synth/schema.json` (the synthetic batch contract) and
+`brain/extract/schema.json` (the extraction batch contract).
 
 Why not `jsonschema`: the conventions pin dependencies in `uv.lock` and ask for a brief
 before adding one. The subset a hand-written contract actually needs is small, and the

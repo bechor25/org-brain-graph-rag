@@ -6,8 +6,8 @@ import json
 
 import pytest
 
+from brain.common.jsonschema_mini import SchemaError, unsupported_keywords, validate
 from brain.synth.build import SCHEMA_PATH
-from brain.synth.jsonschema_mini import SchemaError, unsupported_keywords, validate
 from brain.synth.models import BatchOutput
 from tests.synth_helpers import ado_item, batch_output, synthetic_person, truth, xray_test
 
