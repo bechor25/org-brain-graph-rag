@@ -157,6 +157,9 @@ def test_the_three_hundred_ado_items_criterion_is_a_floor_not_a_target():
         ("Rao, Jun", "last_first"),
         ("jrao", "username"),
         ("J. Rao", "initial"),
+        # a real form in this corpus: an ASCII-only initial class reported it as noise
+        ("Ö. Baysal", "initial"),
+        ("Ç. Yilmaz", "initial"),
         ("Jun Rao", "other"),
         ("", "other"),
     ],

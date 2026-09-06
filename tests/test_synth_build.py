@@ -13,16 +13,19 @@ from brain.synth.build import (
     DESCRIPTION_CHARS,
     KIP_EXCERPT_CHARS,
     MANIFEST_NAME,
+    MAX_LINE_BYTES,
     RESERVED_MAX,
     SCHEMA_PATH,
     SPEC_PATH,
     STATUS_NAME,
     assign_shards,
+    longest_line_bytes,
     plan_batches,
     plan_epics,
     run_build,
     select_items,
     shard_range,
+    write_batch_json,
 )
 from tests.synth_helpers import plant_canonical, real_item
 
@@ -447,3 +450,45 @@ def test_the_manifest_says_what_the_selection_threw_away_and_how_long_it_took(tm
     }
     assert manifest["selection"]["selected"] == 1
     assert isinstance(manifest["duration_ms"], int)
+
+
+# --------------------------------------------------------------------------- readability
+
+
+def test_a_batch_never_ships_a_line_an_agent_cannot_read(tmp_path):
+    """A compact dump put all 40 items on one 100 KB line and every agent read ~24 of them."""
+    build(
+        tmp_path,
+        corpus={
+            "workitems": [
+                real_item(f"KAFKA-{i}", description="word " * 300, fix_versions=[])
+                for i in range(1, 41)
+            ]
+        },
+        shards=1,
+        batch_size=40,
+    )
+    path = tmp_path / "batches" / "synthetic" / "shard-01" / "001.in.json"
+
+    lines = path.read_bytes().splitlines()
+
+    assert len(lines) > 100, "a single-line batch is the bug this guards"
+    assert longest_line_bytes(path) <= MAX_LINE_BYTES
+
+
+def test_the_manifest_records_the_longest_line_and_its_budget(tmp_path):
+    manifest = build(tmp_path)
+
+    assert manifest["sizes"]["line_budget_bytes"] == MAX_LINE_BYTES
+    assert 0 < manifest["sizes"]["max_line_bytes"] <= MAX_LINE_BYTES
+    assert manifest["batches"][0]["max_line_bytes"] <= MAX_LINE_BYTES
+
+
+def test_a_line_over_the_budget_is_an_error_not_a_warning(tmp_path):
+    """Silence is what made the truncation cost 42% of the corpus; refuse instead."""
+    path = tmp_path / "big.in.json"
+
+    with pytest.raises(ValueError, match="over the .* an agent's reader handles"):
+        write_batch_json(path, {"description": "x" * (MAX_LINE_BYTES + 1)})
+
+    assert not path.exists()

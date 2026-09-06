@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Sequence
@@ -79,6 +80,11 @@ DESCRIPTION_CHARS = 1_500
 COMMENT_CHARS = 300
 MAX_COMMENTS = 2
 KIP_EXCERPT_CHARS = 600
+
+#: The longest single line a batch may contain. The agents' file reader truncates a long
+#: line at ~48 KB; a compact `json.dump` put the whole 100 KB batch on one line and every
+#: agent silently read only its first ~24 items. See `write_batch_json`.
+MAX_LINE_BYTES = 8 * 1024
 
 #: Package files, resolved from the module rather than the cwd. `data/` is relative by
 #: convention (`Settings.data_dir`) because it is the user's; the contract and the schema
@@ -482,6 +488,42 @@ def shards_in_flight(root: Path) -> dict[str, int]:
     return busy
 
 
+def write_batch_json(path: Path, payload: dict[str, Any]) -> None:
+    """Write a batch input *indented*, temp+rename, and refuse to leave a huge line behind.
+
+    This is the one difference from `write_json_atomic`, and it cost 42% of the corpus.
+    A compact dump puts the whole batch on a single 100 KB line; the LLM-role agents' file
+    reader truncates a long line at ~48 KB, so every agent saw the first ~24 of its 40 items
+    and silently generated against the head of each batch. Nothing failed — the outputs were
+    valid, the ratios passed, and items 28-39 of every batch were never read by anybody.
+
+    Indenting makes the longest line a single long description (~1.7 KB) instead of the whole
+    file, so a line-oriented reader can page through it. `MAX_LINE_BYTES` is the guard that
+    keeps the failure from coming back quietly: a batch that would ship an unreadable line is
+    an error, not a warning, because the symptom of the warning being ignored is invisible.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    longest = max((len(line.encode("utf-8")) for line in text.splitlines()), default=0)
+    if longest > MAX_LINE_BYTES:
+        raise ValueError(
+            f"{path}: longest line is {longest} bytes, over the {MAX_LINE_BYTES} an agent's "
+            "reader handles. Lower DESCRIPTION_CHARS / COMMENT_CHARS / KIP_EXCERPT_CHARS — a "
+            "line an agent cannot read is content nobody generates against."
+        )
+    tmp = path.with_name(path.name + ".tmp")
+    with tmp.open("w", encoding="utf-8") as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+    tmp.replace(path)
+
+
+def longest_line_bytes(path: Path) -> int:
+    with path.open("rb") as f:
+        return max((len(line.rstrip(b"\n")) for line in f), default=0)
+
+
 def write_input_if_changed(path: Path, payload: dict[str, Any]) -> bool:
     """Write the batch unless the only difference from what is on disk is `generated_at`.
 
@@ -499,7 +541,7 @@ def write_input_if_changed(path: Path, payload: dict[str, Any]) -> bool:
         stamp = existing.get("generated_at")
         if existing == {**payload, "generated_at": stamp}:
             return False
-    write_json_atomic(path, payload)
+    write_batch_json(path, payload)
     return True
 
 
@@ -600,6 +642,7 @@ def run_build(
                 "containers": len(payload.containers),
                 "epics_owned": sum(1 for e in payload.epics if e.owned),
                 "bytes": path.stat().st_size,
+                "max_line_bytes": longest_line_bytes(path),
                 "sha256": sha256_of(path),
                 "rewritten": rewritten,
             }
@@ -713,6 +756,8 @@ def _manifest(
             "kip_excerpt_chars": KIP_EXCERPT_CHARS,
         },
         "sizes": {
+            "max_line_bytes": max((b["max_line_bytes"] for b in written), default=0),
+            "line_budget_bytes": MAX_LINE_BYTES,
             "max_bytes": max(sizes) if sizes else 0,
             "min_bytes": min(sizes) if sizes else 0,
             "total_bytes": sum(sizes),

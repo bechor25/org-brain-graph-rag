@@ -150,13 +150,18 @@ def _formal_targets(item: WorkItem, link_type: str) -> set[str]:
 
 
 def classify_display(display: str | None) -> str:
-    """`"Rao, Jun"` → last_first, `"jrao"` → username, `"J. Rao"` → initial."""
+    """`"Rao, Jun"` → last_first, `"jrao"` → username, `"J. Rao"` → initial.
+
+    The initial form is matched on any uppercase letter, not `[A-Z]`: this corpus contains
+    `"Ö. Baysal"`, and an ASCII-only class reports a correctly-formed identity as noise —
+    which reads as an agent error when it is the measurement that is wrong.
+    """
     text = (display or "").strip()
     if not text:
         return "other"
     if re.match(r"^[^,]+,\s+\S", text):
         return "last_first"
-    if re.match(r"^[A-Z]\.\s*\S", text):
+    if re.match(r"^[^\W\d_]\.\s*\S", text) and text[0].isupper():
         return "initial"
     if " " not in text and text == text.lower():
         return "username"
