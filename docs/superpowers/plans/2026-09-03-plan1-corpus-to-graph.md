@@ -72,7 +72,7 @@
 - Planner writes `brain/canon/synthetic_spec.md` (noise contract, ratios, key ranges) before this task starts.
 - `brain synth build`: batches of ~40 real stories/bugs (+ referenced KIPs + person identities) → `data/batches/synthetic/<shard>/NNN.in.json`; 3 shards.
 - Agents produce `NNN.out.json` per the generator definition.
-- `brain synth merge`: validate (pydantic, key uniqueness, `synthetic=true`, ratios within ±5% of spec) → append to canonical JSONL; write `data/canonical/synthetic_truth.json` (identity map, text-only links, stale states).
+- `brain synth merge`: validate (pydantic, key uniqueness, `synthetic=true`, truth cross-checked against records) → rewrite the synthetic slice of the canonical JSONL (idempotent, ledger `synthetic_merged.json` with batch provenance); ratios vs spec are **reported** with ±5% tolerance, not blocking (planner sign-off 2026-09-03); write `data/canonical/synthetic_truth.json`.
 - Report `data/reports/synth.json`: counts, ratio compliance, rejected batches.
 
 **Acceptance**

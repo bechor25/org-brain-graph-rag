@@ -36,6 +36,7 @@
 - Plan 1 שלב 03: `docs/lessons/02-canon.md`
 
 ## ממצאים (findings)
+- (synth) blocker בסקירה: ה-spec אמר "מונה גלובלי" בעוד ה-build חילק בלוקים לכל shard — תוקן ב-`98d98c1` והודעה נשלחה ל-3 המחוללים תוך כדי ריצה. לקח: כשסוטים מחוזה מחייב, תיקון החוזה הוא חלק מהסטייה.
 - סוכני `.claude/agents/` נטענים רק בתחילת סשן — בסשן הזה dispatch נעשה דרך general-purpose עם ההגדרה מודבקת; מסשן חדש הם זמינים ישירות.
 - `neo4j:2026.06.0` מכיל APOC ו-GDS מקומית (`/var/lib/neo4j/labs`, `/products`) — אין תלות ברשת בזמן עלייה.
 - Neo4j Community: `RoutingControl.READ` נאכף בצד השרת — בסיס אמיתי ל-`run_cypher` מוגן.
