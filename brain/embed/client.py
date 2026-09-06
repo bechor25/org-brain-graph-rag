@@ -1,8 +1,16 @@
 """Local embeddings via Ollama (/api/embed). Model + dim are pinned by settings;
 a dimension mismatch is a hard error (index/query vectors must come from the same model).
+
+Every call also tallies what it cost: `prompt_tokens` accumulates the `prompt_eval_count`
+Ollama returns, which is the model's *own* tokenizer counting the text it just embedded.
+Ollama 0.32.6 answers `/api/tokenize` with 404, so this is the only real token count this
+stack can get, and `brain chunk --measure` calibrates its `len(text)/4` estimate against
+it. Keeping the tally here rather than in a subclass means one HTTP loop, not two.
 """
 
 from __future__ import annotations
+
+import time
 
 import httpx
 
@@ -20,7 +28,21 @@ class OllamaEmbedder:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.dim = dim
+        self.timeout_s = timeout
         self._client = httpx.Client(timeout=timeout)
+        #: Real tokens, requests and seconds spent since this embedder was created.
+        self.prompt_tokens = 0
+        self.requests = 0
+        self.request_seconds = 0.0
+
+    def usage(self) -> dict[str, float | int]:
+        """What this embedder has cost so far — the numbers the step report quotes."""
+        return {
+            "prompt_tokens": self.prompt_tokens,
+            "requests": self.requests,
+            "request_seconds": round(self.request_seconds, 2),
+            "timeout_s": self.timeout_s,
+        }
 
     def close(self) -> None:
         self._client.close()
@@ -41,11 +63,15 @@ class OllamaEmbedder:
         out: list[list[float]] = []
         for i in range(0, len(texts), batch_size):
             chunk = texts[i : i + batch_size]
+            started = time.perf_counter()
             r = self._client.post(
                 f"{self.base_url}/api/embed", json={"model": self.model, "input": chunk}
             )
             r.raise_for_status()
-            vectors = r.json()["embeddings"]
+            payload = r.json()
+            self.request_seconds += time.perf_counter() - started
+            self.requests += 1
+            vectors = payload["embeddings"]
             if len(vectors) != len(chunk):
                 raise EmbedCountMismatch(
                     f"model {self.model} returned {len(vectors)} vectors for {len(chunk)} inputs"
@@ -55,6 +81,7 @@ class OllamaEmbedder:
                     raise EmbedDimMismatch(
                         f"model {self.model} returned dim {len(v)}, expected {self.dim}"
                     )
+            self.prompt_tokens += int(payload.get("prompt_eval_count") or 0)
             out.extend(vectors)
         return out
 

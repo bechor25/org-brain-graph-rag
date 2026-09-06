@@ -5,12 +5,10 @@ somebody times it on 600-token paragraphs rather than on sentences. It embeds th
 200 real chunks at four batch sizes and reports tokens/s and s/batch for each; the full
 run then takes its batch size and its HTTP timeout from that table.
 
-`CountingEmbedder` is `OllamaEmbedder` with one addition: it keeps the `prompt_eval_count`
-Ollama returns and the base client discards. That number is `bge-m3`'s own token count for
-the text just embedded, which is the only real tokenizer this stack has — Ollama 0.32.6
-answers `/api/tokenize` with 404 — so it is what calibrates the `chars/4` estimate the
-chunker sizes chunks with. Every vector still comes from `OllamaEmbedder`; no other code
-path talks to a model.
+The real token counts come from `OllamaEmbedder.prompt_tokens` — `bge-m3`'s own tokenizer,
+via the `prompt_eval_count` Ollama returns on every embed. That is what calibrates the
+chunker's `chars/4` estimate, and it is why this module has no HTTP code of its own: there
+is exactly one embedding path in this codebase and it is `brain/embed/client.py`.
 """
 
 from __future__ import annotations
@@ -21,7 +19,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from brain.embed.client import EmbedCountMismatch, EmbedDimMismatch, OllamaEmbedder
+from brain.embed.client import OllamaEmbedder
 
 #: Batch sizes the measurement compares (brief §06 decision 4).
 MEASURE_BATCHES: tuple[int, ...] = (8, 16, 32, 64)
@@ -30,44 +28,6 @@ MEASURE_SAMPLE = 200
 #: multiple of the slowest batch the measurement saw, never below the floor.
 TIMEOUT_SAFETY = 5
 TIMEOUT_FLOOR_S = 60
-
-
-class CountingEmbedder(OllamaEmbedder):
-    """`OllamaEmbedder` that also tallies real tokens and request time."""
-
-    def __init__(self, *args: Any, timeout: float = 120.0, **kwargs: Any) -> None:
-        super().__init__(*args, timeout=timeout, **kwargs)
-        #: The base client keeps its timeout inside httpx; the report needs to state it.
-        self.timeout_s = timeout
-        self.prompt_tokens = 0
-        self.requests = 0
-        self.request_seconds = 0.0
-
-    def embed(self, texts: list[str], batch_size: int = 64) -> list[list[float]]:
-        out: list[list[float]] = []
-        for i in range(0, len(texts), batch_size):
-            batch = texts[i : i + batch_size]
-            started = time.perf_counter()
-            r = self._client.post(
-                f"{self.base_url}/api/embed", json={"model": self.model, "input": batch}
-            )
-            r.raise_for_status()
-            payload = r.json()
-            self.request_seconds += time.perf_counter() - started
-            self.requests += 1
-            vectors = payload["embeddings"]
-            if len(vectors) != len(batch):
-                raise EmbedCountMismatch(
-                    f"model {self.model} returned {len(vectors)} vectors for {len(batch)} inputs"
-                )
-            for v in vectors:
-                if len(v) != self.dim:
-                    raise EmbedDimMismatch(
-                        f"model {self.model} returned dim {len(v)}, expected {self.dim}"
-                    )
-            self.prompt_tokens += int(payload.get("prompt_eval_count") or 0)
-            out.extend(vectors)
-        return out
 
 
 @dataclass
@@ -157,7 +117,7 @@ def sample_chunks(chunks: Sequence, n: int = MEASURE_SAMPLE) -> list:
 
 
 def measure(
-    embedder: CountingEmbedder,
+    embedder: OllamaEmbedder,
     chunks: Sequence,
     *,
     batches: Sequence[int] = MEASURE_BATCHES,

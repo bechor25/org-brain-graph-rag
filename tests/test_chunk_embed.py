@@ -7,13 +7,8 @@ import pytest
 import respx
 
 from brain.chunk.chunker import Chunk
-from brain.chunk.embed import (
-    TIMEOUT_FLOOR_S,
-    CountingEmbedder,
-    measure,
-    sample_chunks,
-)
-from brain.embed.client import EmbedCountMismatch, EmbedDimMismatch
+from brain.chunk.embed import TIMEOUT_FLOOR_S, measure, merge_tables, sample_chunks
+from brain.embed.client import EmbedCountMismatch, EmbedDimMismatch, OllamaEmbedder
 
 URL = "http://ollama.test"
 DIM = 4
@@ -48,12 +43,12 @@ def embed_route(tokens_per_text: int = 7):
 
 @pytest.fixture
 def embedder():
-    with CountingEmbedder(URL, "bge-m3", DIM, timeout=11.0) as e:
+    with OllamaEmbedder(URL, "bge-m3", DIM, timeout=11.0) as e:
         yield e
 
 
 @respx.mock
-def test_counting_embedder_keeps_the_real_token_count(embedder):
+def test_the_embedder_keeps_the_real_token_count(embedder):
     respx.post(f"{URL}/api/embed").mock(side_effect=embed_route(tokens_per_text=7))
     vectors = embedder.embed(["a", "b", "c"], batch_size=2)
     assert len(vectors) == 3 and all(len(v) == DIM for v in vectors)
@@ -131,3 +126,16 @@ def test_measure_writes_nothing_and_returns_a_table_ready_for_the_report(embedde
         "estimate_calibration",
     }
     assert report["sample_chunks"] == 4
+
+
+def test_merge_tables_keeps_a_row_per_batch_size_and_sample_size():
+    """The 200-chunk comparison and a full-corpus pass answer different questions; both
+    stay in the report and re-running either replaces only its own rows."""
+    sample = [{"batch_size": 32, "chunks": 200, "seconds": 7.5}]
+    full = [{"batch_size": 64, "chunks": 10884, "seconds": 416.0}]
+    merged = merge_tables(sample, full)
+    assert [(r["batch_size"], r["chunks"]) for r in merged] == [(32, 200), (64, 10884)]
+
+    rerun = merge_tables(merged, [{"batch_size": 32, "chunks": 200, "seconds": 6.9}])
+    assert len(rerun) == 2
+    assert next(r for r in rerun if r["batch_size"] == 32)["seconds"] == 6.9
