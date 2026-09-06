@@ -168,11 +168,18 @@ def _link_rows(corpus: Corpus) -> tuple[dict[str, list[dict[str, Any]]], dict[st
             row["type"] = e.type
             row["props"] = {"raw_type": e.raw_type}
         grouped.setdefault(e.rel, []).append(row)
+    links_to = [e for e in deduped if e.rel == "LINKS_TO"]
+    unordered = {frozenset((e.src, e.dst)) for e in links_to}
     stats = {
         "declared": declared,
         "self_links": self_links,
         "dangling": dangling,
         "resolvable_before_dedupe": len(edges),
+        "links_to_edges": len(links_to),
+        # One pair can carry two edges in opposite directions when it is two different
+        # statements: KAFKA-17307 *duplicates* KAFKA-17121, and the two also *relate*.
+        # That is not the reciprocal-declaration duplication the dedupe removes.
+        "links_to_unordered_pairs": len(unordered),
         "unknown_link_types": dict(unknown.most_common()),
     }
     return grouped, stats

@@ -35,7 +35,7 @@ SOURCES: dict[str, tuple[str, str]] = {
 }
 
 
-def _target(corpus: Corpus, ref: Ref) -> tuple[str, str | int] | None:
+def resolve_target(corpus: Corpus, ref: Ref) -> tuple[str, str | int] | None:
     """The (label, key) the ref points at, or None when nothing in the graph matches."""
     if ref.kind == "issue":
         return ("issue", ref.key) if ref.key in corpus.workitem_keys else None
@@ -47,7 +47,7 @@ def _target(corpus: Corpus, ref: Ref) -> tuple[str, str | int] | None:
     return None
 
 
-def _records(corpus: Corpus):
+def iter_ref_records(corpus: Corpus):
     """(source system, node label, node key, refs) for every record that carries refs."""
     for w in corpus.workitems:
         yield w.source, "WorkItem", w.key, w.refs
@@ -70,7 +70,7 @@ def build_rows(corpus: Corpus) -> tuple[dict[tuple[str, str], list[dict[str, Any
     dangling: Counter = Counter()
     by_via: Counter = Counter()
 
-    for source, src_label, src_key, refs in _records(corpus):
+    for source, src_label, src_key, refs in iter_ref_records(corpus):
         for ref in refs:
             total[ref.kind] += 1
             if ref.kind == "url":
@@ -88,7 +88,7 @@ def build_rows(corpus: Corpus) -> tuple[dict[tuple[str, str], list[dict[str, Any
             if ref.kind not in REFERENCE_KINDS:
                 dangling[ref.kind] += 1
                 continue
-            target = _target(corpus, ref)
+            target = resolve_target(corpus, ref)
             if target is None:
                 dangling[ref.kind] += 1
                 continue

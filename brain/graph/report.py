@@ -225,9 +225,9 @@ def _canon_text_refs(corpus: Corpus) -> dict[str, int]:
     total = 0
     referenceable = 0
     dangling = 0
-    from brain.graph.loaders.refs import _records, _target  # local: report-only use
+    from brain.graph.loaders.refs import iter_ref_records, resolve_target
 
-    for _source, _label, _key, refs in _records(corpus):
+    for _source, _label, _key, refs in iter_ref_records(corpus):
         for ref in refs:
             if ref.via != "text":
                 continue
@@ -235,7 +235,7 @@ def _canon_text_refs(corpus: Corpus) -> dict[str, int]:
             if ref.kind not in ("issue", "kip", "pr"):
                 continue
             referenceable += 1
-            if _target(corpus, ref) is None:
+            if resolve_target(corpus, ref) is None:
                 dangling += 1
     return {
         "via_text_total": total,

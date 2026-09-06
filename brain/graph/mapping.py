@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Iterable, Iterator
-from dataclasses import dataclass, field
+from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
@@ -295,21 +295,6 @@ def pr_number(value: str | None) -> int | None:
 REFERENCE_KINDS: frozenset[str] = frozenset({"issue", "kip", "pr"})
 
 
-@dataclass
-class RefTarget:
-    """A resolved reference: which node, reached how, by which ref kinds."""
-
-    label: str
-    key: str | int
-    via: str = "text"
-    kinds: set[str] = field(default_factory=set)
-
-
 def merge_via(current: str, incoming: str) -> str:
     """`link` beats `text`: the formal statement is the stronger evidence."""
     return "link" if "link" in (current, incoming) else "text"
-
-
-def iter_labels(*groups: Iterable[str]) -> Iterator[str]:
-    for g in groups:
-        yield from g

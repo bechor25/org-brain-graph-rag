@@ -21,6 +21,7 @@ from brain.graph.corpus import load_corpus
 from brain.graph.loaders import changes, containers, documents, persons, refs, workitems
 from brain.graph.provenance import SyntheticProvenance
 from brain.graph.report import (
+    PRIMARY_LABELS,
     build_checks,
     edge_census,
     link_type_census,
@@ -140,6 +141,10 @@ def run_load(
     by_type, by_pair = edge_census(ctx)
     via = references_by_via(ctx)
     census = {
+        # Primary labels only: every work item also carries a secondary label, so summing
+        # `nodes_by_label` counts 1,416 of them twice.
+        "nodes_total": sum(v for k, v in nodes.items() if k in PRIMARY_LABELS),
+        "edges_total": sum(by_type.values()),
         "nodes_by_label": nodes,
         "edges_by_type": by_type,
         "edges_by_pair": by_pair,
@@ -189,9 +194,12 @@ def run_load(
     for c in checks:
         mark = "OK  " if c["ok"] else "FAIL"
         echo(f"[{mark}] {c['name']}: expected {c['expected']}, actual {c['actual']}")
+    # Sum the primary labels only: a work item also carries `Bug` or `SubTask`, and
+    # adding both would report a third more nodes than the graph holds.
+    primary = sum(v for k, v in nodes.items() if k in PRIMARY_LABELS)
     echo(
-        f"load: {sum(nodes.values())} nodes counted, {sum(by_type.values())} edges, "
-        f"{total}s (created {ctx.counters['nodes_created']} nodes, "
+        f"load: {primary} nodes, {sum(by_type.values())} edges, {total}s "
+        f"(created {ctx.counters['nodes_created']} nodes, "
         f"{ctx.counters['relationships_created']} relationships)"
     )
     return report, (1 if failed else 0)
