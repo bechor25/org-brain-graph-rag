@@ -312,13 +312,21 @@ def build_checks(
     canon = canon or {}
     if canon.get("formal_links") is not None:
         declared = stats.get("workitem_edges", {}).get("links", {}).get("declared")
+        origin = formal_links_by_origin(corpus)
+        want = canon["formal_links"] + origin["synthetic"]
         checks.append(
             {
-                "name": "formal_links_match_canon_report",
-                "expected": canon["formal_links"],
+                "name": "formal_links_match_canon_report_plus_synthetic",
+                "expected": want,
                 "actual": declared,
-                "ok": declared == canon["formal_links"],
-                "note": f"from {canon['report']} -> source_stats.jira.formal_links",
+                "ok": declared == want,
+                "note": (
+                    f"{canon['report']} -> source_stats.jira.formal_links = "
+                    f"{canon['formal_links']} (real Jira only, written before the "
+                    f"synthetic layer existed) + {origin['synthetic']} links declared by "
+                    f"synthetic records in the canonical files. The real half of what "
+                    f"load read is {origin['real']}."
+                ),
             }
         )
     if canon.get("refs_by_kind"):
@@ -436,6 +444,18 @@ def _canon_text_refs(corpus: Corpus) -> dict[str, int]:
         "via_text_referenceable": referenceable,
         "dangling_text": dangling,
     }
+
+
+def formal_links_by_origin(corpus: Corpus) -> dict[str, int]:
+    """Declared formal links, split by who declared them.
+
+    `data/reports/canon.json` counts the real Jira slice only — it is written before the
+    synthetic layer exists — so comparing it against every link in the graph fails the
+    moment `brain synth merge` lands. The two halves are counted separately and summed.
+    """
+    real = sum(len(w.links) for w in corpus.workitems if not w.synthetic)
+    synthetic = sum(len(w.links) for w in corpus.workitems if w.synthetic)
+    return {"real": real, "synthetic": synthetic, "total": real + synthetic}
 
 
 def link_type_census(corpus: Corpus) -> dict[str, int]:
