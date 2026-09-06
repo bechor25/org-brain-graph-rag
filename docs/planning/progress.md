@@ -22,7 +22,7 @@
 | 1 | 04 synthetic | ✅ merge 27/27, 0 נדחו | d8b1a11…0f0eba2 | 1,849 items (817 tests, 897 ADO), 420 זהויות ל-308 אנשים, truth: 315 text-only/69 stale/255 renames; 17/19 ratios; **589/1,021 items כוסו** (באג קריאה בכלי — 42% לא נראו); הוחלט לקבל; supplement אופציונלי | 1,021 items נבחרו → 27 batches / 3 shards, 143 Epics מוקצים מראש; מרחבי מפתחות נפרדים לכל shard |
 | 1 | 05 load | ✅ + סינתטי | cc2ad87…47abc94 | 35,410 צמתים / 109,623 קשתות; 2,385 סינתטיים עם provenance; TESTS 660 / HAS_RUN 609 / IN_PLAN 78; rerun 0/0 | 32,855 צמתים / 95,695 קשתות ב-3.6s; ריצה שנייה 0/0; LINKS_TO 298 זוגות; dangling issue refs 8,217 (גבול הפרוסה); StatusChange 7,607 (18.9k רעש הוסר); 725 מרווחי assignee בלי Person → canon ימנטס מ-changelog |
 | 1 | 06 chunk+embed | ✅ (re-review; 651 בדיקות) | d1146be…636a83a | 12,915 chunks חיים (section 1,713 / desc 3,423 / comment 3,629 / commit 4,150) + 931 orphaned; embedding 416s+142s @ 6.5k tok/s; 3.49 chars/token; fences מוזחים 12→0; rerun 0/0; guard ברשת ב-conftest תפס בדיקות harvest שפנו לאינטרנט |
-| 1 | 07 extract Phase A | ⬜ | | |
+| 1 | 07 extract Phase A | 🟡 כלים ✅ (0e221fb…c3f2397, בסקירה); **8 סוכני kg-extractor רצים** | | 2,743 chunks (1,713 KIP sections + 1,030 descriptions) → 195 batches ≤40KB רב-שורתיים, ~24/סוכן, ~187k tokens קלט לסוכן; schema+examples אושרו ע"י המתכנן |
 | 1 | 08 resolve | ⬜ | | |
 | 1 | 09 communities | ⬜ | | |
 | 1 | 10 index + gate | ⬜ | | |
