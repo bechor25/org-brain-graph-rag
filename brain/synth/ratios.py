@@ -33,6 +33,11 @@ REL_TOLERANCE = 0.05  #: relative, for counts and means
 XRAY_TEST = "Test"
 ADO_STORY = "User Story"
 
+#: What "real stories/bugs" means in the spec's coverage row. `brain synth build` also
+#: hands the agents `Task` and `Wish` items — they are worth a Test — but they are not what
+#: the 45% is a percentage *of*, and counting them inflates the denominator by ~12%.
+COVERABLE_TYPES: frozenset[str] = frozenset({"Improvement", "New Feature", "Bug", "Story"})
+
 #: `"XT-12: FAIL (3 rebalances observed)"` — the run line the spec puts on an execution.
 RUN_LINE = re.compile(r"\b(XT-\d+)\s*:\s*(PASS|FAIL)\b", re.IGNORECASE)
 
@@ -172,6 +177,10 @@ def compute(
     """
     layer = split_layer(synthetic)
     real_keys = {w.key for w in real}
+    #: the denominator the spec's coverage row means — Task and Wish are eligible for a
+    #: Test but are not "stories/bugs", so they do not dilute the percentage
+    coverable = [w for w in real if w.type in COVERABLE_TYPES]
+    coverable_keys = {w.key for w in coverable}
     by_type: Counter = Counter(w.type for w in real)
 
     text_only_from: dict[str, set[str]] = defaultdict(set)
@@ -182,17 +191,19 @@ def compute(
     covered: dict[str, set[str]] = defaultdict(set)
     for test in layer.tests:
         targets = _formal_targets(test, "tests") | text_only_from.get(test.key, set())
-        for target in targets & real_keys:
+        for target in targets & coverable_keys:
             covered[target].add(test.key)
 
     tests_per_covered = [len(v) for v in covered.values()]
     out: list[Ratio] = [
         _ratio_pct(
-            "coverage_of_real_stories_and_bugs",
+            "coverage_of_story_like_and_bug_items",
             len(covered),
-            len(real),
+            len(coverable),
             45.0,
-            "a real item is covered by a formal `tests` link or a truth-recorded text-only one",
+            "denominator = real Improvement / New Feature / Bug / Story; covered by a formal "
+            "`tests` link or a truth-recorded text-only one. Task and Wish are eligible for a "
+            "Test but are not what the spec's 45% is a percentage of",
         ),
         _ratio_mean(
             "tests_per_covered_item",

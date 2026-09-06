@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
@@ -157,6 +158,27 @@ def is_eligible(item: WorkItem) -> bool:
 def select_items(workitems: Iterable[WorkItem]) -> list[WorkItem]:
     """Eligible real items in a stable order (`KAFKA-9` before `KAFKA-10`)."""
     return sorted((w for w in workitems if is_eligible(w)), key=lambda w: natural_key(w.key))
+
+
+def exclusion_reason(item: WorkItem) -> str | None:
+    """Why an item is not in the slice, or None if it is. One reason each, first match."""
+    if item.source != "jira":
+        return f"source_{item.source}"
+    if item.synthetic:
+        return "already_synthetic"
+    if item.type in EXCLUDED_TYPES:
+        return f"type_{item.type}"
+    if item.type not in ELIGIBLE_TYPES:
+        return f"type_other_{item.type}"
+    if not (item.description or "").strip():
+        return "empty_description"
+    return None
+
+
+def excluded_counts(workitems: Iterable[WorkItem]) -> dict[str, int]:
+    """What the selection threw away and why — the other half of `selected`."""
+    counts = Counter(r for r in (exclusion_reason(w) for w in workitems) if r)
+    return dict(sorted(counts.items()))
 
 
 def primary_version(item: WorkItem) -> str | None:
@@ -438,6 +460,49 @@ def build_input(
     )
 
 
+def shards_in_flight(root: Path) -> dict[str, int]:
+    """Shards whose `status.json` already records finished batches, and how many.
+
+    Rebuilding under a working agent is the one destructive thing this command can do: the
+    agent is holding `.in.json` open, its `next_ids` describe keys minted against *these*
+    inputs, and a reshard would silently repoint them. So a rebuild refuses rather than
+    races, and the operator decides (delete the shard's status, or wait).
+    """
+    busy: dict[str, int] = {}
+    if not root.is_dir():
+        return busy
+    for path in sorted(root.glob("shard-[0-9][0-9]/" + STATUS_NAME)):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        done = data.get("done") if isinstance(data, dict) else None
+        if isinstance(done, list) and done:
+            busy[path.parent.name] = len(done)
+    return busy
+
+
+def write_input_if_changed(path: Path, payload: dict[str, Any]) -> bool:
+    """Write the batch unless the only difference from what is on disk is `generated_at`.
+
+    Returns True if it wrote. A rebuild that changes nothing should leave the mtime and the
+    sha alone: an agent watching its inputs, and a manifest recording their hashes, both
+    read a rewrite as "this batch changed" — and `generated_at` alone changes on every run.
+    """
+    existing = None
+    if path.is_file():
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            existing = None
+    if isinstance(existing, dict):
+        stamp = existing.get("generated_at")
+        if existing == {**payload, "generated_at": stamp}:
+            return False
+    write_json_atomic(path, payload)
+    return True
+
+
 def remove_stale_inputs(root: Path, planned: Sequence[PlannedBatch]) -> list[str]:
     """Delete `.in.json` files a previous, differently-shaped run left behind.
 
@@ -471,8 +536,19 @@ def run_build(
     echo: Callable[[str], None] = print,
 ) -> tuple[dict[str, Any], int]:
     """Write `data/batches/synthetic/<shard>/NNN.in.json` + status + manifest. Idempotent."""
+    started = time.perf_counter()
     if not spec_path.is_file():
         raise FileNotFoundError(f"the noise contract is missing: {spec_path}")
+
+    busy = shards_in_flight(batches_dir / "synthetic")
+    if busy:
+        listed = ", ".join(f"{shard} ({n} done)" for shard, n in busy.items())
+        raise ValueError(
+            f"refusing to rebuild: {listed} already has finished batches. The agents' "
+            "`next_ids` were minted against the current inputs, so resharding would "
+            "silently repoint them. Merge what is done, or clear the shard's status.json."
+        )
+
     corpus = load_corpus(canonical_dir)
     items = select_items(corpus.workitems)
     if not items:
@@ -501,7 +577,7 @@ def run_build(
             generated_at=generated_at,
         )
         path = shard_dir / f"{batch.index:03d}.in.json"
-        write_json_atomic(path, payload.model_dump(mode="json"))
+        rewritten = write_input_if_changed(path, payload.model_dump(mode="json"))
 
         status_path = shard_dir / STATUS_NAME
         if not status_path.is_file():
@@ -525,6 +601,7 @@ def run_build(
                 "epics_owned": sum(1 for e in payload.epics if e.owned),
                 "bytes": path.stat().st_size,
                 "sha256": sha256_of(path),
+                "rewritten": rewritten,
             }
         )
         echo(
@@ -551,6 +628,7 @@ def run_build(
         schema_path=schema_path,
         generated_at=generated_at,
         stale=stale,
+        duration_ms=round((time.perf_counter() - started) * 1000),
     )
     write_json_atomic(root / MANIFEST_NAME, manifest)
     echo(
@@ -577,12 +655,14 @@ def _manifest(
     schema_path: Path,
     generated_at: str,
     stale: Sequence[str],
+    duration_ms: int,
 ) -> dict[str, Any]:
     sizes = [b["bytes"] for b in written]
     per_shard: Counter = Counter(b["id"].split("/")[0] for b in written)
     return {
         "step": "synth.build",
         "generated_at": generated_at,
+        "duration_ms": duration_ms,
         "spec": {"path": SPEC_REF, "sha256": spec_sha, "copied_as": SPEC_COPY_NAME},
         "schema": {
             "path": SCHEMA_REF,
@@ -599,6 +679,7 @@ def _manifest(
             "rule": "source=jira, not synthetic, eligible type, non-empty description",
             "by_type": dict(sorted(Counter(i.type for i in items).items())),
             "with_fix_version": sum(1 for i in items if i.fix_versions),
+            "excluded_counts": excluded_counts(corpus.workitems),
         },
         "sharding": {
             "shards": shards,

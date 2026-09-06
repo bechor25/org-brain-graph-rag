@@ -38,7 +38,7 @@ def test_coverage_counts_real_items_a_test_points_at_not_tests():
 
     ratios = measure(real=real, synthetic=synthetic)
 
-    coverage = ratios["coverage_of_real_stories_and_bugs"]
+    coverage = ratios["coverage_of_story_like_and_bug_items"]
     assert (coverage.numerator, coverage.denominator, coverage.actual) == (2, 4, 50.0)
     assert ratios["tests_per_covered_item"].actual == 1.5
 
@@ -51,7 +51,7 @@ def test_a_text_only_link_is_coverage_too_because_the_truth_records_it():
 
     ratios = measure(real=real, synthetic=synthetic, truth=truth)
 
-    assert ratios["coverage_of_real_stories_and_bugs"].numerator == 1
+    assert ratios["coverage_of_story_like_and_bug_items"].numerator == 1
     assert ratios["test_links_that_are_text_only"].actual == 100.0
 
 
@@ -60,7 +60,7 @@ def test_a_test_pointing_outside_the_slice_covers_nothing():
         real=[real_item("KAFKA-1")], synthetic=[xray_test("XT-10001", covers="KAFKA-40404")]
     )
 
-    assert ratios["coverage_of_real_stories_and_bugs"].numerator == 0
+    assert ratios["coverage_of_story_like_and_bug_items"].numerator == 0
 
 
 def test_a_covered_item_with_four_tests_is_flagged():
@@ -190,7 +190,7 @@ def test_a_percentage_target_is_met_within_five_percentage_points():
 
     def coverage(n: int) -> bool:
         synthetic = [xray_test(f"XT-1{i:04d}", covers=f"KAFKA-{i}") for i in range(1, n + 1)]
-        return measure(real=real, synthetic=synthetic)["coverage_of_real_stories_and_bugs"].ok
+        return measure(real=real, synthetic=synthetic)["coverage_of_story_like_and_bug_items"].ok
 
     assert PCT_TOLERANCE == 5.0
     assert coverage(40) and coverage(50)
@@ -325,3 +325,29 @@ def test_the_summary_names_exactly_the_ratio_that_missed():
     )
 
     assert result["failed"] == ["ado_items_total"]
+
+
+def test_a_task_is_worth_a_test_but_is_not_in_the_coverage_denominator():
+    """The spec's 45% is of stories/bugs; Task and Wish would dilute it by ~12%."""
+    real = [
+        real_item("KAFKA-1", type="Improvement"),
+        real_item("KAFKA-2", type="Bug"),
+        real_item("KAFKA-3", type="Task"),
+        real_item("KAFKA-4", type="Wish"),
+    ]
+    synthetic = [xray_test("XT-10001", covers="KAFKA-1")]
+
+    ratios = measure(real=real, synthetic=synthetic)
+
+    coverage = ratios["coverage_of_story_like_and_bug_items"]
+    assert (coverage.numerator, coverage.denominator, coverage.actual) == (1, 2, 50.0)
+
+
+def test_a_test_that_only_covers_a_task_counts_nowhere_in_the_coverage_ratio():
+    real = [real_item("KAFKA-1", type="Bug"), real_item("KAFKA-2", type="Task")]
+    synthetic = [xray_test("XT-10001", covers="KAFKA-2")]
+
+    ratios = measure(real=real, synthetic=synthetic)
+
+    assert ratios["coverage_of_story_like_and_bug_items"].numerator == 0
+    assert ratios["tests_per_covered_item"].actual == 0.0

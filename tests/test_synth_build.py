@@ -316,14 +316,40 @@ def test_build_writes_the_spec_status_and_manifest(tmp_path):
     assert [b["id"] for b in manifest["batches"]] == ["shard-01/001", "shard-02/001"]
 
 
-def test_rebuilding_does_not_clobber_the_agents_status(tmp_path):
+def test_a_rebuild_refuses_while_an_agent_is_working_the_shard(tmp_path):
+    """Resharding under a working agent silently repoints the keys it already minted."""
     build(tmp_path)
     status_path = tmp_path / "batches" / "synthetic" / "shard-01" / STATUS_NAME
     status_path.write_text(json.dumps({"shard": "shard-01", "done": ["shard-01/001"]}))
 
-    build(tmp_path)
+    with pytest.raises(ValueError, match="refusing to rebuild: shard-01 \\(1 done\\)"):
+        build(tmp_path)
 
     assert json.loads(status_path.read_text())["done"] == ["shard-01/001"]
+
+
+def test_a_rebuild_with_an_untouched_status_leaves_the_inputs_byte_identical(tmp_path):
+    """Only `generated_at` differs between two runs, and that is not a reason to rewrite."""
+    build(tmp_path)
+    path = tmp_path / "batches" / "synthetic" / "shard-01" / "001.in.json"
+    before = (path.read_bytes(), path.stat().st_mtime_ns)
+
+    manifest = build(tmp_path)
+
+    assert (path.read_bytes(), path.stat().st_mtime_ns) == before
+    assert [b["rewritten"] for b in manifest["batches"]] == [False]
+
+
+def test_a_changed_corpus_does_rewrite_the_input(tmp_path):
+    build(tmp_path)
+    path = tmp_path / "batches" / "synthetic" / "shard-01" / "001.in.json"
+
+    manifest = build(
+        tmp_path, corpus={"workitems": [real_item("KAFKA-100", title="A different title")]}
+    )
+
+    assert "A different title" in path.read_text()
+    assert [b["rewritten"] for b in manifest["batches"]] == [True]
 
 
 def test_every_batch_stays_under_the_size_an_agent_reads_in_one_go(tmp_path):
@@ -395,3 +421,29 @@ def test_the_batch_names_the_schema_repo_relatively_not_by_absolute_path(tmp_pat
     )
 
     assert payload["schema_ref"] == "brain/synth/schema.json"
+
+
+def test_the_manifest_says_what_the_selection_threw_away_and_how_long_it_took(tmp_path):
+    manifest = build(
+        tmp_path,
+        corpus={
+            "workitems": [
+                real_item("KAFKA-100"),
+                real_item("KAFKA-200", type="Sub-task"),
+                real_item("KAFKA-201", type="Test"),
+                real_item("KAFKA-202", description="  "),
+                real_item("KAFKA-203", type="Epic"),
+                real_item("KAFKA-204", synthetic=True),
+            ]
+        },
+    )
+
+    assert manifest["selection"]["excluded_counts"] == {
+        "already_synthetic": 1,
+        "empty_description": 1,
+        "type_Sub-task": 1,
+        "type_Test": 1,
+        "type_other_Epic": 1,
+    }
+    assert manifest["selection"]["selected"] == 1
+    assert isinstance(manifest["duration_ms"], int)
