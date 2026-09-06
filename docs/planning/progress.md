@@ -35,6 +35,7 @@
 - Plan 0: `docs/lessons/00-foundations.md`
 - Plan 1 שלבים 01–02: `docs/lessons/01-harvest.md`
 - Plan 1 שלב 03: `docs/lessons/02-canon.md`
+- Plan 1 שלב 04: `docs/lessons/03-synthetic.md`
 - Plan 1 שלב 05: `docs/lessons/04-load.md`
 
 ## ממצאים (findings)
