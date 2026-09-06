@@ -19,7 +19,6 @@ app = typer.Typer(
 NOT_IMPLEMENTED_EXIT = 2
 
 _PLANNED: dict[str, tuple[str, str]] = {
-    "resolve": ("Entity resolution: deterministic → embedding → agent adjudication", "Plan 1"),
     "communities": ("GDS Leiden communities + community reports by agents", "Plan 1"),
     "index": ("Final vector/fulltext indexes + graph stats report", "Plan 1"),
     "serve": ("Run the MCP server (stdio or HTTP)", "Plan 2"),
@@ -386,6 +385,209 @@ def extract_sample(
         )
     except (OSError, ValueError) as exc:
         typer.echo(f"extract sample: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    raise typer.Exit(code=code)
+
+
+resolve_app = typer.Typer(
+    help="Entity resolution: deterministic → embedding → agent adjudication [Plan 1]",
+    invoke_without_command=True,
+)
+app.add_typer(resolve_app, name="resolve")
+
+
+@resolve_app.callback(invoke_without_command=True)
+def resolve(
+    ctx: typer.Context,
+    kinds: str = typer.Option(
+        "all", "--kinds", help="What to resolve: person | entity | all (comma separated)."
+    ),
+    tier: str = typer.Option(
+        "all",
+        "--tier",
+        help="Which tiers to run: 1 (deterministic), 2 (embedding), 3 (agent decisions), "
+        "or all. Tiers run in order, each against the graph the previous one left.",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Propose and report merges without writing SAME_AS, merging a node or "
+        "touching the ledger. Tier 2 still writes embeddings — it cannot score without "
+        "them, and a vector is derived data, not a decision.",
+    ),
+    k: int = typer.Option(
+        25, "--k", min=1, help="Neighbours per candidate the tier-2 vector index returns."
+    ),
+    vector_evidence: int = typer.Option(
+        0,
+        "--vector-evidence",
+        min=0,
+        help="How many touched-item titles go INTO the tier-2 vector. 0 (default) embeds "
+        "the display name alone; 5 reproduces brief 08 decision 3. Measured on this "
+        "corpus, titles in the vector drop the median true pair to cosine 0.63 — under "
+        "the 0.80 floor — and pull different people who share a backlog together. Either "
+        "way the titles reach the adjudicator as evidence.",
+    ),
+) -> None:
+    """Merge duplicate people and entities, and measure it [Plan 1]."""
+    if ctx.invoked_subcommand is not None:
+        return
+    from brain.resolve.runner import (
+        ResolveError,
+        resolve_from_settings,
+        resolve_kinds,
+        resolve_tiers,
+    )
+
+    try:
+        chosen_kinds = resolve_kinds(kinds)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--kinds") from exc
+    try:
+        chosen_tiers = resolve_tiers(tier)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--tier") from exc
+
+    try:
+        _, code = resolve_from_settings(
+            kinds=chosen_kinds,
+            tiers=chosen_tiers,
+            dry_run=dry_run,
+            k=k,
+            vector_evidence=vector_evidence,
+            echo=typer.echo,
+        )
+    except (ResolveError, OSError, ValueError, RuntimeError) as exc:
+        typer.echo(f"resolve: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    raise typer.Exit(code=code)
+
+
+@resolve_app.command("build-batches")
+def resolve_build_batches(
+    kinds: str = typer.Option("all", "--kinds", help="person | entity | all."),
+    shards: int = typer.Option(2, "--shards", min=1, help="How many agents work in parallel."),
+    k: int = typer.Option(25, "--k", min=1, help="Neighbours per candidate from the index."),
+    vector_evidence: int = typer.Option(
+        0,
+        "--vector-evidence",
+        min=0,
+        help="Touched titles inside the vector; see `resolve --help`.",
+    ),
+    force: bool = typer.Option(
+        False, "--force", help="Rebuild even though a shard reports finished batches."
+    ),
+) -> None:
+    """Write the tier-2 grey band to data/batches/resolve/<shard>/NNN.in.json."""
+    from brain.config import get_settings
+    from brain.embed.client import OllamaEmbedder
+    from brain.graph.client import GraphClient
+    from brain.graph.context import GraphContext
+    from brain.resolve.build import BuildError, run_build
+    from brain.resolve.runner import resolve_kinds
+
+    try:
+        chosen = resolve_kinds(kinds)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--kinds") from exc
+
+    s = get_settings()
+    try:
+        with (
+            GraphClient(s.neo4j_uri, s.neo4j_user, s.neo4j_password, s.neo4j_database) as client,
+            OllamaEmbedder(s.ollama_url, s.embed_model, s.embed_dim) as embedder,
+        ):
+            _, code = run_build(
+                ctx=GraphContext(client),
+                batches_dir=s.batches_dir,
+                kinds=chosen,
+                embedder=embedder,
+                k=k,
+                vector_evidence=vector_evidence,
+                shards=shards,
+                force=force,
+                echo=typer.echo,
+            )
+    except (BuildError, OSError, ValueError, RuntimeError) as exc:
+        typer.echo(f"resolve build-batches: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    raise typer.Exit(code=code)
+
+
+@resolve_app.command("merge-decisions")
+def resolve_merge_decisions(
+    kinds: str = typer.Option("all", "--kinds", help="person | entity | all."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Validate and report, merge nothing."),
+) -> None:
+    """Validate every NNN.out.json and apply only the `same` verdicts."""
+    from brain.resolve.runner import ResolveError, resolve_from_settings, resolve_kinds
+
+    try:
+        chosen = resolve_kinds(kinds)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--kinds") from exc
+    try:
+        _, code = resolve_from_settings(kinds=chosen, tiers=[3], dry_run=dry_run, echo=typer.echo)
+    except (ResolveError, OSError, ValueError, RuntimeError) as exc:
+        typer.echo(f"resolve merge-decisions: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    raise typer.Exit(code=code)
+
+
+@resolve_app.command("gold")
+def resolve_gold(
+    kinds: str = typer.Option("all", "--kinds", help="person | entity | all."),
+) -> None:
+    """Build data/eval/resolution_gold.jsonl — evaluation only, never a pipeline input."""
+    from brain.config import get_settings
+    from brain.resolve.gold import GoldError, run_gold
+    from brain.resolve.runner import resolve_kinds
+
+    try:
+        chosen = resolve_kinds(kinds)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--kinds") from exc
+
+    s = get_settings()
+    try:
+        _, code = run_gold(
+            canonical_dir=s.canonical_dir,
+            eval_dir=s.eval_dir,
+            batches_dir=s.batches_dir,
+            kinds=chosen,
+            echo=typer.echo,
+        )
+    except (GoldError, OSError, ValueError) as exc:
+        typer.echo(f"resolve gold: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    raise typer.Exit(code=code)
+
+
+@resolve_app.command("eval")
+def resolve_eval(
+    kinds: str = typer.Option("all", "--kinds", help="person | entity | all."),
+) -> None:
+    """Score the ledger against the gold: P/R/F1 per kind, per tier."""
+    from brain.config import get_settings
+    from brain.resolve.evaluate import run_eval
+    from brain.resolve.runner import resolve_kinds
+
+    try:
+        chosen = resolve_kinds(kinds)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--kinds") from exc
+
+    s = get_settings()
+    try:
+        _, code = run_eval(
+            canonical_dir=s.canonical_dir,
+            eval_dir=s.eval_dir,
+            reports_dir=s.reports_dir,
+            kinds=chosen,
+            echo=typer.echo,
+        )
+    except (OSError, ValueError) as exc:
+        typer.echo(f"resolve eval: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     raise typer.Exit(code=code)
 

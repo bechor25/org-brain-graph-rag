@@ -15,6 +15,7 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from brain.canon.io import read_jsonl
 from brain.canon.models import Change, Container, Document, Person, WorkItem
@@ -51,6 +52,9 @@ class Corpus:
     #: identity key alone -> Person.id, only where exactly one person claims that key.
     #: A `@mjsax` mention on a Confluence page is the Jira person; nothing else it can be.
     person_by_bare_key: dict[str, str] = field(default_factory=dict)
+    #: What `brain resolve`'s ledger did to `persons` on the way in — `None` until
+    #: `load_corpus` is given a ledger. `brain/graph/resolution.py` owns the type.
+    resolution: object | None = None
     container_names: dict[str, set[str]] = field(default_factory=dict)
     unknown_container_kinds: Counter = field(default_factory=Counter)
     #: Kinds the graph deliberately does not hold — see `SKIPPED_CONTAINER_KINDS`.
@@ -115,13 +119,23 @@ def _index(corpus: Corpus) -> Corpus:
     return corpus
 
 
-def load_corpus(canonical_dir: Path) -> Corpus:
+def load_corpus(canonical_dir: Path, ledger: Any = None) -> Corpus:
     """Read every canonical file that exists. A missing file is an empty list, not a crash:
-    `brain canon --source git` alone is a legal state of `data/canonical/`."""
+    `brain canon --source git` alone is a legal state of `data/canonical/`.
+
+    `ledger` is the `ResolutionLedger` of a previous `brain resolve`. It is applied to the
+    person records *before* `_index`, because the index is what every edge is resolved
+    through: fold first and an assignee written as `ado:cadonna.bruno.10007` lands on the
+    Jira person; fold after and it lands on a node the merge deleted, recreating it.
+    """
     corpus = Corpus()
     for name, model in CANONICAL_FILES.items():
         path = canonical_dir / f"{name}.jsonl"
         if not path.exists():
             continue
         setattr(corpus, name, list(read_jsonl(path, model)))
+    if ledger is not None:
+        from brain.graph.resolution import fold_persons
+
+        corpus.persons, corpus.resolution = fold_persons(corpus.persons, ledger)
     return _index(corpus)

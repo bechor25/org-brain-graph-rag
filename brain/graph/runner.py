@@ -38,8 +38,10 @@ from brain.graph.report import (
     secondary_labels,
     written_edges,
 )
+from brain.graph.resolution import Resolution
 from brain.graph.schema import apply_schema
 from brain.harvest.base import utc_now_iso, write_json_atomic
+from brain.resolve.ledger import ResolutionLedger
 
 REPORT_NAME = "load.json"
 
@@ -116,18 +118,24 @@ def run_load(
         return report, 0
 
     t0 = time.perf_counter()
-    corpus = load_corpus(canonical_dir)
+    # The resolution ledger is applied to the person records before the corpus is indexed,
+    # so every edge resolves to the surviving node. Without it a reload would recreate the
+    # identities `brain resolve` merged away — see `brain/graph/resolution.py`.
+    ledger = ResolutionLedger.load(canonical_dir)
+    corpus = load_corpus(canonical_dir, ledger)
+    resolution: Resolution = corpus.resolution or Resolution(canonical_nodes=len(corpus.persons))
     prov = SyntheticProvenance.load(canonical_dir)
     durations["read_canonical"] = round(time.perf_counter() - t0, 2)
     echo(
         f"canonical: {len(corpus.workitems)} work items, {len(corpus.documents)} documents, "
         f"{len(corpus.persons)} persons, {len(corpus.changes)} changes, "
-        f"{len(corpus.containers)} containers; synthetic provenance: {prov.status()}"
+        f"{len(corpus.containers)} containers; synthetic provenance: {prov.status()}; "
+        f"resolution: {resolution.status()}"
     )
 
     stats: dict[str, Any] = {}
     t0 = time.perf_counter()
-    stats["persons"] = persons.load_nodes(ctx, corpus, prov)
+    stats["persons"] = persons.load_nodes(ctx, corpus, prov, resolution)
     stats["containers"] = containers.load_nodes(ctx, corpus, prov)
     stats["documents"] = documents.load_nodes(ctx, corpus, prov)
     stats["workitems"] = workitems.load_nodes(ctx, corpus, prov)
@@ -196,6 +204,7 @@ def run_load(
             "dangling_refs": stats["refs"]["dangling_refs"],
             "skipped_container_kinds": stats["containers"]["skipped_container_kinds"],
             "synthetic_provenance": prov.report(stamped),
+            "resolution": resolution.report(),
             "checks": checks,
             "notes": NOTES,
         },

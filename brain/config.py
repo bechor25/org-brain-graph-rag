@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     def reports_dir(self) -> Path:
         return self.data_dir / "reports"
 
+    @property
+    def eval_dir(self) -> Path:
+        """Gold sets and, from Plan 3, the question sets graded against them."""
+        return self.data_dir / "eval"
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

@@ -23,9 +23,31 @@ def test_help_lists_every_pipeline_step(runner):
 
 
 def test_unimplemented_step_exits_2_and_names_plan(runner):
-    result = runner.invoke(app, ["resolve"])
+    result = runner.invoke(app, ["communities"])
     assert result.exit_code == NOT_IMPLEMENTED_EXIT
     assert "Plan 1" in result.output
+
+
+def test_resolve_is_a_group_of_four_commands(runner):
+    """`resolve` stopped being a stub in step 08; the bare command runs the tiers."""
+    result = runner.invoke(app, ["resolve", "--help"])
+    assert result.exit_code == 0
+    for command in ("build-batches", "merge-decisions", "gold", "eval"):
+        assert command in result.output
+
+
+def test_resolve_rejects_an_unknown_kind_before_touching_neo4j_or_ollama(runner):
+    result = runner.invoke(app, ["resolve", "--kinds", "people"])
+
+    assert result.exit_code == 2
+    assert "--kinds" in result.output
+
+
+def test_resolve_rejects_an_unknown_tier_before_touching_neo4j_or_ollama(runner):
+    result = runner.invoke(app, ["resolve", "--tier", "4"])
+
+    assert result.exit_code == 2
+    assert "--tier" in result.output
 
 
 def test_extract_is_a_group_of_three_commands(runner):
