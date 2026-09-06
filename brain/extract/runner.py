@@ -13,7 +13,7 @@ from typing import Any
 
 from brain.extract.build import DEFAULT_BATCH_SIZE, DEFAULT_SHARDS, run_build
 from brain.extract.merge import run_merge
-from brain.extract.sample import DEFAULT_N, DEFAULT_SEED, run_sample
+from brain.extract.sample import DEFAULT_N, DEFAULT_SEED, DEFAULT_TARGETS, run_sample
 from brain.graph.client import GraphClient
 from brain.graph.context import GraphContext
 
@@ -66,8 +66,11 @@ def sample_from_settings(
     *,
     n: int = DEFAULT_N,
     seed: int = DEFAULT_SEED,
+    targets: str = DEFAULT_TARGETS,
     echo: Callable[[str], None] = print,
 ) -> tuple[dict[str, Any], int]:
     client, ctx = _context()
     with client:
-        return run_sample(ctx=ctx, reports_dir=reports_dir, n=n, seed=seed, echo=echo)
+        return run_sample(
+            ctx=ctx, reports_dir=reports_dir, n=n, seed=seed, targets=targets, echo=echo
+        )

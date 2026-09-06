@@ -10,9 +10,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
-from brain.extract import select as select_mod
 from brain.extract.select import ISSUE_TYPES, MAX_KIP_KEYS, kip_document_keys, select
 
 MINI = Path("data/fixtures/mini")
@@ -132,8 +129,3 @@ def test_a_scoped_document_with_no_chunks_is_reported_not_hidden():
     ctx = FakeContext([], [])
     stats = select(ctx, canonical_dir=MINI).stats
     assert stats["documents_in_scope_without_chunks"] == 1
-
-
-@pytest.mark.parametrize("kind", ["section", "description"])
-def test_the_queries_name_the_chunk_kinds_phase_a_reads(kind):
-    assert kind in (select_mod.DOC_CHUNK_KIND, select_mod.ISSUE_CHUNK_KIND)

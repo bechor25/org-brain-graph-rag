@@ -393,16 +393,28 @@ sentences and contains a decision, its risk and the failure it produced.
 
 ## The rejections you will hit if you are careless
 
-Merge rejects the single record, counts the reason, and merges the rest of the batch:
+Merge rejects the single record, counts the reason, and merges the rest of the batch. Nothing below
+costs you the batch:
 
 | reason | what you did |
 |---|---|
 | `quote_not_verbatim` | paraphrased, fixed a typo in the source, stitched two spans, or added an ellipsis |
 | `quote_too_long` | over 300 characters — quote the sentence, not the section |
 | `chunk_not_in_batch` | copied a `chunk_id` from another batch, or from this file |
+| `unknown_kind` | an entity kind outside the six |
+| `unknown_type` | a relation type outside the six — `MENTIONS` included, merge mints those |
+| `self_loop` | a relation from a thing to itself, or between two names for one node |
 | `unresolved_endpoint` | a relation naming something that is neither an entity of this batch nor a key the graph holds |
 | `name_normalises_to_nothing` | a name that is only punctuation |
+| `schema_violation` | a missing or unknown field on one record |
 
-And it rejects the whole batch — `retry/`, then `quarantine/` after two more tries — for a broken
-`batch_id`, a kind or type outside the closed set, an unknown field, or malformed JSON. Validate
-against `brain/extract/schema.json` before you write, and write `status.json` after every batch.
+Two of those cascade, so they are worth avoiding twice: an entity that is rejected stops being an
+endpoint, and every relation that named it is rejected as `unresolved_endpoint` after it.
+
+The whole batch is rejected — `retry/`, then `quarantine/` after two more tries — only when the
+**envelope** is wrong: malformed JSON, a top level that is not an object, a `batch_id` that is not
+the file's, an unknown top-level field, or `entities`/`relations` that are not arrays. Nothing in
+such a file can be trusted, including the parts that look fine.
+
+Validate against `brain/extract/schema.json` before you write, and write `status.json` after every
+batch.

@@ -131,7 +131,7 @@ def screened(path: Path, schema: dict[str, Any], facts: GraphFacts | None = None
         sha256="0" * 64,
     )
     validate_mod.parse_batch(batch, schema)
-    validate_mod.screen(batch, facts or GraphFacts())
+    validate_mod.screen(batch, facts or GraphFacts(), schema)
     return batch
 
 

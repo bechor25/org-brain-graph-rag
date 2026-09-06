@@ -243,10 +243,13 @@ def test_a_name_that_is_an_existing_key_links_that_node_and_mints_no_entity(merg
     assert report["census"]["mentions_by_target_label"]["Document"] >= 1
     hit = graph.read(
         f"MATCH (:{graph.label('Chunk')})-[r:MENTIONS]->(d:{graph.label('Document')}) "
-        "RETURN d.key AS key, r.quote AS quote"
+        "RETURN d.key AS key, r.quote AS quote, r.kind AS kind, r.description AS description"
     )
     assert [h["key"] for h in hit] == ["KIP-5"]
     assert hit[0]["quote"]
+    # the Document node knows nothing about the extraction, so the edge carries it
+    assert hit[0]["kind"] == "Feature"
+    assert hit[0]["description"]
     assert not graph.read(
         f"MATCH (e:{graph.label('Entity')}) WHERE e.name = 'KIP-5' RETURN e.id AS id"
     )
@@ -255,8 +258,11 @@ def test_a_name_that_is_an_existing_key_links_that_node_and_mints_no_entity(merg
 def test_a_name_that_is_an_existing_component_links_the_component(merged, graph):
     hit = graph.read(
         f"MATCH (:{graph.label('Chunk')})-[r:MENTIONS]->(c:{graph.label('Component')}) "
-        "RETURN c.name AS name"
+        "RETURN c.name AS name, r.kind AS kind, r.name AS extracted, r.description AS description"
     )
+    assert hit[0]["kind"] == "Technology"
+    assert hit[0]["extracted"] == "streams"
+    assert hit[0]["description"]
     assert [h["name"] for h in hit] == ["streams"]
 
 
@@ -322,12 +328,14 @@ def test_a_second_merge_creates_nothing(merged, graph, tmp_path):
     assert report["census"] == _first["census"]
 
 
-def test_a_batch_that_breaks_the_contract_is_quarantined_after_two_retries(graph, tmp_path):
+def test_a_batch_whose_envelope_is_wrong_is_quarantined_after_two_retries(graph, tmp_path):
+    """Batch-level rejection is for the envelope only: this file says it answers a batch
+    that does not exist, so nothing in it can be trusted."""
     root = tmp_path / "batches"
     shutil.copytree(FIXTURES, root / "extract", ignore=shutil.ignore_patterns("README.md"))
     bad = root / "extract" / "shard-01" / "001.out.json"
     payload = json.loads(bad.read_text(encoding="utf-8"))
-    payload["entities"][0]["kind"] = "Component"  # not in the closed set
+    payload["batch_id"] = "shard-09/099"
     states = []
     for attempt in range(3):
         payload["notes"] = [f"attempt {attempt}"]  # the agent regenerated it, still wrong
@@ -341,6 +349,29 @@ def test_a_batch_that_breaks_the_contract_is_quarantined_after_two_retries(graph
     assert states == ["retry", "retry", "quarantine"]
     assert (root / "extract" / "shard-01" / "quarantine" / "001.in.json").is_file()
     assert report["batches"]["valid"] == 1  # the other batch still merged
+
+
+def test_a_kind_outside_the_closed_set_costs_that_entity_and_what_cited_it(graph, tmp_path):
+    """The batch is not quarantined: the other four entities and the whole second batch
+    still merge. The two relations that named the rejected entity fall with it — an edge to
+    a node nothing accepted has no endpoint, and inventing one is the bug this prevents."""
+    root = tmp_path / "batches"
+    shutil.copytree(FIXTURES, root / "extract", ignore=shutil.ignore_patterns("README.md"))
+    bad = root / "extract" / "shard-01" / "001.out.json"
+    payload = json.loads(bad.read_text(encoding="utf-8"))
+    payload["entities"][0]["kind"] = "Component"
+    bad.write_text(json.dumps(payload), encoding="utf-8")
+
+    report, code = run_merge(
+        ctx=graph, batches_dir=root, reports_dir=tmp_path, write_report=False, echo=QUIET
+    )
+    assert code == 0
+    assert report["batches"]["valid"] == 2
+    assert report["rejected_records"]["by_reason"] == {
+        "entity:unknown_kind": 1,
+        "relation:unresolved_endpoint": 2,
+    }
+    assert report["provenance"]["edges_without_provenance"] == 0
 
 
 # ------------------------------------------------------------------------------ sample

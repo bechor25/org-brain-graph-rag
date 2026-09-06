@@ -41,6 +41,8 @@ PHASE = "A"
 MANIFEST_NAME = "MANIFEST.json"
 STATUS_NAME = "status.json"
 IN_GLOB = "[0-9][0-9][0-9].in.json"
+OUT_GLOB = "[0-9][0-9][0-9].out.json"
+STALE_DIR = "stale"
 SCHEMA_PATH = Path(__file__).with_name("schema.json")
 SCHEMA_REF = "brain/extract/schema.json"
 EXAMPLES_REF = "brain/extract/examples.md"
@@ -262,9 +264,16 @@ def write_input_if_changed(path: Path, payload: dict[str, Any]) -> bool:
     return True
 
 
-def shards_in_flight(root: Path) -> dict[str, int]:
-    """Shards whose `status.json` already records finished batches, and how many."""
-    busy: dict[str, int] = {}
+def shards_in_flight(root: Path) -> dict[str, str]:
+    """Shards with work already done against the current inputs, and what says so.
+
+    Two signals, because either one alone has a hole. `status.json` is what the agent
+    maintains, and an agent that has written three outputs but not yet updated its status
+    would look idle. An `.out.json` on disk is the work itself, and a shard whose status
+    file was deleted (or never written) has outputs and no status at all — which the old
+    check, iterating over status files, could not see.
+    """
+    busy: dict[str, str] = {}
     if not root.is_dir():
         return busy
     for path in sorted(root.glob("shard-[0-9][0-9]/" + STATUS_NAME)):
@@ -274,24 +283,50 @@ def shards_in_flight(root: Path) -> dict[str, int]:
             continue
         done = data.get("done") if isinstance(data, dict) else None
         if isinstance(done, list) and done:
-            busy[path.parent.name] = len(done)
+            busy[path.parent.name] = f"{len(done)} done in {STATUS_NAME}"
+    for path in sorted(root.glob(f"shard-[0-9][0-9]/{OUT_GLOB}")):
+        shard = path.parent.name
+        if shard not in busy:
+            outputs = len(list(path.parent.glob(OUT_GLOB)))
+            busy[shard] = f"{outputs} .out.json on disk"
     return busy
 
 
-def remove_stale_inputs(root: Path, planned: Sequence[PlannedBatch]) -> list[str]:
-    """Delete `.in.json` files a previous, differently-shaped run left behind."""
+def remove_stale_files(root: Path, planned: Sequence[PlannedBatch]) -> dict[str, list[str]]:
+    """Clear what a previous, differently-shaped run left behind.
+
+    A rebuild with a larger `--batch-size` plans fewer batches. The old `009.in.json` is
+    deleted: leaving it means an agent dutifully answers a batch that no longer exists.
+    An orphaned `009.out.json` is *moved* to `<shard>/stale/`, never deleted — it is an
+    agent's work, and it is also a live hazard where it stands, because merge would read it
+    as an answer to whatever `009.in.json` now contains. Moving it keeps both facts true:
+    the work is not lost, and it is not mistaken for an answer to a different question.
+
+    In practice `shards_in_flight` usually refuses the rebuild before this runs; this is
+    what makes the manual cleanup that follows such a refusal safe.
+    """
     current = {
         str((root / shard_name(b.shard) / f"{b.index:03d}.in.json").resolve()) for b in planned
     }
+    planned_ids = {f"{shard_name(b.shard)}/{b.index:03d}" for b in planned}
     removed: list[str] = []
+    moved: list[str] = []
     if not root.is_dir():
-        return removed
+        return {"removed_inputs": removed, "moved_outputs": moved}
     for path in sorted(root.glob(f"shard-*/{IN_GLOB}")):
         if str(path.resolve()) in current:
             continue
         path.unlink()
         removed.append(str(path.relative_to(root)))
-    return removed
+    for path in sorted(root.glob(f"shard-*/{OUT_GLOB}")):
+        batch_id = f"{path.parent.name}/{path.name.split('.', 1)[0]}"
+        if batch_id in planned_ids:
+            continue
+        target = path.parent / STALE_DIR / path.name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        path.replace(target)
+        moved.append(str(target.relative_to(root)))
+    return {"removed_inputs": removed, "moved_outputs": moved}
 
 
 def run_build(
@@ -317,11 +352,12 @@ def run_build(
     root = batches_dir / TASK
     busy = shards_in_flight(root)
     if busy:
-        listed = ", ".join(f"{shard} ({n} done)" for shard, n in busy.items())
+        listed = ", ".join(f"{shard} ({why})" for shard, why in busy.items())
         raise BuildError(
-            f"refusing to rebuild: {listed} already has finished batches. An agent is "
-            "working against the current inputs; merge what is done, or clear the shard's "
-            "status.json."
+            f"refusing to rebuild: {listed}. An agent has already worked against the "
+            "current inputs, and resharding would repoint its answers at different text. "
+            "Merge what is done, or clear the shard's status.json and move its .out.json "
+            "files aside."
         )
 
     kwargs: dict[str, Any] = {}
@@ -391,9 +427,11 @@ def run_build(
             }
         )
 
-    stale = remove_stale_inputs(root, planned)
-    for name in stale:
+    stale = remove_stale_files(root, planned)
+    for name in stale["removed_inputs"]:
         echo(f"removed stale input {name} (a previous run planned more batches than this one)")
+    for name in stale["moved_outputs"]:
+        echo(f"moved orphaned output to {name} (no batch of this plan asks for it)")
 
     manifest = build_manifest(
         written,
@@ -433,7 +471,7 @@ def build_manifest(
     schema_path: Path,
     schema_sha: str,
     generated_at: str,
-    stale: Sequence[str],
+    stale: dict[str, list[str]],
     prefix: str,
     duration_ms: int,
 ) -> dict[str, Any]:
@@ -464,7 +502,8 @@ def build_manifest(
             "batches_per_shard": dict(sorted(per_shard.items())),
             "chunks_per_shard": dict(sorted(by_shard_chunks.items())),
             "tokens_per_shard": dict(sorted(by_shard_tokens.items())),
-            "removed_stale_inputs": list(stale),
+            "removed_stale_inputs": list(stale["removed_inputs"]),
+            "moved_stale_outputs": list(stale["moved_outputs"]),
         },
         "sizes": {
             "max_bytes": max(sizes) if sizes else 0,

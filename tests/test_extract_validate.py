@@ -125,6 +125,60 @@ def test_a_name_extracted_as_two_kinds_is_not_guessed_between(tmp_path):
     assert [r.reason for r in batch.rejections] == ["unresolved_endpoint"]
 
 
+@pytest.mark.parametrize(
+    ("out", "reason"),
+    [
+        (batch_output(entities=[entity(kind="Component")]), "entity:unknown_kind"),
+        (batch_output(entities=[entity(quote="x" * 400)]), "entity:quote_too_long"),
+        (batch_output(entities=[{**entity(), "confidence": 0.9}]), "entity:schema_violation"),
+    ],
+)
+def test_a_bad_entity_costs_the_entity_and_not_the_batch(tmp_path, out, reason):
+    """Forty good extractions do not deserve quarantine because the forty-first said
+    `Component` where it meant `Technology`."""
+    out["entities"].append(entity(name="assignment"))
+    batch = run(tmp_path, out)
+    assert batch.ok, batch.errors
+    assert validate_mod.reasons([batch]) == {reason: 1}
+    assert [a.entity.name for a in batch.entities] == ["assignment"]
+
+
+@pytest.mark.parametrize(
+    ("bad", "reason"),
+    [
+        (relation(type="CAUSES"), "relation:unknown_type"),
+        (relation(type="MENTIONS"), "relation:unknown_type"),
+        (relation(source="long rebalances", target="Long  Rebalances"), "relation:self_loop"),
+    ],
+)
+def test_a_bad_relation_costs_the_relation_and_not_the_batch(tmp_path, bad, reason):
+    batch = run(
+        tmp_path,
+        batch_output(
+            entities=[entity(), entity(kind="Decision", name="move assignment")],
+            relations=[
+                bad,
+                relation(source="move assignment", target="long rebalances"),
+            ],
+        ),
+    )
+    assert batch.ok, batch.errors
+    assert validate_mod.reasons([batch]) == {reason: 1}
+    assert len(batch.relations) == 1
+
+
+def test_two_names_that_resolve_to_one_node_are_a_self_loop_too(tmp_path):
+    """`KIP-5` and `kip-5` are one Document; an edge between them is a loop on a node."""
+    batch = run(
+        tmp_path,
+        batch_output(
+            entities=[],
+            relations=[relation(type="DEPENDS_ON", source="KIP-5", target="kip-5")],
+        ),
+    )
+    assert [r.reason for r in batch.rejections] == ["self_loop"]
+
+
 # ------------------------------------------------------------------- key / component match
 
 
@@ -137,13 +191,53 @@ def test_an_entity_named_like_an_existing_key_links_that_node_instead_of_minting
     assert [a.ref for a in batch.entities] == [Ref("Document", "KIP-5")]
 
 
-def test_an_entity_named_like_a_component_links_the_component(tmp_path):
+@pytest.mark.parametrize("kind", ["Technology", "Feature"])
+def test_a_technology_or_feature_named_like_a_component_links_the_component(tmp_path, kind):
     batch = run(
         tmp_path,
-        batch_output(entities=[entity(kind="Technology", name="Streams", quote="do assignment")]),
+        batch_output(entities=[entity(kind=kind, name="Streams", quote="do assignment")]),
         inp=batch_input([chunk_context(text="Streams clients do assignment")]),
     )
     assert [a.ref for a in batch.entities] == [Ref("Component", "streams")]
+
+
+@pytest.mark.parametrize("kind", ["Problem", "Risk", "Alternative", "Decision"])
+def test_a_problem_named_like_a_component_stays_its_own_entity(tmp_path, kind):
+    """ "streams" as a Problem is a problem *with* streams. Collapsing it into the component
+    would answer "what is going wrong in streams" with the component node itself."""
+    batch = run(
+        tmp_path,
+        batch_output(entities=[entity(kind=kind, name="streams", quote="do assignment")]),
+        inp=batch_input([chunk_context(text="Streams clients do assignment")]),
+    )
+    assert [a.ref for a in batch.entities] == [Ref("Entity", f"{kind}|stream")]
+
+
+def test_a_key_still_matches_whatever_kind_it_was_extracted_as(tmp_path):
+    """A key names one record. Only the *component* half of the match is kind-gated."""
+    batch = run(
+        tmp_path,
+        batch_output(entities=[entity(kind="Problem", name="KIP-5", quote="do assignment")]),
+        inp=batch_input([chunk_context(text="clients do assignment for KIP-5")]),
+    )
+    assert [a.ref for a in batch.entities] == [Ref("Document", "KIP-5")]
+
+
+def test_a_relation_endpoint_prefers_this_batch_s_own_entity_over_the_component(tmp_path):
+    """If the batch decided "streams" is a Problem, that is what its relations mean by it."""
+    batch = run(
+        tmp_path,
+        batch_output(
+            entities=[
+                entity(kind="Problem", name="streams", quote="do assignment"),
+                entity(kind="Decision", name="move assignment", quote="do assignment"),
+            ],
+            relations=[relation(source="move assignment", target="streams")],
+        ),
+        inp=batch_input([chunk_context(text="Streams clients do assignment")]),
+    )
+    assert batch.rejections == []
+    assert batch.relations[0].target == Ref("Entity", "Problem|stream")
 
 
 def test_a_key_the_graph_does_not_hold_becomes_an_entity_not_an_invented_node(tmp_path):
@@ -184,10 +278,23 @@ def test_an_output_with_no_input_beside_it_fails_the_batch(tmp_path):
     assert "no input beside it" in batch.errors[0]
 
 
-def test_a_schema_violation_fails_the_batch_before_pydantic_sees_it(tmp_path):
-    batch = run(tmp_path, batch_output(entities=[entity(kind="Component")]))
+def test_an_entities_field_that_is_not_an_array_fails_the_batch(tmp_path):
+    """The envelope is what the batch-level gate is about; a record is not."""
+    batch = run(tmp_path, batch_output(entities={"kind": "Problem"}))
     assert not batch.ok
-    assert all(e.startswith("schema:") for e in batch.errors)
+    assert any("envelope:" in e for e in batch.errors)
+
+
+def test_a_missing_top_level_field_fails_the_batch(tmp_path):
+    batch = run(tmp_path, {"batch_id": "shard-01/001", "entities": [entity()]})
+    assert not batch.ok
+    assert any("relations" in e for e in batch.errors)
+
+
+def test_an_unknown_top_level_field_fails_the_batch(tmp_path):
+    batch = run(tmp_path, batch_output(confidence=0.9))
+    assert not batch.ok
+    assert any("unexpected property" in e for e in batch.errors)
 
 
 # ---------------------------------------------------------------------------- retry flow
@@ -243,3 +350,28 @@ def test_the_canned_fixture_pair_screens_clean(name):
     assert batch.ok, batch.errors
     assert batch.rejections == [], [r.row() for r in batch.rejections]
     assert batch.entities and batch.relations
+
+
+def test_cross_batch_misses_say_whether_a_second_pass_would_pay(tmp_path):
+    """An endpoint one batch could not resolve but another batch declared is the argument
+    for a cross-batch pass; a miss nobody declared is genuinely outside the corpus."""
+    declaring = run(
+        tmp_path,
+        batch_output(entities=[entity(name="long rebalances")]),
+    )
+    missing = run(
+        tmp_path,
+        batch_output(
+            batch_id="shard-02/001",
+            entities=[entity(kind="Decision", name="move assignment")],
+            relations=[
+                relation(source="move assignment", target="long rebalances"),
+                relation(source="move assignment", target="something nobody wrote down"),
+            ],
+        ),
+        inp=batch_input(batch_id="shard-02/001", shard="shard-02"),
+    )
+    stats = validate_mod.cross_batch_misses([declaring, missing])
+    assert stats["unresolved_endpoint_names"] == 2
+    assert stats["unresolved_endpoint_matches_other_batch"] == 1
+    assert stats["unresolved_endpoint_examples"][0]["name"] == "long rebalances"

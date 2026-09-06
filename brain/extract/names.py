@@ -33,6 +33,23 @@ _POSSESSIVE = re.compile(r"['\u2019]s\b", re.IGNORECASE)
 _PUNCT = re.compile(r"[^\w\s]", re.UNICODE)
 _SPACE = re.compile(r"\s+")
 
+#: Plurals the rules below get wrong. `-ses` after a consonant is the awkward case:
+#: `aliases`, `statuses` and `buses` all lose only the `es`, but so would `cases` under a
+#: generic rule, and `case` is not `cas`. An explicit list is shorter than a rule that is
+#: right about English.
+_IRREGULAR_PLURAL: dict[str, str] = {
+    "aliases": "alias",
+    "statuses": "status",
+    "buses": "bus",
+    "busses": "bus",
+    "analyses": "analysis",
+    "indices": "index",
+    "indexes": "index",
+    "matrices": "matrix",
+    "schemas": "schema",
+    "schemata": "schema",
+}
+
 #: Words a naive singular must not touch: stripping the `s` makes a different word.
 _KEEP_PLURAL = frozenset(
     {
@@ -57,6 +74,8 @@ _KEEP_PLURAL = frozenset(
 
 def singular(word: str) -> str:
     """`brokers` -> `broker`, `metrics` -> `metrics`. Deliberately naive (spec 3.6)."""
+    if word in _IRREGULAR_PLURAL:
+        return _IRREGULAR_PLURAL[word]
     if len(word) <= 3 or word in _KEEP_PLURAL:
         return word
     if word.endswith("ies") and len(word) > 4:

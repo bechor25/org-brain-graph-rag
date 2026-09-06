@@ -2,8 +2,15 @@
 
 The input model is what `brain extract build` writes and the agent reads; the output model
 is the pydantic half of the contract `brain/extract/schema.json` states in JSON Schema.
-Both run over every file: the schema catches shape, pydantic catches what a schema cannot
-say cheaply (a stripped-empty name, a duplicate chunk in one batch).
+The schema catches shape, pydantic catches what a schema cannot say cheaply (a
+stripped-empty name, a duplicate chunk in one batch).
+
+`BatchOutput` is the *whole-file* view an agent validates against before writing. Merge
+does not use it: it validates the envelope and then each record on its own, so one bad
+entity costs that entity rather than the batch (`brain/extract/validate.py`). Two rules
+therefore live only in the screening code and not here — a relation from a thing to itself,
+and a chunk id that is not in the batch — because both are record-level rejections with
+reasons of their own.
 """
 
 from __future__ import annotations
@@ -122,12 +129,6 @@ class Relation(Base):
         if not v.strip():
             raise ValueError("must not be blank")
         return v
-
-    @model_validator(mode="after")
-    def _no_self_loop(self) -> Relation:
-        if self.source.strip().casefold() == self.target.strip().casefold():
-            raise ValueError(f"{self.type} from {self.source!r} to itself")
-        return self
 
 
 class BatchOutput(Base):

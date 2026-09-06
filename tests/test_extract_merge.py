@@ -208,7 +208,7 @@ def test_a_mention_whose_chunk_is_gone_is_dropped_and_counted(tmp_path):
     gaps = drop_missing_chunks(plan_obj, {A})
     assert gaps["mentions_dropped_chunk_missing"] == before - len(plan_obj.mentions)
     assert gaps["chunk_ids_missing"] == [B]
-    assert all(chunk_id == A for chunk_id, _label, _key in plan_obj.mentions)
+    assert all(key[0] == A for key in plan_obj.mentions)
 
 
 def test_an_entity_that_resolved_to_an_existing_node_mints_no_entity(tmp_path):
@@ -223,8 +223,14 @@ def test_an_entity_that_resolved_to_an_existing_node_mints_no_entity(tmp_path):
     )
     plan_obj = plan([screened(path, SCHEMA, FACTS)])
     assert plan_obj.entities == {}
-    assert list(plan_obj.mentions) == [(A, "Component", "streams")]
-    assert plan_obj.mention_rows()["Component"][0]["dst"] == "streams"
+    assert list(plan_obj.mentions) == [(A, "Component", "streams", "Technology")]
+    row = plan_obj.mention_rows()["Component"][0]
+    assert row["dst"] == "streams"
+    # the Component node was written by `brain load` and knows nothing about extraction,
+    # so what the extractor called it, and as what kind, lives on the edge or nowhere
+    assert row["props"]["kind"] == "Technology"
+    assert row["props"]["name"] == "streams"
+    assert row["props"]["description"]
 
 
 def test_planning_is_order_independent(tmp_path):
@@ -324,3 +330,88 @@ def test_a_relation_in_its_spec_shape_raises_no_warning(tmp_path):
     from brain.extract.merge import shape_warnings
 
     assert shape_warnings(plan(two_batches(tmp_path)))["off_spec_shape"] == 0
+
+
+def test_two_kinds_matching_one_component_stay_two_mentions(tmp_path):
+    """A Technology "streams" and a Feature "streams" are both the component, but they are
+    not the same claim. One mention would silently keep whichever was written second."""
+    path = written_batch(
+        tmp_path,
+        inp=batch_input([chunk_context(chunk_id=A, text="Streams clients do assignment")]),
+        out=batch_output(
+            entities=[
+                entity(
+                    kind="Technology",
+                    name="streams",
+                    description="The Kafka Streams library.",
+                    quote="Streams clients",
+                    chunk_id=A,
+                ),
+                entity(
+                    kind="Feature",
+                    name="streams",
+                    description="The streaming capability the clients use.",
+                    quote="Streams clients do assignment",
+                    chunk_id=A,
+                ),
+            ]
+        ),
+    )
+    plan_obj = plan([screened(path, SCHEMA, FACTS)])
+    assert sorted(plan_obj.mentions) == [
+        (A, "Component", "streams", "Feature"),
+        (A, "Component", "streams", "Technology"),
+    ]
+    assert {r["props"]["kind"] for r in plan_obj.mention_rows()["Component"]} == {
+        "Technology",
+        "Feature",
+    }
+
+
+def test_an_entity_keeps_every_description_and_shows_the_fullest(tmp_path):
+    """The shortest description is usually a restatement of the name; `brain resolve` wants
+    all of them and a reader wants the one that says something."""
+    props = (
+        plan(two_batches(tmp_path))
+        .entities["Decision|move assignment to the group coordinator"]
+        .props()
+    )
+    assert props["descriptions"] == sorted(props["descriptions"])
+    assert props["description"] == max(props["descriptions"], key=len)
+
+
+def test_depends_on_between_two_technologies_raises_the_off_spec_warning(tmp_path):
+    """Spec 2.4 says Component/Feature. Technology -> Technology is the shape an extractor
+    reaches for when it is drawing a call graph rather than a stated dependency."""
+    from brain.extract.merge import shape_warnings
+
+    path = written_batch(
+        tmp_path,
+        inp=batch_input([chunk_context(chunk_id=A, text=TEXT)]),
+        out=batch_output(
+            entities=[
+                entity(
+                    kind="Technology",
+                    name="assignment",
+                    quote="do assignment",
+                    chunk_id=A,
+                ),
+                entity(
+                    kind="Technology",
+                    name="group coordinator",
+                    quote="Move assignment to the group coordinator",
+                    chunk_id=A,
+                ),
+            ],
+            relations=[
+                relation(
+                    type="DEPENDS_ON",
+                    source="assignment",
+                    target="group coordinator",
+                    evidence_chunk_id=A,
+                )
+            ],
+        ),
+    )
+    warnings = shape_warnings(plan([screened(path, SCHEMA, FACTS)]))
+    assert warnings["off_spec_by_type"] == {"DEPENDS_ON": 1}

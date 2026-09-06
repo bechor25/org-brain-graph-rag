@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://org-brain.local/brain/extract/schema.json",
   "title": "extraction batch output (NNN.out.json)",
-  "description": "The contract between `kg-extractor` and `brain extract merge`. Entity kinds and relation types are CLOSED sets (spec 2.4); anything you cannot express with them belongs in `notes`, never in a new kind. This file checks the shape. Two rules it cannot check are enforced by merge and reject the single record, not the batch: `chunk_id` must be one of the chunks in the matching `.in.json`, and `quote` must appear VERBATIM in that chunk's `text` after whitespace normalisation.",
+  "description": "The contract between `kg-extractor` and `brain extract merge`. Entity kinds and relation types are CLOSED sets (spec 2.4); anything you cannot express with them belongs in `notes`, never in a new kind. Merge applies this file in two halves: the ENVELOPE (`batch_id`, `entities`/`relations` being arrays, no unknown top-level field) decides whether the batch is readable at all, and everything under `$defs` is checked per record — one bad entity or relation is rejected and counted, the rest of the batch merges. Three rules merge adds that a schema cannot state, all record-level: `chunk_id` must be one of the chunks in the matching `.in.json`, `quote` must appear VERBATIM in that chunk's `text` after whitespace normalisation, and a relation may not run from a thing to itself (or between two names for one node).",
   "type": "object",
   "required": ["batch_id", "entities", "relations"],
   "additionalProperties": false,
@@ -14,7 +14,7 @@
     },
     "entities": {
       "type": "array",
-      "description": "Every entity you found, once per chunk that evidences it. Two chunks that name the same thing are two entries with two quotes; merge unifies them on (kind, norm_name). An empty array is valid output for a batch of chunks with no extractable facts.",
+      "description": "Every entity you found, once per chunk that evidences it. Two chunks that name the same thing are two entries with two quotes; merge unifies them on (kind, norm_name) and keeps every description. An empty array is valid output for a batch of chunks with no extractable facts.",
       "items": { "$ref": "#/$defs/entity" }
     },
     "relations": {

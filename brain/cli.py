@@ -365,14 +365,25 @@ def extract_merge() -> None:
 def extract_sample(
     n: int = typer.Option(50, "--n", min=1, help="How many MENTIONS to draw"),
     seed: int = typer.Option(7, "--seed", help="Same seed, same sample — so it can be re-read"),
+    targets: str = typer.Option(
+        "entity",
+        "--targets",
+        help="Which mentions to draw: entity (what the extractor decided) or all "
+        "(also the deterministic key matches to Document/WorkItem/Component).",
+    ),
 ) -> None:
     """Print random MENTIONS with quote and surrounding text for a human precision check."""
     from brain.config import get_settings
     from brain.extract.runner import sample_from_settings
+    from brain.extract.sample import TARGETS
 
+    if targets not in TARGETS:
+        raise typer.BadParameter(f"must be one of {sorted(TARGETS)}", param_hint="--targets")
     settings = get_settings()
     try:
-        _, code = sample_from_settings(settings.reports_dir, n=n, seed=seed, echo=typer.echo)
+        _, code = sample_from_settings(
+            settings.reports_dir, n=n, seed=seed, targets=targets, echo=typer.echo
+        )
     except (OSError, ValueError) as exc:
         typer.echo(f"extract sample: {exc}", err=True)
         raise typer.Exit(code=1) from exc

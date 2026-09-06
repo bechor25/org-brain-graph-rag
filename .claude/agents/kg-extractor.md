@@ -33,5 +33,10 @@ Rules
 - Write `status.json` after every batch (`{"shard", "done": [...], "failed": [{batch, reason}]}`).
   Never skip a batch silently. A batch you cannot answer is a `failed` entry with a reason, never a
   partial file.
-- One bad record does not lose the batch: merge rejects that entity or relation and counts why. A
-  malformed file does lose it — to `retry/`, then `quarantine/` after two more tries.
+- One bad record does not lose the batch — a kind or type outside the closed set, a relation to
+  itself, an unfindable quote, an endpoint that resolves to nothing: merge rejects that entity or
+  relation and counts why. Only a broken *envelope* loses the batch (malformed JSON, a `batch_id`
+  that is not the file's, `entities`/`relations` that are not arrays) — to `retry/`, then
+  `quarantine/` after two more tries.
+- An entity you get wrong takes its relations with it: a relation naming a rejected entity has no
+  endpoint and is rejected too.

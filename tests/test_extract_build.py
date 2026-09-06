@@ -22,7 +22,7 @@ from brain.extract.build import (
     longest_line_bytes,
     pack,
     plan_batches,
-    remove_stale_inputs,
+    remove_stale_files,
     serialise,
     shard_name,
     shards_in_flight,
@@ -191,11 +191,25 @@ def test_a_smaller_rebuild_removes_the_inputs_the_bigger_one_left(tmp_path):
     shard.mkdir()
     for n in (1, 2, 3):
         (shard / f"{n:03d}.in.json").write_text("{}", encoding="utf-8")
-    (shard / "002.out.json").write_text("{}", encoding="utf-8")
     planned = pack([chunk("KIP-1", 0, 200)], shard=0, batch_size=20)
-    removed = remove_stale_inputs(tmp_path, planned)
-    assert removed == ["shard-01/002.in.json", "shard-01/003.in.json"]
-    assert (shard / "002.out.json").exists()  # the agent's work is never deleted
+    stale = remove_stale_files(tmp_path, planned)
+    assert stale["removed_inputs"] == ["shard-01/002.in.json", "shard-01/003.in.json"]
+
+
+def test_an_orphaned_output_is_moved_aside_not_deleted_and_not_left(tmp_path):
+    """Left where it is, merge reads `009.out.json` as an answer to whatever `009.in.json`
+    now contains. Deleted, an agent's work is gone. `stale/` is neither."""
+    shard = tmp_path / "shard-01"
+    shard.mkdir()
+    (shard / "001.in.json").write_text("{}", encoding="utf-8")
+    (shard / "001.out.json").write_text('{"keep": true}', encoding="utf-8")
+    (shard / "009.out.json").write_text('{"orphan": true}', encoding="utf-8")
+    planned = pack([chunk("KIP-1", 0, 200)], shard=0, batch_size=20)
+    stale = remove_stale_files(tmp_path, planned)
+    assert stale["moved_outputs"] == ["shard-01/stale/009.out.json"]
+    assert not (shard / "009.out.json").exists()
+    assert json.loads((shard / "stale" / "009.out.json").read_text()) == {"orphan": True}
+    assert (shard / "001.out.json").exists()  # still a planned batch: untouched
 
 
 def test_a_shard_with_finished_batches_is_reported_as_in_flight(tmp_path):
@@ -204,9 +218,18 @@ def test_a_shard_with_finished_batches_is_reported_as_in_flight(tmp_path):
     (shard / "status.json").write_text(
         json.dumps({"shard": "shard-02", "done": ["001", "002"], "failed": []}), encoding="utf-8"
     )
-    assert shards_in_flight(tmp_path) == {"shard-02": 2}
+    assert shards_in_flight(tmp_path) == {"shard-02": "2 done in status.json"}
     (shard / "status.json").write_text(json.dumps({"done": []}), encoding="utf-8")
     assert shards_in_flight(tmp_path) == {}
+
+
+def test_a_shard_with_outputs_and_no_status_file_is_in_flight_too(tmp_path):
+    """The hole in checking `status.json` alone: an agent whose status file was deleted, or
+    which has not written one yet, has done work that a reshard would repoint."""
+    shard = tmp_path / "shard-03"
+    shard.mkdir()
+    (shard / "004.out.json").write_text("{}", encoding="utf-8")
+    assert shards_in_flight(tmp_path) == {"shard-03": "1 .out.json on disk"}
 
 
 # --------------------------------------------------------------------------- manifest
@@ -242,7 +265,7 @@ def test_the_manifest_records_what_a_planner_has_to_decide_on(tmp_path):
         schema_path=Path("brain/extract/schema.json"),
         schema_sha="abc",
         generated_at="now",
-        stale=[],
+        stale={"removed_inputs": [], "moved_outputs": []},
         prefix="",
         duration_ms=1,
     )

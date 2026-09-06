@@ -14,9 +14,9 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from brain.extract.models import KINDS, RELATION_TYPES, BatchOutput
 from brain.synth.jsonschema_mini import unsupported_keywords
 from brain.synth.jsonschema_mini import validate as schema_validate
+from brain.extract.models import KINDS, RELATION_TYPES, BatchOutput
 from tests.extract_helpers import batch_output, entity, relation
 
 SCHEMA_PATH = Path("brain/extract/schema.json")
@@ -80,8 +80,9 @@ def test_pydantic_says_why_mentions_is_not_an_agent_relation():
     assert "minted by merge" in str(exc.value)
 
 
-def test_pydantic_rejects_a_relation_from_a_thing_to_itself():
-    with pytest.raises(ValidationError):
-        BatchOutput.model_validate(
-            batch_output(relations=[relation(source="Rebalance", target="rebalance ")])
-        )
+def test_a_relation_to_itself_is_the_screener_s_business_not_the_model_s():
+    """It is a record-level rejection with a reason of its own (`self_loop`), so the model
+    an agent self-validates against must not fail the whole file for it."""
+    BatchOutput.model_validate(
+        batch_output(relations=[relation(source="Rebalance", target="rebalance ")])
+    )

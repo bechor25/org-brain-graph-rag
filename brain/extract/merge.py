@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 import time
 from collections import Counter, defaultdict
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -89,11 +89,22 @@ class Aggregate:
         }
 
 
+def longest(descriptions: Iterable[str]) -> str:
+    """The fullest sentence written about a thing, ties broken alphabetically.
+
+    Five chunks describe the same entity five ways; the shortest is usually a restatement
+    of its name. Taking the longest keeps the one that actually says something, and keeping
+    `descriptions[]` beside it means `brain resolve` can still read the rest.
+    """
+    ranked = sorted(descriptions, key=lambda d: (-len(d), d))
+    return ranked[0][:DESCRIPTION_MAX] if ranked else ""
+
+
 @dataclass
 class EntityAggregate(Aggregate):
     kind: str = ""
     names: Counter = field(default_factory=Counter)
-    description: str = ""
+    descriptions: set[str] = field(default_factory=set)
 
     def props(self) -> dict[str, Any]:
         # The commonest surface form is the name; ties go to the shorter, then to the
@@ -105,7 +116,8 @@ class EntityAggregate(Aggregate):
             "name": name,
             "norm_name": names_mod.norm_name(name),
             "aliases": sorted({n for n, _ in ranked if n != name}),
-            "description": self.description[:DESCRIPTION_MAX],
+            "description": longest(self.descriptions),
+            "descriptions": sorted(self.descriptions),
             **self.provenance(),
         }
 
@@ -115,7 +127,11 @@ class Plan:
     """Everything the writers need, decided before a single write happens."""
 
     entities: dict[str, EntityAggregate] = field(default_factory=dict)
-    mentions: dict[tuple[str, str, str], Aggregate] = field(default_factory=dict)
+    #: (chunk id, target label, target key, extracted kind). The kind is part of the key
+    #: because a key-matched target has no kind of its own: a `Technology` "streams" and a
+    #: `Problem` "streams" both point at the same `Component`, and one mention would lose
+    #: whichever the second one said.
+    mentions: dict[tuple[str, str, str, str], Aggregate] = field(default_factory=dict)
     relations: dict[tuple[str, str, str, str, str], Aggregate] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
 
@@ -133,9 +149,22 @@ class Plan:
         return rows
 
     def mention_rows(self) -> dict[str, list[dict[str, Any]]]:
+        """`MENTIONS` rows per target label.
+
+        A mention of an `Entity` needs no more than its quote — the node carries the kind,
+        the name and the description. A mention of a `Document`, `WorkItem` or `Component`
+        does: that node was written by `brain load` and knows nothing about the extraction,
+        so what the extractor *called* it, and as what kind, lives on the edge or nowhere.
+        """
         grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        for (chunk_id, label, key), agg in sorted(self.mentions.items()):
-            props = {"quote": agg.payload["quote"], **agg.provenance()}
+        for (chunk_id, label, key, kind), agg in sorted(self.mentions.items()):
+            props: dict[str, Any] = {"quote": agg.payload["quote"], **agg.provenance()}
+            if label != "Entity":
+                props |= {
+                    "kind": kind,
+                    "name": agg.payload["name"],
+                    "description": longest(agg.payload["descriptions"]),
+                }
             grouped[label].append({"src": chunk_id, "dst": key, "props": props})
         return dict(grouped)
 
@@ -163,15 +192,17 @@ def plan(batches: Sequence[Batch]) -> Plan:
             if ref.label == "Entity":
                 agg = out.entities.get(ref.key)
                 if agg is None:
-                    agg = out.entities[ref.key] = EntityAggregate(
-                        kind=entity.kind, description=entity.description
-                    )
+                    agg = out.entities[ref.key] = EntityAggregate(kind=entity.kind)
                 agg.names[entity.name] += 1
+                agg.descriptions.add(entity.description)
                 agg.add(chunk_id=entity.chunk_id, batch=batch)
-            key = (entity.chunk_id, ref.label, ref.key)
+            key = (entity.chunk_id, ref.label, ref.key, entity.kind)
             mention = out.mentions.get(key)
             if mention is None:
-                mention = out.mentions[key] = Aggregate(payload={"quote": entity.quote})
+                mention = out.mentions[key] = Aggregate(
+                    payload={"quote": entity.quote, "name": entity.name, "descriptions": set()}
+                )
+            mention.payload["descriptions"].add(entity.description)
             mention.add(chunk_id=entity.chunk_id, batch=batch)
         for accepted in batch.relations:
             rel = accepted.relation
@@ -201,10 +232,11 @@ SPEC_SHAPES: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     "MOTIVATED_BY": (("Entity:Decision",), ("Entity:Problem",)),
     "REJECTS": (("Entity:Decision", "Document"), ("Entity:Alternative",)),
     "IMPLEMENTS": (("WorkItem", "Component", "Entity:Feature"), ("Entity:Feature",)),
-    "DEPENDS_ON": (
-        ("Component", "Entity:Feature", "Entity:Technology"),
-        ("Component", "Entity:Feature", "Entity:Technology"),
-    ),
+    # Spec 2.4 writes `DEPENDS_ON (Component/Feature -> Component/Feature)`. Technology is
+    # deliberately not in the set: `Technology -> Technology` is the shape an extractor
+    # reaches for when it is describing a call graph rather than a dependency the text
+    # states, and the count is what says whether that is happening.
+    "DEPENDS_ON": (("Component", "Entity:Feature"), ("Component", "Entity:Feature")),
     "INTRODUCES_RISK": ((), ("Entity:Risk",)),
 }
 
@@ -251,7 +283,7 @@ def drop_missing_chunks(plan_obj: Plan, present: set[str]) -> dict[str, Any]:
     It is a gap, not a crash — `brain chunk` marks a chunk orphaned rather than deleting it
     precisely so this provenance survives a re-chunk — so it is counted and reported.
     """
-    missing = sorted({c for c, _l, _k in plan_obj.mentions if c not in present})
+    missing = sorted({key[0] for key in plan_obj.mentions if key[0] not in present})
     for key in [k for k in plan_obj.mentions if k[0] in set(missing)]:
         del plan_obj.mentions[key]
     dangling_evidence = sorted(
@@ -368,11 +400,7 @@ def collect_facts(ctx: GraphContext, batches: Sequence[Batch]) -> GraphFacts:
     """One round trip for every key an extractor could have named. Nothing per record."""
     candidates: set[str] = set()
     for batch in batches:
-        if batch.output is None:
-            continue
-        candidates.update(e.name for e in batch.output.entities)
-        for r in batch.output.relations:
-            candidates.update((r.source, r.target))
+        candidates |= batch.candidate_names()
     keys: dict[str, set[str]] = {"WorkItem": set(), "Document": set()}
     for name in candidates:
         label = names_mod.key_kind(name)
@@ -411,7 +439,7 @@ def run_merge(
 
     facts = collect_facts(ctx, [b for b in batches if b.ok])
     for batch in batches:
-        validate_mod.screen(batch, facts)
+        validate_mod.screen(batch, facts, schema)
 
     valid = [b for b in batches if b.ok]
     invalid = [b for b in batches if not b.ok]
@@ -530,6 +558,11 @@ def build_report(
     by_type: Counter = Counter(k[0] for k in plan_obj.relations)
     by_target: Counter = Counter(k[1] for k in plan_obj.mentions)
     first_pass = len(valid) / len(batches) if batches else 0.0
+    # Two denominators, because they answer different questions: "of what the agents wrote"
+    # is the extraction quality gate (>= 90%), "of what build planned" also counts the
+    # batches nobody has written yet, which is progress, not quality.
+    against_expected = len(valid) / len(expected) if expected else None
+    missing = sorted(expected - seen)
     return {
         "step": "extract.merge",
         "generated_at": utc_now_iso(),
@@ -542,8 +575,12 @@ def build_report(
             "invalid": len(invalid),
             "expected": len(expected),
             "first_pass_rate": round(first_pass, 4),
+            "first_pass_rate_vs_expected": (
+                round(against_expected, 4) if against_expected is not None else None
+            ),
             "reported_failed": len(reported_failures),
-            "missing_outputs": sorted(expected - seen)[:50],
+            "missing_count": len(missing),
+            "missing_outputs": missing[:50],
             "unexpected_outputs": sorted(seen - expected) if expected else [],
             "previously_merged_now_absent": list(gone),
         },
@@ -586,9 +623,8 @@ def build_report(
         ],
         "warnings": {
             **gaps,
-            "notes_from_agents": {
-                b.batch_id: b.output.notes[:5] for b in valid if b.output and b.output.notes
-            },
+            **validate_mod.cross_batch_misses(list(batches)),
+            "notes_from_agents": {b.batch_id: b.notes[:5] for b in valid if b.notes},
             "done_without_output": list(done_missing),
         },
         "provenance": {
@@ -628,7 +664,5 @@ def summarize(report: dict[str, Any]) -> str:
             )
         )
     if b["missing_outputs"]:
-        lines.append(
-            f"missing outputs: {len(b['missing_outputs'])} (first: {b['missing_outputs'][0]})"
-        )
+        lines.append(f"missing outputs: {b['missing_count']} (first: {b['missing_outputs'][0]})")
     return "\n".join(lines)

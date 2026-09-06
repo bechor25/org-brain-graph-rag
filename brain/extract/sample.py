@@ -20,25 +20,38 @@ from pathlib import Path
 from typing import Any
 
 from brain.extract import names as names_mod
-from brain.extract.graph import CHUNK_LABEL, DERIVED_RELATION_TYPE, NODE_KEYS
+from brain.extract.graph import CHUNK_LABEL, DERIVED_RELATION_TYPE
 from brain.graph.context import GraphContext
 from brain.harvest.base import utc_now_iso, write_json_atomic
 
 DEFAULT_N = 50
 DEFAULT_SEED = 7
+#: Which mentions the sample may draw from. `entity` is the default because that is the
+#: judgement the acceptance criterion is about: a mention of `KIP-848` or of the `streams`
+#: component is a *key match*, which is deterministic code and cannot be wrong in the way an
+#: extracted entity can. Mixing them in would inflate the precision number with rows nobody
+#: needs to read. `all` is there for the run that wants to check the key matching itself.
+TARGETS: dict[str, tuple[str, ...]] = {
+    "entity": ("Entity",),
+    "all": ("Entity", "Document", "WorkItem", "Component"),
+}
+DEFAULT_TARGETS = "entity"
 #: Characters of chunk text either side of the quote. Enough to see the sentence it is in.
 WINDOW = 220
 
 
-def _labels(ctx: GraphContext) -> str:
-    return " OR ".join(f"e:{ctx.label(label)}" for label in NODE_KEYS)
+def _labels(ctx: GraphContext, targets: str) -> str:
+    wanted = TARGETS.get(targets)
+    if wanted is None:
+        raise ValueError(f"--targets must be one of {sorted(TARGETS)}, got {targets!r}")
+    return " OR ".join(f"e:{ctx.label(label)}" for label in wanted)
 
 
-def all_mentions(ctx: GraphContext) -> list[dict[str, Any]]:
+def all_mentions(ctx: GraphContext, targets: str = DEFAULT_TARGETS) -> list[dict[str, Any]]:
     """Every mention as (chunk id, target label, target key). Ids only — no text yet."""
     return ctx.read(
         f"MATCH (c:{ctx.label(CHUNK_LABEL)})-[r:{DERIVED_RELATION_TYPE}]->(e) "
-        f"WHERE {_labels(ctx)} "
+        f"WHERE {_labels(ctx, targets)} "
         "RETURN c.id AS chunk_id, labels(e) AS labels, "
         "coalesce(e.id, e.key, e.name) AS target ORDER BY chunk_id, target"
     )
@@ -86,13 +99,17 @@ def run_sample(
     reports_dir: Path,
     n: int = DEFAULT_N,
     seed: int = DEFAULT_SEED,
+    targets: str = DEFAULT_TARGETS,
     write_report: bool = True,
     echo: Callable[[str], None] = print,
 ) -> tuple[dict[str, Any], int]:
-    population = all_mentions(ctx)
+    population = all_mentions(ctx, targets)
     if not population:
-        echo("extract sample: no MENTIONS edges in the graph — run `brain extract merge` first.")
-        return {"step": "extract.sample", "population": 0, "sample": []}, 1
+        echo(
+            f"extract sample: no MENTIONS to a {targets} target in the graph — "
+            "run `brain extract merge` first."
+        )
+        return {"step": "extract.sample", "targets": targets, "population": 0, "sample": []}, 1
 
     picks = random.Random(seed).sample(population, min(n, len(population)))
     rows = fetch(ctx, picks)
@@ -115,6 +132,7 @@ def run_sample(
         "step": "extract.sample",
         "generated_at": utc_now_iso(),
         "seed": seed,
+        "targets": targets,
         "requested": n,
         "population": len(population),
         "sample": [
@@ -140,8 +158,8 @@ def run_sample(
         ),
     }
     echo(
-        f"\nextract sample: {len(ordered)} of {len(population)} mentions, seed {seed}. "
-        "Judge each one: does the quote support the entity?"
+        f"\nextract sample: {len(ordered)} of {len(population)} {targets} mentions, "
+        f"seed {seed}. Judge each one: does the quote support the entity?"
     )
     if write_report:
         reports_dir.mkdir(parents=True, exist_ok=True)
