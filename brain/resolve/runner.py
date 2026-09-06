@@ -66,6 +66,19 @@ NOTES = [
     "The brief's `identities[]` is the `identity_keys` list `brain load` already writes on "
     "every Person; resolve unions it across the merged nodes rather than adding a second "
     "list with the same content.",
+    "DEVIATION from brief 08 decision 3, measured: the tier-2 vector is the display name "
+    "alone (`vector_evidence: 0`), not display + 5 touched titles. Over the 570 gold "
+    "identity pairs and 63 hard negatives, cosine p10/p50/p90 on true pairs is "
+    "0.45/0.63/0.75 with the titles in the vector and 0.60/0.76/0.89 without them: with "
+    "them the median true pair falls under the 0.80 floor the tier starts asking at, "
+    "because two identities of one person live in different systems and share no item at "
+    "all (0 shared neighbours across all 420 synthetic identities). The titles also pull "
+    "*different* people who work one backlog together — on the mini corpus 'Jun Rao' and "
+    "'Dana Lee' reach 0.94 and would auto-merge. The titles still reach the adjudicator "
+    "as `evidence[]`. `--vector-evidence 5` restores the briefed behaviour.",
+    "`baseline` is the census before any resolution ran; `before`/`after` and the tierN "
+    "sections describe single invocations, each stamped with its own `at`. Cumulative "
+    "totals are `merges_by_tier` / `merges_by_rule`, read from the ledger.",
 ]
 
 
@@ -208,7 +221,8 @@ def apply_merges(
                 )
             )
     stats["survivors"] = resolve_graph.set_resolved(ctx, label, rows)
-    stats["survivor_ids"] = [r["id"] for r in rows]
+    survivor_ids = [r["id"] for r in rows]
+    stats["survivors_sample"] = survivor_ids[:20]
     stats["self_loops_deleted"] = resolve_graph.delete_self_loops(ctx, label)
     stats["duplicate_edges_deleted"] = resolve_graph.dedupe_relationships(
         ctx, label, [r["id"] for r in rows]
@@ -328,7 +342,7 @@ def run_tier2(
         # A survivor's text changed: it inherited the other node's activity. Dropping the
         # vector is what makes the next pass re-embed exactly the nodes the merge touched.
         stats["embeddings_cleared"] = resolve_graph.clear_embeddings(
-            ctx, LABELS[kind], stats.get("survivor_ids", [])
+            ctx, LABELS[kind], [survivor(kind, g) for g in connected_groups(auto)]
         )
     return stats
 
@@ -336,14 +350,78 @@ def run_tier2(
 # ------------------------------------------------------------------------------ the run
 
 
-def _merge_report(path: Path, section: dict[str, Any]) -> dict[str, Any]:
+def merges_by(ledger: ResolutionLedger, kind: str, field: str) -> dict[str, int]:
+    """How many identities each tier (or rule) has swallowed, over every run so far.
+
+    Read from the ledger rather than from this invocation, because tiers are meant to be
+    run one command at a time: `--tier 2` on its own must still say what tier 1 did, and
+    the `tier1`/`tier2` sections of the report only ever describe the last invocation.
+    """
+    counts: dict[str, int] = {}
+    for entry in ledger.section(kind).values():
+        value = entry.get(field)
+        if value is not None:
+            counts[str(value)] = counts.get(str(value), 0) + 1
+    return dict(sorted(counts.items()))
+
+
+#: How many invocations the report remembers. The tier sections describe only the last
+#: one, so without this the "753 auto-merges" a real run made would vanish the moment a
+#: no-op rerun proved idempotency.
+MAX_HISTORY = 20
+
+
+def derived_baseline(before: dict[str, Any], ledger: ResolutionLedger, kind: str) -> dict[str, Any]:
+    """The census as it was before any resolution ran, reconstructed from the ledger.
+
+    Used only the first time a report is written against an already-resolved graph — the
+    ledger holds one row per identity a merge swallowed, so today's node count plus those
+    rows is exactly the node count resolution started from. Flagged `derived` so nobody
+    reads it as a measurement.
+    """
+    folded = len(ledger.section(kind))
+    if not folded:
+        return {**before, "derived": False}
+    nodes = int(before["nodes"]) + folded
+    identities = int(before["identities"])
+    return {
+        "nodes": nodes,
+        "identities": identities,
+        "identities_per_node": round(identities / nodes, 4) if nodes else 0.0,
+        "duplicate_rate": round(1 - nodes / identities, 4) if identities else 0.0,
+        "resolved": 0,
+        "embedded": 0,
+        "key": before.get("key"),
+        "derived": True,
+        "note": f"reconstructed as {before['nodes']} nodes now + {folded} identities the "
+        "ledger says were merged away; the run that measured it directly predates this report",
+    }
+
+
+def _previous_report(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _merge_report(
+    path: Path, section: dict[str, Any], history: dict[str, Any] | None = None
+) -> dict[str, Any]:
     existing: dict[str, Any] = {}
     if path.exists():
         try:
             existing = json.loads(path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             existing = {}
+    runs = existing.get("runs")
+    runs = list(runs) if isinstance(runs, list) else []
     existing.update(section)
+    if history is not None:
+        existing["runs"] = [*runs, history][-MAX_HISTORY:]
     return existing
 
 
@@ -368,6 +446,7 @@ def run_resolve(
     stamp = utc_now_iso()
     ledger = ResolutionLedger.load(canonical_dir)
     alias_candidates = load_alias_candidates(reports_dir)
+    previous = _previous_report(reports_dir / REPORT_NAME)
     durations: dict[str, float] = {}
     sections: dict[str, Any] = {}
     warnings: list[str] = []
@@ -376,7 +455,19 @@ def run_resolve(
         label = LABELS[kind]
         t0 = time.perf_counter()
         before = resolve_graph.census(ctx, label)
-        section: dict[str, Any] = {"before": before, "merges_by_tier": {}}
+        # `before` is this invocation's starting point; `baseline` is the graph as it was
+        # before any resolution ever ran. The brief asks for duplicates before *and* after,
+        # and a rerun that merges nothing would otherwise report "1425 -> 1425".
+        prior = previous.get(kind) or {}
+        baseline = prior.get("baseline") or derived_baseline(before, ledger, kind)
+        # Tiers are run one command at a time, so a `--tier 2` invocation must not erase
+        # what the `--tier 1` invocation before it recorded. Each section carries the
+        # timestamp of the run that produced it.
+        section: dict[str, Any] = {
+            **{k: v for k, v in prior.items() if k.startswith("tier")},
+            "baseline": baseline,
+            "before": before,
+        }
         echo(f"{kind}: {before['nodes']} nodes, {before['identities']} identities")
         if before["nodes"] == 0:
             section["skipped"] = "no nodes with this label"
@@ -427,8 +518,7 @@ def run_resolve(
                     stamp=stamp,
                     echo=echo,
                 )
-            section[f"tier{tier}"] = stats
-            section["merges_by_tier"][str(tier)] = stats.get("identities_merged", 0)
+            section[f"tier{tier}"] = {"at": stamp, **stats}
             for group in stats.get("large_groups", []):
                 warnings.append(
                     f"{kind} tier {tier}: merge group of {len(group)} identities — {group[:6]}"
@@ -445,6 +535,10 @@ def run_resolve(
                 + ("  [dry-run]" if dry_run else "")
             )
 
+        # From the ledger, not from this run: `--tier 2` alone must still report what
+        # tier 1 merged in the run before it, or the totals reset every invocation.
+        section["merges_by_tier"] = merges_by(ledger, kind, "tier")
+        section["merges_by_rule"] = merges_by(ledger, kind, "rule")
         section["after"] = resolve_graph.census(ctx, label)
         durations[kind] = round(time.perf_counter() - t0, 2)
         sections[kind] = section
@@ -453,6 +547,18 @@ def run_resolve(
         ledger.write(canonical_dir)
     report_path = reports_dir / REPORT_NAME
     total = round(time.perf_counter() - started, 2)
+    this_run = {
+        "at": stamp,
+        "kinds": list(kinds),
+        "tiers": list(tiers),
+        "dry_run": dry_run,
+        "merged": {
+            k: sections[k].get(f"tier{t}", {}).get("identities_merged", 0)
+            for k in sections
+            for t in tiers
+        },
+        "duration_s": total,
+    }
     report = _merge_report(
         report_path,
         {
@@ -478,6 +584,7 @@ def run_resolve(
             "warnings": warnings,
             "notes": NOTES,
         },
+        history=this_run,
     )
     if write_report:
         write_json_atomic(report_path, report)
