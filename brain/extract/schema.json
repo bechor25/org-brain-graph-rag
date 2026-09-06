@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://org-brain.local/brain/extract/schema.json",
+  "title": "extraction batch output (NNN.out.json)",
+  "description": "The contract between `kg-extractor` and `brain extract merge`. Entity kinds and relation types are CLOSED sets (spec 2.4); anything you cannot express with them belongs in `notes`, never in a new kind. This file checks the shape. Two rules it cannot check are enforced by merge and reject the single record, not the batch: `chunk_id` must be one of the chunks in the matching `.in.json`, and `quote` must appear VERBATIM in that chunk's `text` after whitespace normalisation.",
+  "type": "object",
+  "required": ["batch_id", "entities", "relations"],
+  "additionalProperties": false,
+  "properties": {
+    "batch_id": {
+      "type": "string",
+      "description": "Exactly the `batch_id` of the .in.json this answers, e.g. \"shard-01/003\".",
+      "pattern": "^shard-[0-9]{2}/[0-9]{3}$"
+    },
+    "entities": {
+      "type": "array",
+      "description": "Every entity you found, once per chunk that evidences it. Two chunks that name the same thing are two entries with two quotes; merge unifies them on (kind, norm_name). An empty array is valid output for a batch of chunks with no extractable facts.",
+      "items": { "$ref": "#/$defs/entity" }
+    },
+    "relations": {
+      "type": "array",
+      "description": "Relations between entities of THIS batch and/or existing graph keys. `MENTIONS` is not listed here: merge mints it from `entities[].quote`, so an entity IS its own mention.",
+      "items": { "$ref": "#/$defs/relation" }
+    },
+    "notes": {
+      "type": "array",
+      "description": "Free-text remarks for the report — a fact the closed schema cannot hold, a chunk that is boilerplate, a term you were unsure about. Never a place to hide a rule you could not follow: that is a `failed` entry in status.json.",
+      "items": { "type": "string", "maxLength": 500 },
+      "maxItems": 50
+    }
+  },
+  "$defs": {
+    "kind": {
+      "description": "The closed set of entity kinds (spec 2.4). Feature = a capability the text proposes or describes. Decision = a choice the text states was made. Problem = the pain that motivates something. Alternative = an option the text says was considered and not taken. Risk = a stated danger or regression. Technology = a named component, protocol, config, API or tool.",
+      "enum": ["Feature", "Decision", "Problem", "Alternative", "Risk", "Technology"]
+    },
+    "type": {
+      "description": "The closed set of relation types (spec 2.4). DECIDES: a document/KIP states a decision. MOTIVATED_BY: a decision answers a problem. REJECTS: a decision turns down an alternative. IMPLEMENTS: a work item or component realises a feature. DEPENDS_ON: one thing needs another. INTRODUCES_RISK: something brings a stated risk.",
+      "enum": [
+        "DECIDES",
+        "MOTIVATED_BY",
+        "REJECTS",
+        "IMPLEMENTS",
+        "DEPENDS_ON",
+        "INTRODUCES_RISK"
+      ]
+    },
+    "chunk_id": {
+      "type": "string",
+      "description": "The `chunk_id` of a chunk in this batch's .in.json, copied exactly (40 hex characters). Merge rejects the record if the id is not in the batch.",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "name": {
+      "type": "string",
+      "description": "The entity as the text names it. Do NOT normalise across chunks (that is `brain resolve`'s job). A name that IS an existing key (KAFKA-16046, KIP-848) or an existing component name links the record to that node instead of minting an Entity.",
+      "minLength": 2,
+      "maxLength": 120
+    },
+    "entity": {
+      "type": "object",
+      "required": ["kind", "name", "description", "quote", "chunk_id"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "$ref": "#/$defs/kind" },
+        "name": { "$ref": "#/$defs/name" },
+        "description": {
+          "type": "string",
+          "description": "One sentence, in your own words, saying what this is according to THIS chunk. Not a copy of the quote.",
+          "minLength": 3,
+          "maxLength": 300
+        },
+        "quote": {
+          "type": "string",
+          "description": "VERBATIM from the chunk's `text`, at most 300 characters — the span that proves the entity is there. Never paraphrase, never stitch two places together, never add an ellipsis. Merge normalises whitespace on both sides and rejects the entity if the quote is not found.",
+          "minLength": 8,
+          "maxLength": 300
+        },
+        "chunk_id": { "$ref": "#/$defs/chunk_id" }
+      }
+    },
+    "relation": {
+      "type": "object",
+      "required": ["type", "source", "target", "evidence_chunk_id"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "$ref": "#/$defs/type" },
+        "source": { "$ref": "#/$defs/name" },
+        "target": { "$ref": "#/$defs/name" },
+        "evidence_chunk_id": { "$ref": "#/$defs/chunk_id" },
+        "note": {
+          "type": "string",
+          "description": "Why, in a few words — the `reason` of a REJECTS, the condition of a DEPENDS_ON. Optional.",
+          "maxLength": 300
+        }
+      }
+    }
+  }
+}
