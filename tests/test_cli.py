@@ -23,9 +23,24 @@ def test_help_lists_every_pipeline_step(runner):
 
 
 def test_unimplemented_step_exits_2_and_names_plan(runner):
-    result = runner.invoke(app, ["chunk"])
+    result = runner.invoke(app, ["extract"])
     assert result.exit_code == NOT_IMPLEMENTED_EXIT
     assert "Plan 1" in result.output
+
+
+def test_chunk_rejects_an_unknown_kind_before_touching_neo4j_or_ollama(runner):
+    """The guard runs first, so a typo never opens a driver session or pulls a model."""
+    result = runner.invoke(app, ["chunk", "--kinds", "doc,issues"])
+
+    assert result.exit_code == 2
+    assert "--kinds" in result.output
+
+
+def test_chunk_rejects_a_missing_canonical_dir_before_touching_neo4j(runner, tmp_path):
+    result = runner.invoke(app, ["chunk", "--canonical-dir", str(tmp_path / "nope")])
+
+    assert result.exit_code == 2
+    assert "--canonical-dir" in result.output
 
 
 def test_load_rejects_a_missing_canonical_dir_before_touching_neo4j(runner, tmp_path):

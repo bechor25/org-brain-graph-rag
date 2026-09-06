@@ -19,7 +19,6 @@ app = typer.Typer(
 NOT_IMPLEMENTED_EXIT = 2
 
 _PLANNED: dict[str, tuple[str, str]] = {
-    "chunk": ("Chunk texts, embed with local bge-m3, create :Chunk nodes + vector index", "Plan 1"),
     "extract": (
         "Prepare/merge schema-guided extraction batches produced by kg-extractor agents",
         "Plan 1",
@@ -137,6 +136,7 @@ def load(
 ) -> None:
     """Load canonical data into Neo4j (structured nodes/edges, no LLM) [Plan 1]."""
     from brain.config import get_settings
+    from brain.graph.provenance import ProvenanceError
     from brain.graph.runner import load_from_settings
 
     settings = get_settings()
@@ -150,8 +150,94 @@ def load(
             schema_only=schema_only,
             echo=typer.echo,
         )
+    except ProvenanceError as exc:
+        # A synthetic layer loaded without provenance would break conventions rule 3 and
+        # nothing downstream could tell. Refuse loudly instead of loading it bare.
+        typer.echo(f"load: synthetic provenance ledger unusable: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
     except (OSError, ValueError) as exc:
         typer.echo(f"load: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    raise typer.Exit(code=code)
+
+
+@app.command()
+def chunk(
+    kinds: str = typer.Option(
+        "all",
+        "--kinds",
+        help="Which texts to chunk: doc,issue,comment,commit (comma separated) or all.",
+    ),
+    limit: int | None = typer.Option(
+        None,
+        "--limit",
+        min=1,
+        help="Cap the parent records (documents + work items + commits), taken "
+        "proportionally from each kind. Use it to time a slice before the full run.",
+    ),
+    measure: bool = typer.Option(
+        False,
+        "--measure",
+        help="Only measure embedding throughput on 200 real chunks at batch 8/16/32/64, "
+        "write the table to data/reports/chunk.json and exit. Writes nothing to the graph.",
+    ),
+    all_docs: bool = typer.Option(
+        False,
+        "--all-docs",
+        help="Chunk every Document, not only the KIPs the harvested slice references "
+        "(Phase A default is the referenced ones).",
+    ),
+    measure_sample: int | None = typer.Option(
+        None,
+        "--measure-sample",
+        min=1,
+        help="How many chunks --measure times (default 200). Pass a number larger than "
+        "the corpus to time a full embedding pass without writing anything.",
+    ),
+    batch_size: int | None = typer.Option(
+        None,
+        "--batch-size",
+        min=1,
+        help="Override the batch size --measure chose. With --measure, times only this one.",
+    ),
+    timeout: float | None = typer.Option(
+        None, "--timeout", min=1, help="Override the HTTP timeout --measure chose, in seconds."
+    ),
+    canonical_dir: str | None = typer.Option(
+        None,
+        "--canonical-dir",
+        metavar="PATH",
+        help="Read the canonical JSONL from here instead of data/canonical.",
+    ),
+) -> None:
+    """Chunk texts, embed with local bge-m3, create :Chunk nodes + vector index [Plan 1]."""
+    from brain.chunk.runner import chunk_from_settings, resolve_kinds
+    from brain.config import get_settings
+
+    try:
+        selected = resolve_kinds(kinds)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--kinds") from exc
+
+    settings = get_settings()
+    source = Path(canonical_dir) if canonical_dir else settings.canonical_dir
+    if not source.is_dir():
+        raise typer.BadParameter(f"{source} is not a directory", param_hint="--canonical-dir")
+    try:
+        _, code = chunk_from_settings(
+            source,
+            settings.reports_dir,
+            kinds=selected,
+            limit=limit,
+            all_docs=all_docs,
+            measure_only=measure,
+            measure_sample=measure_sample,
+            batch_size=batch_size,
+            timeout=timeout,
+            echo=typer.echo,
+        )
+    except (OSError, ValueError, RuntimeError) as exc:
+        typer.echo(f"chunk: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     raise typer.Exit(code=code)
 
