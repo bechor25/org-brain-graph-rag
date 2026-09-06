@@ -1,0 +1,65 @@
+{
+  "batch_id": "shard-01/001",
+  "entities": [
+    {
+      "kind": "Feature",
+      "name": "client side of KIP-5",
+      "description": "The client half of the KIP-5 consumer group protocol.",
+      "quote": "Client side of KIP-5.",
+      "chunk_id": "4e45e90ae0b8a2bfc1e5bcc374f896b9571b5b47"
+    },
+    {
+      "kind": "Feature",
+      "name": "KIP-5",
+      "description": "The design document this work item implements.",
+      "quote": "See https://cwiki.apache.org/confluence/display/KAFKA/KIP-5 for the design.",
+      "chunk_id": "4e45e90ae0b8a2bfc1e5bcc374f896b9571b5b47"
+    },
+    {
+      "kind": "Problem",
+      "name": "repeated rebalances after a coordinator restart",
+      "description": "Restarting the group coordinator makes streams applications rebalance repeatedly.",
+      "quote": "restarting the coordinator triggers repeated rebalances in streams apps",
+      "chunk_id": "48b070a526923e12a2e270be66d0eb8d8e429e63"
+    },
+    {
+      "kind": "Risk",
+      "name": "rebalance storm",
+      "description": "A restart can produce a burst of rebalances instead of one.",
+      "quote": "triggers repeated rebalances",
+      "chunk_id": "48b070a526923e12a2e270be66d0eb8d8e429e63"
+    },
+    {
+      "kind": "Technology",
+      "name": "streams",
+      "description": "The Kafka Streams applications the rebalances are observed in.",
+      "quote": "repeated rebalances in streams apps",
+      "chunk_id": "48b070a526923e12a2e270be66d0eb8d8e429e63"
+    }
+  ],
+  "relations": [
+    {
+      "type": "IMPLEMENTS",
+      "source": "KAFKA-100",
+      "target": "client side of KIP-5",
+      "evidence_chunk_id": "4e45e90ae0b8a2bfc1e5bcc374f896b9571b5b47"
+    },
+    {
+      "type": "DEPENDS_ON",
+      "source": "KAFKA-101",
+      "target": "client side of KIP-5",
+      "evidence_chunk_id": "4e45e90ae0b8a2bfc1e5bcc374f896b9571b5b47",
+      "note": "the description says this work blocks KAFKA-101"
+    },
+    {
+      "type": "INTRODUCES_RISK",
+      "source": "KAFKA-100",
+      "target": "rebalance storm",
+      "evidence_chunk_id": "48b070a526923e12a2e270be66d0eb8d8e429e63",
+      "note": "the storm is reported as appearing after KAFKA-100 landed"
+    }
+  ],
+  "notes": [
+    "KAFKA-102 is not in this batch; the two chunks here name only KIP-5 work."
+  ]
+}

@@ -19,10 +19,6 @@ app = typer.Typer(
 NOT_IMPLEMENTED_EXIT = 2
 
 _PLANNED: dict[str, tuple[str, str]] = {
-    "extract": (
-        "Prepare/merge schema-guided extraction batches produced by kg-extractor agents",
-        "Plan 1",
-    ),
     "resolve": ("Entity resolution: deterministic → embedding → agent adjudication", "Plan 1"),
     "communities": ("GDS Leiden communities + community reports by agents", "Plan 1"),
     "index": ("Final vector/fulltext indexes + graph stats report", "Plan 1"),
@@ -292,6 +288,93 @@ def synth_merge() -> None:
         )
     except (MergeError, OSError, ValueError) as exc:
         typer.echo(f"synth merge: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    raise typer.Exit(code=code)
+
+
+extract_app = typer.Typer(
+    help="Schema-guided extraction: build batches for the kg-extractor agents, merge what "
+    "they wrote into the graph, sample it for a human precision check [Plan 1]",
+    no_args_is_help=True,
+)
+app.add_typer(extract_app, name="extract")
+
+
+@extract_app.command("build")
+def extract_build(
+    shards: int = typer.Option(4, "--shards", min=1, help="How many agents work in parallel"),
+    batch_size: int = typer.Option(
+        20, "--batch-size", min=1, help="Chunks per batch, before the 40 KB size split"
+    ),
+    min_chars: int | None = typer.Option(
+        None,
+        "--min-chars",
+        min=1,
+        help="Override the 300-character floor on issue descriptions (Phase A rule).",
+    ),
+    canonical_dir: str | None = typer.Option(
+        None,
+        "--canonical-dir",
+        metavar="PATH",
+        help="Read the canonical JSONL from here instead of data/canonical. The KIP set "
+        "comes from it via brain.chunk.scope, so it must be the one brain chunk used.",
+    ),
+) -> None:
+    """Write data/batches/extract/<shard>/NNN.in.json from the Phase A chunks in the graph."""
+    from brain.config import get_settings
+    from brain.extract.build import BuildError
+    from brain.extract.runner import build_from_settings
+
+    settings = get_settings()
+    source = Path(canonical_dir) if canonical_dir else settings.canonical_dir
+    if not source.is_dir():
+        raise typer.BadParameter(f"{source} is not a directory", param_hint="--canonical-dir")
+    try:
+        _, code = build_from_settings(
+            source,
+            settings.batches_dir,
+            settings.reports_dir,
+            shards=shards,
+            batch_size=batch_size,
+            min_chars=min_chars,
+            echo=typer.echo,
+        )
+    except (BuildError, OSError, ValueError) as exc:
+        typer.echo(f"extract build: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    raise typer.Exit(code=code)
+
+
+@extract_app.command("merge")
+def extract_merge() -> None:
+    """Validate every NNN.out.json and merge entities/relations into Neo4j with provenance."""
+    from brain.config import get_settings
+    from brain.extract.merge import MergeError
+    from brain.extract.runner import merge_from_settings
+
+    settings = get_settings()
+    try:
+        _, code = merge_from_settings(settings.batches_dir, settings.reports_dir, echo=typer.echo)
+    except (MergeError, OSError, ValueError) as exc:
+        typer.echo(f"extract merge: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    raise typer.Exit(code=code)
+
+
+@extract_app.command("sample")
+def extract_sample(
+    n: int = typer.Option(50, "--n", min=1, help="How many MENTIONS to draw"),
+    seed: int = typer.Option(7, "--seed", help="Same seed, same sample — so it can be re-read"),
+) -> None:
+    """Print random MENTIONS with quote and surrounding text for a human precision check."""
+    from brain.config import get_settings
+    from brain.extract.runner import sample_from_settings
+
+    settings = get_settings()
+    try:
+        _, code = sample_from_settings(settings.reports_dir, n=n, seed=seed, echo=typer.echo)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"extract sample: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     raise typer.Exit(code=code)
 

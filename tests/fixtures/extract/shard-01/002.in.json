@@ -1,0 +1,22 @@
+{
+  "batch_id": "shard-01/002",
+  "shard": "shard-01",
+  "index": 2,
+  "task": "extract",
+  "phase": "A",
+  "generated_at": "2026-09-06T14:35:10+00:00",
+  "schema_path": "brain/extract/schema.json",
+  "schema_sha256": "55416086c0136f07d65ac8a69c100621e0c219550f502e966b7a28ea1634d372",
+  "chunk_count": 1,
+  "chunks": [
+    {
+      "chunk_id": "e99d7a558da6da496ea6c679a0ad8d828b19393f",
+      "parent_key": "KIP-5",
+      "parent_kind": "Document",
+      "parent_title": "KIP-5: Next generation consumer group protocol",
+      "position": 0,
+      "kip_keys_referenced": [],
+      "text": "# Motivation\n\nThe classic protocol makes clients do assignment, which causes long rebalances.\n\n# Proposed Changes\n\nMove assignment to the group coordinator. Consumers send heartbeats; the coordinator computes assignments.\n\n# Rejected Alternatives\n\nKeeping client-side assignment with incremental cooperative rebalancing was rejected because it does not fix coordinator-side fencing.\n\n# Section 4: Fencing\n\nMembers with stale epochs are fenced and must rejoin.\n\nTracked in KAFKA-100."
+    }
+  ]
+}

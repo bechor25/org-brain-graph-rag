@@ -1,0 +1,35 @@
+{
+  "batch_id": "shard-01/001",
+  "shard": "shard-01",
+  "index": 1,
+  "task": "extract",
+  "phase": "A",
+  "generated_at": "2026-09-06T14:35:10+00:00",
+  "schema_path": "brain/extract/schema.json",
+  "schema_sha256": "55416086c0136f07d65ac8a69c100621e0c219550f502e966b7a28ea1634d372",
+  "chunk_count": 2,
+  "chunks": [
+    {
+      "chunk_id": "4e45e90ae0b8a2bfc1e5bcc374f896b9571b5b47",
+      "parent_key": "KAFKA-100",
+      "parent_kind": "WorkItem",
+      "parent_title": "Implement new consumer group protocol (KIP-5) in clients",
+      "position": 0,
+      "kip_keys_referenced": [
+        "KIP-5"
+      ],
+      "text": "Client side of KIP-5. See https://cwiki.apache.org/confluence/display/KAFKA/KIP-5 for the design. Blocks KAFKA-101."
+    },
+    {
+      "chunk_id": "48b070a526923e12a2e270be66d0eb8d8e429e63",
+      "parent_key": "KAFKA-101",
+      "parent_kind": "WorkItem",
+      "parent_title": "Rebalance storm when group coordinator restarts",
+      "position": 0,
+      "kip_keys_referenced": [
+        "KIP-5"
+      ],
+      "text": "After KAFKA-100 landed, restarting the coordinator triggers repeated rebalances in streams apps."
+    }
+  ]
+}

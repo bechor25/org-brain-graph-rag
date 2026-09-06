@@ -1,0 +1,68 @@
+{
+  "batch_id": "shard-01/002",
+  "entities": [
+    {
+      "kind": "Problem",
+      "name": "long rebalances",
+      "description": "Client-side assignment makes rebalances take a long time.",
+      "quote": "The classic protocol makes clients do assignment, which causes long rebalances.",
+      "chunk_id": "e99d7a558da6da496ea6c679a0ad8d828b19393f"
+    },
+    {
+      "kind": "Decision",
+      "name": "move assignment to the group coordinator",
+      "description": "Assignment is computed by the coordinator instead of by the clients.",
+      "quote": "Move assignment to the group coordinator.",
+      "chunk_id": "e99d7a558da6da496ea6c679a0ad8d828b19393f"
+    },
+    {
+      "kind": "Alternative",
+      "name": "client-side assignment with incremental cooperative rebalancing",
+      "description": "Keeping assignment on the client and rebalancing incrementally instead.",
+      "quote": "Keeping client-side assignment with incremental cooperative rebalancing was rejected because it does not fix coordinator-side fencing.",
+      "chunk_id": "e99d7a558da6da496ea6c679a0ad8d828b19393f"
+    },
+    {
+      "kind": "Technology",
+      "name": "group coordinator",
+      "description": "The broker-side component that computes assignments and receives heartbeats.",
+      "quote": "Consumers send heartbeats; the coordinator computes assignments.",
+      "chunk_id": "e99d7a558da6da496ea6c679a0ad8d828b19393f"
+    },
+    {
+      "kind": "Decision",
+      "name": "fence members with stale epochs",
+      "description": "Members whose epoch is stale are fenced and have to rejoin the group.",
+      "quote": "Members with stale epochs are fenced and must rejoin.",
+      "chunk_id": "e99d7a558da6da496ea6c679a0ad8d828b19393f"
+    }
+  ],
+  "relations": [
+    {
+      "type": "DECIDES",
+      "source": "KIP-5",
+      "target": "move assignment to the group coordinator",
+      "evidence_chunk_id": "e99d7a558da6da496ea6c679a0ad8d828b19393f"
+    },
+    {
+      "type": "MOTIVATED_BY",
+      "source": "move assignment to the group coordinator",
+      "target": "long rebalances",
+      "evidence_chunk_id": "e99d7a558da6da496ea6c679a0ad8d828b19393f"
+    },
+    {
+      "type": "REJECTS",
+      "source": "move assignment to the group coordinator",
+      "target": "client-side assignment with incremental cooperative rebalancing",
+      "evidence_chunk_id": "e99d7a558da6da496ea6c679a0ad8d828b19393f",
+      "note": "it does not fix coordinator-side fencing"
+    },
+    {
+      "type": "DEPENDS_ON",
+      "source": "move assignment to the group coordinator",
+      "target": "group coordinator",
+      "evidence_chunk_id": "e99d7a558da6da496ea6c679a0ad8d828b19393f"
+    }
+  ],
+  "notes": []
+}
