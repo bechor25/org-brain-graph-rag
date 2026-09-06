@@ -16,16 +16,21 @@ import pytest
 
 from brain.canon.models import Change, Comment, Document, WorkItem
 from brain.chunk.chunker import (
+    BODY_MAX,
+    HARD_MAX,
     MIN_CHARS,
     OVERLAP,
+    OVERSIZE_ATOMIC,
+    OVERSIZE_SINGLE_UNIT,
     TARGET_MAX,
+    Chunk,
     ChunkStats,
     chunk_comments,
     chunk_commit,
     chunk_document,
     chunk_workitem_description,
 )
-from brain.chunk.text import tail_overlap
+from brain.chunk.text import fence_parity, split_blocks, tail_overlap
 
 FIXTURES = Path("tests/fixtures/chunk")
 
@@ -225,3 +230,125 @@ def test_props_carry_exactly_the_briefs_property_set():
     assert chunk.props()["char_len"] == 200
     assert chunk.props()["token_est"] == 50
     assert chunk.props()["orphaned"] is False
+
+
+# ------------------------------------------------ the Confluence list-item dialect
+
+
+@pytest.fixture(scope="module")
+def indented_md() -> str:
+    return (FIXTURES / "indented_fence.md").read_text(encoding="utf-8")
+
+
+def test_a_fence_indented_inside_a_list_item_is_still_one_block(indented_md):
+    """`markdownify` indents a list item's fence by 4-8 spaces; CommonMark would call that
+    an indented code block and let the packer cut through it. Measured on the real corpus,
+    reading it the CommonMark way split twelve KIP code blocks in half."""
+    blocks = split_blocks(indented_md)
+    code = [b for b in blocks if b.kind == "code"]
+    assert len(code) == 2
+    assert "group.consumer.heartbeat.interval.ms=5000" in code[0].text  # blank line inside
+    assert code[0].text.rstrip().endswith("```")
+    assert "GROUP_REMOTE_ASSIGNOR_CONFIG" in code[1].text
+    tables = [b for b in blocks if b.kind == "table"]
+    assert len(tables) == 1 and "TargetEpoch" in tables[0].text
+
+
+def test_every_chunk_of_the_indented_page_closes_its_fences(indented_md):
+    stats = ChunkStats()
+    chunks = list(chunk_document(kip(indented_md, key="KIP-999"), stats))
+    assert chunks
+    assert stats.fence_parity_violations == 0
+    for c in chunks:
+        assert fence_parity(c.text), c.text
+
+
+def test_the_fence_counter_notices_a_chunk_that_lost_half_a_fence():
+    """The number the report must show as 0. It is counted on every chunk, so a packer
+    change that starts cutting fences shows up as a failed check, not as bad retrieval."""
+    stats = ChunkStats()
+    half = Chunk(
+        parent_key="KIP-1",
+        parent_kind="Document",
+        kind="section",
+        position=0,
+        text="```java\npublic void reconcile() {\n    // the closing fence is in the next chunk",
+    )
+    stats.count(half)
+    assert stats.fence_parity_violations == 1
+
+    stats = ChunkStats()
+    stats.count(
+        Chunk(
+            parent_key="KIP-1",
+            parent_kind="Document",
+            kind="section",
+            position=0,
+            text="```java\npublic void reconcile() {}\n```",
+        )
+    )
+    assert stats.fence_parity_violations == 0
+
+
+# --------------------------------------------------------------- the overlap budget
+
+
+def test_the_overlap_is_charged_to_the_budget_not_added_on_top(sample_md):
+    """The overlap used to be prefixed after the <=800 decision, so section p95 sat at 850."""
+    chunks = list(chunk_document(kip(sample_md), ChunkStats()))
+    for c in chunks:
+        if "```" in c.text or "|" in c.text:
+            continue  # an atomic block is allowed over the target
+        assert c.token_est <= TARGET_MAX, (c.position, c.token_est)
+
+
+def test_a_prose_block_is_cut_to_leave_room_for_the_overlap():
+    paragraph = ("rebalance protocol coordinator " * 30).strip()
+    text = "\n\n".join(paragraph for _ in range(12))
+    chunks = list(chunk_workitem_description(issue(description=text), ChunkStats()))
+    assert len(chunks) > 1
+    assert all(c.token_est <= TARGET_MAX for c in chunks)
+    assert BODY_MAX == TARGET_MAX - OVERLAP
+
+
+def test_oversize_chunks_are_counted_by_the_reason_they_are_oversize(sample_md):
+    stats = ChunkStats()
+    list(chunk_document(kip(sample_md), stats))
+    assert stats.oversize_by_cause == {OVERSIZE_ATOMIC: stats.oversize_chunks}
+    assert "other" not in stats.oversize_by_cause
+
+
+def test_a_long_comment_is_oversize_as_a_single_unit_not_as_a_packer_failure():
+    stats = ChunkStats()
+    item = issue(comments=[Comment(author="a", body="rebalance " * 500)])
+    list(chunk_comments(item, stats))
+    assert stats.oversize_by_cause == {OVERSIZE_SINGLE_UNIT: 1}
+
+
+def test_a_paragraph_with_no_line_break_is_wrapped_at_a_word_boundary():
+    """One Jira description in this corpus is 23,000 characters on a single line. Left
+    whole it is a 5,800-token chunk in an index whose others are 650."""
+    one_line = " ".join(f"word{i}" for i in range(2000))
+    stats = ChunkStats()
+    chunks = list(chunk_workitem_description(issue(description=one_line), stats))
+    assert len(chunks) > 1
+    assert stats.wrapped_long_lines >= 1
+    assert all(c.token_est <= TARGET_MAX for c in chunks)
+    # Nothing was cut through the middle of a word.
+    for c in chunks:
+        for word in c.text.split():
+            assert word.startswith("word") and word[4:].isdigit(), word
+
+
+def test_a_fence_too_big_for_the_model_is_cut_and_not_blamed_on_the_packer():
+    """`HARD_MAX` is the one cut allowed to break a fence: bge-m3 stops reading at 8,192
+    tokens, so a 29,000-token log dump inside a fence has to be split somewhere."""
+    dump = "\n".join(f"    at kafka.server.Thread.run(Thread.scala:{i})" for i in range(9000))
+    stats = ChunkStats()
+    chunks = list(chunk_document(kip(f"# Logs\n\n```\n{dump}\n```\n", key="KIP-2"), stats))
+    assert len(chunks) > 1
+    assert stats.hard_split_blocks == 1
+    assert all(c.token_est <= HARD_MAX + TARGET_MAX for c in chunks)
+    # The fence is broken — by design — and the counter does not blame the packer for it.
+    assert not all(fence_parity(c.text) for c in chunks)
+    assert stats.fence_parity_violations == 0

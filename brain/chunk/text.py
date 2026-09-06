@@ -12,6 +12,15 @@ chunk-size targets are stated in a unit whose error is measured rather than assu
 *Blocks are atomic.* A fenced code block and a Markdown table are single blocks, so no
 packing decision can ever cut one in half — the brief's "never split a fence" is a
 property of the block splitter, not a check the packer has to remember to make.
+
+Indentation is not CommonMark here. CommonMark stops recognising a fence past three
+leading spaces (four means an indented code block); the Markdown this corpus actually
+holds comes out of Confluence through `markdownify`, which indents a fence or a table by
+two, four, six or eight spaces whenever it sits inside a list item. Measured on the real
+pages: 63 fence lines and 62 table rows are indented four spaces or more, and reading
+them the CommonMark way split twelve code blocks down the middle. So a fence is a fence
+at any indentation, and `fence_parity_violations` in the report is the number that keeps
+this honest.
 """
 
 from __future__ import annotations
@@ -26,9 +35,17 @@ CHARS_PER_TOKEN = 4
 
 BlockKind = Literal["heading", "code", "table", "text"]
 
-_FENCE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
+#: Any indentation, and an optional list marker on the same line. `markdownify` writes
+#: both `    ``` ` (a fence nested in a list item) and `* ``` ` / `3. ``` ` (a fence that
+#: *starts* one). KIP-149 alone has six of the second form; missing them left the parser
+#: pairing an opening fence with the wrong closing one and cutting code blocks in half.
+_LIST_MARKER = r"(?:[-*+]|\d{1,9}[.)])[ \t]+"
+_FENCE = re.compile(rf"^[ \t]*(?:{_LIST_MARKER})?(`{{3,}}|~{{3,}})")
+_TABLE_ROW = re.compile(rf"^[ \t]*(?:{_LIST_MARKER})?\|")
+#: Headings keep the CommonMark rule. `    # comment` inside an indented snippet is a
+#: comment, not a section, and there is no list-item dialect that indents a heading.
 _HEADING = re.compile(r"^\s{0,3}(#{1,6})\s+(\S.*?)\s*#*\s*$")
-_TABLE_ROW = re.compile(r"^\s{0,3}\|")
+_FENCE_MARKERS = ("```", "~~~")
 _HEBREW = re.compile(r"[֐-׿]")
 _LATIN = re.compile(r"[A-Za-z]")
 _WORD_BREAK = re.compile(r"\s")
@@ -73,6 +90,10 @@ class Block:
     kind: BlockKind
     text: str
     level: int = 0  # heading depth, 0 for everything else
+    #: True when this is a piece of a bigger block the chunker had to cut. Only `HARD_MAX`
+    #: does that to an atomic block, and only because bge-m3 truncates past 8,192 tokens —
+    #: so a piece marked here is the one place a fence may legitimately end up unclosed.
+    split: bool = False
 
     @property
     def atomic(self) -> bool:
@@ -85,10 +106,25 @@ class Block:
 
 
 def _closes_fence(line: str, marker: str) -> bool:
-    """CommonMark: a closing fence is the same character, at least as long, nothing else."""
+    """The same character, at least as long, nothing else on the line.
+
+    Indentation is ignored on both ends: `markdownify` indents the opening fence of a
+    list item's code block and closes it at a different depth often enough that matching
+    the indent would leave the block open to the end of the page.
+    """
     stripped = line.strip()
     char = marker[0]
     return len(stripped) >= len(marker) and set(stripped) == {char}
+
+
+def fence_parity(text: str) -> bool:
+    """True when every fence in `text` is closed — the invariant a chunk must not break.
+
+    `brain chunk` counts the chunks that fail this over the whole real corpus and puts the
+    number in the report as `fence_parity_violations`. It is 0 or the chunker is wrong:
+    no page in this corpus has an odd fence count of its own, so any odd chunk was cut.
+    """
+    return all(text.count(marker) % 2 == 0 for marker in _FENCE_MARKERS)
 
 
 def _flush(lines: list[str], kind: BlockKind, out: list[Block]) -> None:
@@ -166,7 +202,7 @@ def tail_overlap(text: str, tokens: int) -> str:
     tail = tail.strip()
     if not tail:
         return ""
-    if tail.count("```") % 2 or tail.count("~~~") % 2:
+    if not fence_parity(tail):
         return ""
     if any(_TABLE_ROW.match(line) for line in tail.split("\n")):
         return ""
