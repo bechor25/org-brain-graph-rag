@@ -20,7 +20,7 @@
 | 1 | 02 harvest | ✅ | 79099a0…2c19ca2 | 1,416/1,391/6,107 ב-2m14s; ריצה שנייה 0; `--no-renames` הוריד git log מ-6+ דק' ל-0.44s; צפיפות links מלאה 36% (probe אמר 38%) |
 | 1 | 03 canon | ✅ | 82db3e3…8d60a0c | 1,416/1,391(1,334 KIP+57 Page)/12,133/1,597/117 ב-6.9s; text-only refs 15% (any-mention 23.4%) — קריטריון תוקן; `[~user]` 1,972 אזכורים נוספים; resolution נוסף למודל |
 | 1 | 04 synthetic | 🟡 כלים ✅ (d8b1a11…d939176, בסקירה); 3 סוכני-תוכן רצים | | 1,021 items נבחרו → 27 batches / 3 shards, 143 Epics מוקצים מראש; מרחבי מפתחות נפרדים לכל shard |
-| 1 | 05 load | ⬜ | | |
+| 1 | 05 load | 🟡 בוצע, בסקירה | cc2ad87…fba0ae9 | 32,855 צמתים / 95,695 קשתות ב-3.6s; ריצה שנייה 0/0; LINKS_TO 298 זוגות; dangling issue refs 8,217 (גבול הפרוסה); StatusChange 7,607 (18.9k רעש הוסר); 725 מרווחי assignee בלי Person → canon ימנטס מ-changelog |
 | 1 | 06 chunk+embed | ⬜ | | |
 | 1 | 07 extract Phase A | ⬜ | | |
 | 1 | 08 resolve | ⬜ | | |
@@ -54,6 +54,11 @@
 ## מסקירה סופית של Plan 0
 - `read_mode_guard` הוא `required=False` בכוונה — Plan 2 מוסיף guard שני (deny-list + EXPLAIN). לא לסמוך על doctor לבד.
 - `make check` דורש `uv sync --extra dev`; אופציה עתידית: `[dependency-groups] dev`.
+
+## הכרעות מתכנן מ-load
+- `StatusChange.id` כולל `from` (אחרת 26→10 התנגשויות) — מאושר.
+- `IN_PLAN`/`HAS_RUN{status}`: load יפרסר דטרמיניסטית את שורות `"XT-n: PASS|FAIL (…)"` ב-comments של TestExecution → `HAS_RUN{status,reason}`; `IN_PLAN` מ-`parent`=TestPlan או links `tests` מה-plan. מיושם אחרי המיזוג הסינתטי.
+- `IN_SPACE` Document→Space (Space היה orphan).
 
 ## החלטות פתוחות
 - Ollama רץ כתהליך ידני (`ollama serve`), לא כ-service — README יסביר; LaunchAgent אופציונלי בהמשך.
