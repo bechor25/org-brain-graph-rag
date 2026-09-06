@@ -3,6 +3,7 @@ from brain.cli import NOT_IMPLEMENTED_EXIT, app
 PIPELINE = [
     "harvest",
     "canon",
+    "synth",
     "load",
     "chunk",
     "extract",
@@ -49,3 +50,30 @@ def test_canon_error_goes_to_stderr(runner, tmp_path, monkeypatch):
     assert result.exit_code == 1
     assert "canon:" not in result.stdout
     assert "canon:" in result.stderr
+
+
+def test_synth_error_goes_to_stderr(runner, tmp_path, monkeypatch):
+    """`brain synth merge` with nothing to merge must not print onto a piped stdout."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+    result = runner.invoke(app, ["synth", "merge"])
+
+    assert result.exit_code == 1
+    assert "synth merge:" not in result.stdout
+    assert "no batches to merge" in result.stderr
+
+
+def test_synth_build_needs_a_canonical_slice(runner, tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+    result = runner.invoke(app, ["synth", "build"])
+
+    assert result.exit_code == 1
+    assert "synth build:" in result.stderr
+
+
+def test_synth_help_names_both_subcommands(runner):
+    result = runner.invoke(app, ["synth", "--help"])
+
+    assert result.exit_code == 0
+    assert "build" in result.output and "merge" in result.output

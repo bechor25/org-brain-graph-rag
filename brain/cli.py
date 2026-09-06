@@ -119,6 +119,60 @@ def canon(
     raise typer.Exit(code=code)
 
 
+synth_app = typer.Typer(
+    help="Build and merge the synthetic Xray/ADO layer written by synthetic-org-generator "
+    "agents [Plan 1]",
+    no_args_is_help=True,
+)
+app.add_typer(synth_app, name="synth")
+
+
+@synth_app.command("build")
+def synth_build(
+    shards: int = typer.Option(3, "--shards", min=1, help="How many agents will work in parallel"),
+    batch_size: int = typer.Option(
+        40, "--batch-size", min=1, help="Real work items per batch (keep each .in.json <150 KB)"
+    ),
+) -> None:
+    """Write data/batches/synthetic/<shard>/NNN.in.json from the real canonical slice."""
+    from brain.config import get_settings
+    from brain.synth.build import run_build
+
+    settings = get_settings()
+    try:
+        _, code = run_build(
+            canonical_dir=settings.canonical_dir,
+            batches_dir=settings.batches_dir,
+            shards=shards,
+            batch_size=batch_size,
+            echo=typer.echo,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        typer.echo(f"synth build: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    raise typer.Exit(code=code)
+
+
+@synth_app.command("merge")
+def synth_merge() -> None:
+    """Validate every NNN.out.json and rewrite the synthetic slice of data/canonical/."""
+    from brain.config import get_settings
+    from brain.synth.merge import MergeError, run_merge
+
+    settings = get_settings()
+    try:
+        _, code = run_merge(
+            canonical_dir=settings.canonical_dir,
+            batches_dir=settings.batches_dir,
+            reports_dir=settings.reports_dir,
+            echo=typer.echo,
+        )
+    except (MergeError, OSError, ValueError) as exc:
+        typer.echo(f"synth merge: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    raise typer.Exit(code=code)
+
+
 @app.command()
 def doctor() -> None:
     """Check Neo4j, plugins, read-mode guard, Ollama and the embedding model."""
