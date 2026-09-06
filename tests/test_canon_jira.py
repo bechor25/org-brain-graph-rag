@@ -188,6 +188,87 @@ def test_an_assignee_change_keeps_the_identity_keys_not_only_the_display_names()
     assert (entry.from_, entry.to) == ("Jun Rao", "Chia-Ping Tsai")
 
 
+def changelog_issue(*items, author: str = "editor", **over):
+    raw = issue("KAFKA-100", **over)
+    raw["changelog"] = {
+        "histories": [
+            {
+                "author": {"name": author, "displayName": "The Editor"},
+                "created": "2024-01-02T00:00:00.000+0000",
+                "items": list(items),
+            }
+        ]
+    }
+    return raw
+
+
+def assignee_change(**over):
+    base = {
+        "field": "assignee",
+        "from": "JIRAUSER298607",
+        "fromString": "Terry Beard",
+        "to": "kirktrue",
+        "toString": "Kirk True",
+    }
+    base.update(over)
+    return base
+
+
+def test_a_person_who_only_appears_as_a_past_assignee_still_becomes_a_person():
+    """Half the assignee intervals name someone no current field does — `JIRAUSER…` ids.
+
+    `brain load` builds `ASSIGNED_TO` from the changelog, so an id with no Person behind
+    it is an interval that cannot be attached to anybody.
+    """
+    bundle = map_issues([changelog_issue(assignee_change())])
+
+    assert bundle.persons["jira:JIRAUSER298607"].identities[0].display == "Terry Beard"
+    assert bundle.persons["jira:kirktrue"].identities[0].display == "Kirk True"
+    assert bundle.stats["persons_from_changelog"] == 2
+
+
+def test_the_side_of_an_assignee_change_that_is_empty_mints_nobody():
+    """Unassigning is `to: null` — a fact about the interval, not a person."""
+    bundle = map_issues([changelog_issue(assignee_change(to=None, toString=None))])
+
+    assert "jira:JIRAUSER298607" in bundle.persons
+    assert bundle.stats["persons_from_changelog"] == 1
+
+
+def test_a_changelog_assignee_who_is_already_a_person_is_not_counted_twice():
+    raw = changelog_issue(
+        assignee_change(**{"from": "jrao", "fromString": "Jun Rao"}),
+        assignee={"name": "jrao", "displayName": "Jun Rao"},
+    )
+
+    bundle = map_issues([raw])
+
+    assert len(bundle.persons["jira:jrao"].identities) == 1
+    assert bundle.stats["persons_from_changelog"] == 1  # kirktrue only
+
+
+def test_only_assignee_changes_mint_people_not_every_changed_field():
+    """`status` `from`/`to` are workflow step ids; a Person for `5` would be a lie."""
+    bundle = map_issues(
+        [changelog_issue({"field": "status", "from": "1", "fromString": "Open", "to": "5"})]
+    )
+
+    assert [p for p in bundle.persons if p not in {"jira:editor"}] == []
+    assert bundle.stats["persons_from_changelog"] == 0
+
+
+def test_a_changelog_person_keeps_the_display_a_current_field_gave_them():
+    """The changelog display can be stale; the current field is the better name."""
+    raw = changelog_issue(
+        assignee_change(**{"from": "jrao", "fromString": "J. Rao (old)"}),
+        assignee={"name": "jrao", "displayName": "Jun Rao"},
+    )
+
+    bundle = map_issues([raw])
+
+    assert bundle.persons["jira:jrao"].identities[0].display == "Jun Rao"
+
+
 def test_the_stats_census_link_types_and_changelog_fields():
     raw = issue(
         "KAFKA-100",

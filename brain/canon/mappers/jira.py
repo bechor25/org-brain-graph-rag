@@ -125,6 +125,37 @@ def _as_id(value: Any) -> str | None:
     return None if value in (None, "") else str(value)
 
 
+#: The one changelog field whose `from`/`to` are identity keys rather than ids of something
+#: else. `status` moves between workflow step ids (`1` → `5`), `Fix Version` between version
+#: ids; minting a Person for either would invent people out of numbers.
+PERSON_CHANGELOG_FIELDS = frozenset({"assignee"})
+
+
+def mint_changelog_persons(bundle: Bundle) -> int:
+    """Give every past assignee a Person, and return how many only the changelog knows.
+
+    `brain load` builds `ASSIGNED_TO` from the assignee intervals in the changelog, but the
+    mapper minted Persons only from *current* fields — so 725 of this corpus's 2,050
+    intervals named a `JIRAUSER…` id with no Person behind it: an interval that cannot be
+    attached to anybody. The display comes from the same item's `fromString`/`toString`, so
+    nothing is invented.
+
+    Deliberately a second pass over the finished work items rather than a line inside
+    `_changelog`: run inside the loop, whether an id counts as "new" would depend on
+    whether some later issue happens to have that person as its current assignee.
+    `Bundle.identity` fills a missing display but never overwrites one, so a person a
+    current field already named keeps that name — the changelog's copy can be stale.
+    """
+    before = set(bundle.persons)
+    for item in bundle.workitems:
+        for entry in item.changelog:
+            if entry.field not in PERSON_CHANGELOG_FIELDS:
+                continue
+            for key, display in ((entry.from_id, entry.from_), (entry.to_id, entry.to)):
+                bundle.identity(SOURCE, key, display=display)
+    return len(set(bundle.persons) - before)
+
+
 def _changelog(issue: dict[str, Any], bundle: Bundle) -> list[ChangelogEntry]:
     out: list[ChangelogEntry] = []
     for history in (issue.get("changelog") or {}).get("histories") or []:
@@ -254,6 +285,8 @@ def map_issues(issues: Iterable[dict[str, Any]]) -> Bundle:
             )
         )
 
+    persons_from_changelog = mint_changelog_persons(bundle)
+
     n = len(bundle.workitems) or 1
     bundle.stats = {
         "issues": len(bundle.workitems),
@@ -270,6 +303,11 @@ def map_issues(issues: Iterable[dict[str, Any]]) -> Bundle:
         "with_resolution": sum(1 for wi in bundle.workitems if wi.resolution),
         "comments": sum(len(wi.comments) for wi in bundle.workitems),
         "changelog_entries": sum(len(wi.changelog) for wi in bundle.workitems),
+        # Persons no current field mentions — past assignees, mostly `JIRAUSER…` ids.
+        "persons_from_changelog": persons_from_changelog,
+        "assignee_intervals": sum(
+            1 for wi in bundle.workitems for e in wi.changelog if e.field == "assignee"
+        ),
         "truncated_changelogs": truncated_changelogs,
         "link_types": dict(link_types.most_common()),
         "changelog_fields": dict(changelog_fields.most_common()),
