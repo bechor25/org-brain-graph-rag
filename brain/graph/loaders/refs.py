@@ -69,6 +69,7 @@ def build_rows(corpus: Corpus) -> tuple[dict[tuple[str, str], list[dict[str, Any
     total: Counter = Counter()
     dangling: Counter = Counter()
     by_via: Counter = Counter()
+    cross_source = 0
 
     for source, src_label, src_key, refs in iter_ref_records(corpus):
         for ref in refs:
@@ -80,6 +81,11 @@ def build_rows(corpus: Corpus) -> tuple[dict[tuple[str, str], list[dict[str, Any
                 if person is None:
                     dangling["user"] += 1
                     continue
+                if corpus.person(source, ref.key) is None:
+                    # `@mjsax` on a Confluence page resolved to the *Jira* person: the
+                    # mention crossed systems, which is exactly the work `brain resolve`
+                    # is measured on, so it is counted rather than assumed.
+                    cross_source += 1
                 mentions.setdefault(src_label, {})[(src_key, person)] = {
                     "src": src_key,
                     "dst": person,
@@ -114,6 +120,7 @@ def build_rows(corpus: Corpus) -> tuple[dict[tuple[str, str], list[dict[str, Any
         "refs_by_kind": dict(total.most_common()),
         "dangling_refs": dict(dangling.most_common()),
         "references_by_via": dict(by_via.most_common()),
+        "mentions_resolved_cross_source": cross_source,
     }
     return {**rows, **{("__mentions__", k): v for k, v in mention_rows.items()}}, stats
 

@@ -59,13 +59,14 @@ def q(ctx: GraphContext, cypher: str, **params):
 
 def test_node_counts_match_the_fixture(loaded):
     nodes = loaded["census"]["nodes_by_label"]
-    assert nodes["WorkItem"] == 6
+    assert nodes["WorkItem"] == 7
     assert nodes["Document"] == 1
     assert nodes["Person"] == 3
     assert nodes["Commit"] == 3
     assert nodes["PullRequest"] == 1
     assert nodes["Component"] == 3
     assert nodes["Version"] == 1
+    assert nodes["Space"] == 1
     assert nodes["File"] == 4
     assert nodes["StatusChange"] == 11
 
@@ -74,6 +75,8 @@ def test_secondary_labels_separate_jira_and_xray_test_types(loaded, ctx):
     nodes = loaded["census"]["nodes_by_label"]
     assert nodes["Bug"] == 1 and nodes["Improvement"] == 1 and nodes["Task"] == 1
     assert nodes["Test"] == 2 and nodes["TestExecution"] == 1
+    # XP-1 is a TestPlan *work item*; the fixture has no TestPlan *container*
+    assert nodes["TestPlan"] == 1
     assert "JiraTest" not in nodes  # the fixture has no Jira `Test` issue
     rows = q(
         ctx,
@@ -91,6 +94,11 @@ def test_edge_counts(loaded):
     assert loaded["census"]["links_to_by_type"] == {"blocks": 1}
     assert edges["TESTS"] == 1
     assert edges["EXECUTED_IN"] == 2
+    # XT-1 by the plan's own `tests` link, XT-2 by its `parent`
+    assert edges["IN_PLAN"] == 2
+    assert edges["HAS_RUN"] == 2
+    assert edges["IN_SPACE"] == 1
+    assert edges["PARENT_OF"] == 1
     assert edges["RESOLVES"] == 2
     assert edges["IMPLEMENTS_KIP"] == 1
     assert edges["HAS_COMMIT"] == 1
@@ -101,8 +109,71 @@ def test_edge_counts(loaded):
     assert edges["COMMENTED"] == 2
     assert edges["TOUCHES"] == 4
     assert edges["IN_COMPONENT"] == 6
-    assert edges["FIX_VERSION"] == 3
+    assert edges["FIX_VERSION"] == 4  # KAFKA-100, KAFKA-102, XE-1, XP-1
     assert edges["AFFECTS_VERSION"] == 1
+
+
+def test_a_run_is_read_from_the_executions_comment(ctx):
+    """The synthetic layer states runs as `"<XT-n>: PASS|FAIL (reason)"` lines; reading
+    that stated format is parsing, not extraction, so no LLM is involved."""
+    rows = q(
+        ctx,
+        f"MATCH (e:{ctx.label('TestExecution')})-[r:HAS_RUN]->(t:{ctx.label('Test')}) "
+        "RETURN e.key AS execution, t.key AS test, r.status AS status, r.reason AS reason "
+        "ORDER BY test",
+    )
+    assert rows == [
+        {"execution": "XE-1", "test": "XT-1", "status": "PASS", "reason": None},
+        {"execution": "XE-1", "test": "XT-2", "status": "FAIL", "reason": "3 rebalances observed"},
+    ]
+
+
+def test_a_plan_collects_its_tests_from_a_link_and_from_the_hierarchy(ctx):
+    rows = q(
+        ctx,
+        f"MATCH (t:{ctx.label('WorkItem')})-[:IN_PLAN]->(p:{ctx.label('WorkItem')}) "
+        "RETURN t.key AS test, p.key AS plan ORDER BY test",
+    )
+    assert rows == [{"test": "XT-1", "plan": "XP-1"}, {"test": "XT-2", "plan": "XP-1"}]
+
+
+def test_a_document_sits_in_its_space(ctx):
+    rows = q(
+        ctx,
+        f"MATCH (d:{ctx.label('Document')})-[:IN_SPACE]->(s:{ctx.label('Space')}) "
+        "RETURN d.key AS doc, s.name AS space",
+    )
+    assert rows == [{"doc": "KIP-5", "space": "KAFKA"}]
+
+
+def test_every_assigned_to_edge_says_where_its_identity_came_from(loaded, ctx):
+    rows = q(
+        ctx,
+        f"MATCH (w:{ctx.label('WorkItem')})-[r:ASSIGNED_TO]->(:{ctx.label('Person')}) "
+        "RETURN w.key AS key, r.source AS source ORDER BY key",
+    )
+    assert {r["source"] for r in rows} <= {"changelog", "field"}
+    assert dict((r["key"], r["source"]) for r in rows) == {
+        "KAFKA-100": "changelog",
+        "KAFKA-101": "field",
+        "KAFKA-102": "field",
+    }
+    assert loaded["loaders"]["workitem_edges"]["assignments_zero_length_dropped"] == 0
+    zero = q(
+        ctx,
+        f"MATCH ()-[r:ASSIGNED_TO]->(:{ctx.label('Person')}) "
+        "WHERE r.valid_to IS NOT NULL AND r.valid_to <= r.valid_from RETURN count(r) AS c",
+    )
+    assert zero == [{"c": 0}]
+    # the displaced identity is offered to `brain resolve`, never merged here
+    assert loaded["alias_candidates"] == [
+        {
+            "changelog_identity": "jira:JIRAUSER999",
+            "field_identity": "jira:dlee",
+            "work_items": 1,
+            "examples": ["KAFKA-101"],
+        }
+    ]
 
 
 def test_a_test_and_a_commit_meet_on_the_work_item(ctx):
@@ -205,7 +276,15 @@ def test_synthetic_records_are_flagged_and_carry_no_provenance_without_a_ledger(
         ctx,
         f"MATCH (w:{ctx.label('WorkItem')}) WHERE w.synthetic RETURN w.key AS key ORDER BY key",
     )
-    assert [r["key"] for r in rows] == ["XE-1", "XT-1", "XT-2"]
+    assert [r["key"] for r in rows] == ["XE-1", "XP-1", "XT-1", "XT-2"]
+
+
+def test_the_report_records_what_it_read_and_what_it_could_not_explain(loaded):
+    inputs = loaded["inputs"]
+    assert inputs["workitems.jsonl"]["records"] == 7
+    assert len(inputs["workitems.jsonl"]["sha256"]) == 64
+    assert loaded["invariants"]["links_to_same_type_both_directions"] == 0
+    assert loaded["invariants"]["extra_edges"] == {}
 
 
 def test_second_run_creates_nothing(ctx, loaded, tmp_path_factory):

@@ -23,13 +23,20 @@ from brain.graph.provenance import SyntheticProvenance
 from brain.graph.report import (
     PRIMARY_LABELS,
     build_checks,
+    canon_expectations,
+    canonical_inputs,
     edge_census,
+    existing_labels,
+    extra_edges,
     link_type_census,
     links_to_by_type,
+    links_to_pair_invariant,
     node_census,
+    node_total,
     orphan_census,
     references_by_via,
     secondary_labels,
+    written_edges,
 )
 from brain.graph.schema import apply_schema
 from brain.harvest.base import utc_now_iso, write_json_atomic
@@ -137,27 +144,33 @@ def run_load(
     echo(f"edges: {durations['edges']}s")
 
     t0 = time.perf_counter()
-    nodes = node_census(ctx, secondary_labels(corpus))
-    by_type, by_pair = edge_census(ctx)
-    via = references_by_via(ctx)
+    present = existing_labels(ctx)
+    nodes = node_census(ctx, secondary_labels(corpus), present)
+    by_type, by_pair = edge_census(ctx, present)
+    via = references_by_via(ctx, present)
     census = {
-        # Primary labels only: every work item also carries a secondary label, so summing
-        # `nodes_by_label` counts 1,416 of them twice.
-        "nodes_total": sum(v for k, v in nodes.items() if k in PRIMARY_LABELS),
+        # Counted in the graph, each node once however many of its labels match: summing
+        # `nodes_by_label` would count every work item twice (it also wears `Bug`).
+        "nodes_total": node_total(ctx, present),
         "edges_total": sum(by_type.values()),
         "nodes_by_label": nodes,
         "edges_by_type": by_type,
         "edges_by_pair": by_pair,
         "links_to_by_type": links_to_by_type(ctx),
         "references_by_via": via,
-        "orphans_by_label": orphan_census(ctx),
+        "orphans_by_label": orphan_census(ctx, present),
     }
     durations["census"] = round(time.perf_counter() - t0, 2)
 
     stamped = sum(
         int(section.get("stamped", 0)) for section in stats.values() if isinstance(section, dict)
     )
-    checks = build_checks(corpus, nodes, by_type, via, stats, ctx.counters)
+    invariants = {
+        "links_to_same_type_both_directions": links_to_pair_invariant(ctx),
+        "extra_edges": extra_edges(by_type, written_edges(stats)),
+    }
+    canon = canon_expectations(reports_dir)
+    checks = build_checks(corpus, nodes, by_type, via, stats, ctx.counters, canon, invariants)
     total = round(time.perf_counter() - started, 2)
     report = _merge_report(
         report_path,
@@ -173,8 +186,11 @@ def run_load(
                 "counters": ctx.counters,
             },
             "schema": schema,
+            "inputs": canonical_inputs(canonical_dir),
             "census": census,
+            "invariants": invariants,
             "loaders": stats,
+            "alias_candidates": stats["workitem_edges"]["alias_candidates"],
             "source_link_types": link_type_census(corpus),
             "unknown_link_types": stats["workitem_edges"]["links"]["unknown_link_types"],
             "dangling_refs": stats["refs"]["dangling_refs"],
@@ -194,11 +210,8 @@ def run_load(
     for c in checks:
         mark = "OK  " if c["ok"] else "FAIL"
         echo(f"[{mark}] {c['name']}: expected {c['expected']}, actual {c['actual']}")
-    # Sum the primary labels only: a work item also carries `Bug` or `SubTask`, and
-    # adding both would report a third more nodes than the graph holds.
-    primary = sum(v for k, v in nodes.items() if k in PRIMARY_LABELS)
     echo(
-        f"load: {primary} nodes, {sum(by_type.values())} edges, {total}s "
+        f"load: {census['nodes_total']} nodes, {sum(by_type.values())} edges, {total}s "
         f"(created {ctx.counters['nodes_created']} nodes, "
         f"{ctx.counters['relationships_created']} relationships)"
     )
@@ -228,7 +241,5 @@ def load_from_settings(
 def wipe(ctx: GraphContext) -> None:
     """Delete everything in this context's label namespace. Tests only — the scratch
     namespace `make smoke` uses holds a few dozen nodes, so one transaction is enough."""
-    from brain.graph.report import PRIMARY_LABELS
-
     for label in PRIMARY_LABELS:
         ctx.client.write(f"MATCH (n:{ctx.label(label)}) DETACH DELETE n")

@@ -11,11 +11,14 @@ that fails stays in the file with `ok: false`; it is never relaxed to make the f
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections import Counter
+from pathlib import Path
 from typing import Any
 
 from brain.graph.context import GraphContext
-from brain.graph.corpus import Corpus
+from brain.graph.corpus import CANONICAL_FILES, Corpus
 from brain.graph.mapping import dedupe_link_edges, link_edge, workitem_label
 
 #: Every (relationship, source label, target label) this step can write. Counting through
@@ -31,6 +34,8 @@ REL_SPECS: tuple[tuple[str, str, str], ...] = (
     ("LINKS_TO", "WorkItem", "WorkItem"),
     ("TESTS", "WorkItem", "WorkItem"),
     ("EXECUTED_IN", "WorkItem", "WorkItem"),
+    ("IN_PLAN", "WorkItem", "WorkItem"),
+    ("HAS_RUN", "WorkItem", "WorkItem"),
     ("HAS_CHANGE", "WorkItem", "StatusChange"),
     ("COMMENTED", "Person", "WorkItem"),
     ("AUTHORED", "Person", "Commit"),
@@ -38,6 +43,7 @@ REL_SPECS: tuple[tuple[str, str, str], ...] = (
     ("AUTHORED", "Person", "Document"),
     ("CHILD_OF", "Document", "Document"),
     ("VARIANT_OF", "Document", "Document"),
+    ("IN_SPACE", "Document", "Space"),
     ("TOUCHES", "Commit", "File"),
     ("HAS_COMMIT", "PullRequest", "Commit"),
     ("RESOLVES", "Commit", "WorkItem"),
@@ -73,21 +79,57 @@ PRIMARY_LABELS: tuple[str, ...] = (
     "Sprint",
     "Area",
     "Space",
+    "TestPlan",
+    "TestSet",
 )
 
 
-def node_census(ctx: GraphContext, secondary: list[str]) -> dict[str, int]:
+def existing_labels(ctx: GraphContext) -> set[str]:
+    """Labels the database has actually seen, without the namespace prefix.
+
+    Querying a label no node has ever carried is legal but makes the server emit an
+    `01N50 label does not exist` notification per query, which buries the report's own
+    output in warnings about labels that are simply empty until the synthetic layer lands.
+    """
+    rows = ctx.read("CALL db.labels() YIELD label RETURN collect(label) AS labels")
+    present = set(rows[0]["labels"]) if rows else set()
+    return {label[len(ctx.prefix) :] for label in present if label.startswith(ctx.prefix)}
+
+
+def node_census(ctx: GraphContext, secondary: list[str], present: set[str]) -> dict[str, int]:
+    """Raw per-label counts — what `MATCH (n:Label)` actually returns.
+
+    `TestPlan` and `TestSet` are both a container label and a work item type, so those two
+    rows cover two kinds of node. They are still the honest answer to "how many nodes wear
+    this label"; :func:`node_total` is what counts each node once.
+    """
     counts: dict[str, int] = {}
     for label in (*PRIMARY_LABELS, *sorted(secondary)):
+        if label not in present:
+            counts[label] = 0
+            continue
         rows = ctx.read(f"MATCH (n:{ctx.label(label)}) RETURN count(n) AS c")
         counts[label] = rows[0]["c"] if rows else 0
     return {k: v for k, v in counts.items() if v or k in PRIMARY_LABELS}
 
 
-def edge_census(ctx: GraphContext) -> tuple[dict[str, int], dict[str, int]]:
+def node_total(ctx: GraphContext, present: set[str]) -> int:
+    """Nodes this step owns, each counted once however many of its labels match."""
+    labels = [label for label in PRIMARY_LABELS if label in present]
+    if not labels:
+        return 0
+    where = " OR ".join(f"n:{ctx.label(label)}" for label in labels)
+    rows = ctx.read(f"MATCH (n) WHERE {where} RETURN count(n) AS c")
+    return rows[0]["c"] if rows else 0
+
+
+def edge_census(ctx: GraphContext, present: set[str]) -> tuple[dict[str, int], dict[str, int]]:
     by_type: Counter = Counter()
     by_pair: dict[str, int] = {}
     for rel, src, dst in REL_SPECS:
+        by_type.setdefault(rel, 0)
+        if src not in present or dst not in present:
+            continue
         rows = ctx.read(
             f"MATCH (:{ctx.label(src)})-[r:`{rel}`]->(:{ctx.label(dst)}) RETURN count(r) AS c"
         )
@@ -98,9 +140,11 @@ def edge_census(ctx: GraphContext) -> tuple[dict[str, int], dict[str, int]]:
     return dict(sorted(by_type.items())), by_pair
 
 
-def orphan_census(ctx: GraphContext) -> dict[str, int]:
+def orphan_census(ctx: GraphContext, present: set[str]) -> dict[str, int]:
     out: dict[str, int] = {}
     for label in PRIMARY_LABELS:
+        if label not in present:
+            continue
         rows = ctx.read(f"MATCH (n:{ctx.label(label)}) WHERE NOT (n)--() RETURN count(n) AS c")
         c = rows[0]["c"] if rows else 0
         if c:
@@ -116,10 +160,10 @@ def links_to_by_type(ctx: GraphContext) -> dict[str, int]:
     return {r["type"]: r["c"] for r in rows}
 
 
-def references_by_via(ctx: GraphContext) -> dict[str, int]:
+def references_by_via(ctx: GraphContext, present: set[str]) -> dict[str, int]:
     out: Counter = Counter()
     for rel, src, dst in REL_SPECS:
-        if rel != "REFERENCES":
+        if rel != "REFERENCES" or src not in present or dst not in present:
             continue
         rows = ctx.read(
             f"MATCH (:{ctx.label(src)})-[r:`REFERENCES`]->(:{ctx.label(dst)}) "
@@ -161,6 +205,53 @@ def secondary_labels(corpus: Corpus) -> list[str]:
     return sorted(x for x in labels if x)
 
 
+def canonical_inputs(canonical_dir: Path) -> dict[str, Any]:
+    """sha256 and record count of every canonical file this run read.
+
+    The census answers "what is in the graph"; this answers "from what". Without it a
+    report is unattributable — two runs with the same counts could have read different
+    files, which is exactly what happens while the synthetic layer is being merged.
+    """
+    out: dict[str, Any] = {}
+    for name in (*CANONICAL_FILES, "synthetic_merged", "synthetic_truth"):
+        for suffix in (".jsonl", ".json"):
+            path = canonical_dir / f"{name}{suffix}"
+            if not path.is_file():
+                continue
+            data = path.read_bytes()
+            out[path.name] = {
+                "sha256": hashlib.sha256(data).hexdigest(),
+                "bytes": len(data),
+                "records": data.count(b"\n") if suffix == ".jsonl" else None,
+            }
+    return out
+
+
+def canon_expectations(reports_dir: Path) -> dict[str, Any]:
+    """What `data/reports/canon.json` says the previous step produced.
+
+    Reading the upstream report rather than recomputing means the two steps have to agree
+    about the same corpus: a canon rerun that changed the numbers shows up here as a
+    failed check instead of as a graph nobody compared to anything.
+    """
+    path = reports_dir / "canon.json"
+    if not path.is_file():
+        return {}
+    try:
+        canon = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    jira = ((canon.get("source_stats") or {}).get("jira")) or {}
+    refs = canon.get("refs") or {}
+    return {
+        "report": str(path),
+        "formal_links": jira.get("formal_links"),
+        "link_types": jira.get("link_types") or {},
+        "refs_by_kind": refs.get("totals_by_kind") or {},
+        "counts_by_type": (canon.get("counts") or {}).get("by_type") or {},
+    }
+
+
 def build_checks(
     corpus: Corpus,
     nodes: dict[str, int],
@@ -168,6 +259,8 @@ def build_checks(
     via: dict[str, int],
     stats: dict[str, Any],
     counters: dict[str, int],
+    canon: dict[str, Any] | None = None,
+    invariants: dict[str, int] | None = None,
 ) -> list[dict[str, Any]]:
     expected = expected_counts(corpus)
     checks: list[dict[str, Any]] = [
@@ -217,7 +310,110 @@ def build_checks(
             "note": "only meaningful on a rerun over an already-loaded graph",
         }
     )
+
+    canon = canon or {}
+    if canon.get("formal_links") is not None:
+        declared = stats.get("workitem_edges", {}).get("links", {}).get("declared")
+        checks.append(
+            {
+                "name": "formal_links_match_canon_report",
+                "expected": canon["formal_links"],
+                "actual": declared,
+                "ok": declared == canon["formal_links"],
+                "note": f"from {canon['report']} -> source_stats.jira.formal_links",
+            }
+        )
+    if canon.get("refs_by_kind"):
+        seen = stats.get("refs", {}).get("refs_by_kind", {})
+        want = {k: v for k, v in canon["refs_by_kind"].items()}
+        # canon counts the real corpus only; the synthetic layer adds refs on top, so the
+        # graph may legitimately see more — never fewer.
+        missing = {k: v for k, v in want.items() if seen.get(k, 0) < v}
+        checks.append(
+            {
+                "name": "refs_by_kind_at_least_canon_report",
+                "expected": want,
+                "actual": seen,
+                "ok": not missing,
+                "note": f"from {canon['report']} -> refs.totals_by_kind; short by {missing}",
+            }
+        )
+    if canon.get("counts_by_type"):
+        want_wi = canon["counts_by_type"].get("workitems")
+        checks.append(
+            {
+                "name": "workitems_at_least_canon_report",
+                "expected": want_wi,
+                "actual": nodes.get("WorkItem", 0),
+                "ok": want_wi is None or nodes.get("WorkItem", 0) >= want_wi,
+                "note": "canon.json counts the corpus load read; a later canon run may add",
+            }
+        )
+
+    invariants = invariants or {}
+    if "links_to_same_type_both_directions" in invariants:
+        found = invariants["links_to_same_type_both_directions"]
+        checks.append(
+            {
+                "name": "no_pair_carries_the_same_links_to_type_twice",
+                "expected": 0,
+                "actual": found,
+                "ok": found == 0,
+                "note": (
+                    "graph-side invariant: a reciprocal Jira declaration would show up as "
+                    "A-[:LINKS_TO{type}]->B and B-[:LINKS_TO{same type}]->A"
+                ),
+            }
+        )
+    extra = invariants.get("extra_edges") or {}
+    checks.append(
+        {
+            "name": "no_edges_beyond_what_canonical_asks_for",
+            "expected": {},
+            "actual": extra,
+            "ok": not extra,
+            "note": (
+                "graph edge counts vs the rows this run wrote. `brain load` never prunes: "
+                "an edge whose canonical record disappeared stays until something deletes "
+                "it, and shows up here rather than being silently tolerated."
+            ),
+        }
+    )
     return checks
+
+
+def extra_edges(graph: dict[str, int], written: dict[str, int]) -> dict[str, dict[str, int]]:
+    """Edge types where the graph holds more than this run wrote."""
+    out: dict[str, dict[str, int]] = {}
+    for rel, count in graph.items():
+        want = written.get(rel, 0)
+        if count > want:
+            out[rel] = {"in_graph": count, "written_this_run": want}
+    return out
+
+
+def written_edges(stats: dict[str, Any]) -> dict[str, int]:
+    """Rows every loader actually sent, summed per relationship type."""
+    out: Counter = Counter()
+    for section in stats.values():
+        if not isinstance(section, dict):
+            continue
+        for key, value in section.items():
+            if key == "edges" and isinstance(value, dict):
+                for rel, n in value.items():
+                    out[rel] += int(n)
+            elif key.isupper() and isinstance(value, int):
+                out[key] += value
+    return dict(out)
+
+
+def links_to_pair_invariant(ctx: GraphContext) -> int:
+    """Pairs holding the same `LINKS_TO.type` in both directions. Must be 0."""
+    rows = ctx.read(
+        f"MATCH (a:{ctx.label('WorkItem')})-[r:`LINKS_TO`]->(b:{ctx.label('WorkItem')}) "
+        f"MATCH (b)-[r2:`LINKS_TO`]->(a) WHERE r2.type = r.type RETURN count(r) AS c"
+    )
+    return rows[0]["c"] if rows else 0
 
 
 def _canon_text_refs(corpus: Corpus) -> dict[str, int]:
