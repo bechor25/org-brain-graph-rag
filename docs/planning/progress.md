@@ -20,7 +20,7 @@
 | 1 | 02 harvest | ✅ | 79099a0…2c19ca2 | 1,416/1,391/6,107 ב-2m14s; ריצה שנייה 0; `--no-renames` הוריד git log מ-6+ דק' ל-0.44s; צפיפות links מלאה 36% (probe אמר 38%) |
 | 1 | 03 canon | ✅ | 82db3e3…8d60a0c | 1,416/1,391(1,334 KIP+57 Page)/12,133/1,597/117 ב-6.9s; text-only refs 15% (any-mention 23.4%) — קריטריון תוקן; `[~user]` 1,972 אזכורים נוספים; resolution נוסף למודל |
 | 1 | 04 synthetic | 🟡 כלים ✅ (d8b1a11…d939176, בסקירה); 3 סוכני-תוכן רצים | | 1,021 items נבחרו → 27 batches / 3 shards, 143 Epics מוקצים מראש; מרחבי מפתחות נפרדים לכל shard |
-| 1 | 05 load | 🟡 בוצע, בסקירה | cc2ad87…fba0ae9 | 32,855 צמתים / 95,695 קשתות ב-3.6s; ריצה שנייה 0/0; LINKS_TO 298 זוגות; dangling issue refs 8,217 (גבול הפרוסה); StatusChange 7,607 (18.9k רעש הוסר); 725 מרווחי assignee בלי Person → canon ימנטס מ-changelog |
+| 1 | 05 load | 🟡 fix-required (2 blockers: ledger shape/keys; majors: blocks/duplicates, ASSIGNED_TO zero-length ×486, TestPlan/TestSet) | cc2ad87…fba0ae9 | 32,855 צמתים / 95,695 קשתות ב-3.6s; ריצה שנייה 0/0; LINKS_TO 298 זוגות; dangling issue refs 8,217 (גבול הפרוסה); StatusChange 7,607 (18.9k רעש הוסר); 725 מרווחי assignee בלי Person → canon ימנטס מ-changelog |
 | 1 | 06 chunk+embed | ⬜ | | |
 | 1 | 07 extract Phase A | ⬜ | | |
 | 1 | 08 resolve | ⬜ | | |
