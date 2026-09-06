@@ -8,7 +8,7 @@ scored against truth. Every synthetic record has `synthetic: true`. Truth is wri
 ## Keys and sources
 - Xray: `source: "xray"`. Keys `XT-<n>` (type `Test`), `XP-<n>` (`TestPlan`), `XS-<n>` (`TestSet`), `XE-<n>` (`TestExecution`). Runs are expressed as `links[]{type:"executes", target: XT-n}` on the execution plus a `comments[]` line `"<XT-n>: PASS|FAIL (<reason>)"` and, for FAIL, a `links[]{type:"defect", target: <KAFKA-key>}` when a real bug in the same fix version exists.
 - ADO: `source: "ado"`. Keys `ADO-<n>`; `type` ∈ Epic | Feature | User Story | Task | Bug. Containers: `kind: sprint` (`Sprint 2023-01` … monthly), `kind: area` (`Kafka\Streams`, `Kafka\Connect`, `Kafka\Clients`).
-- Numbering is global and monotonic across batches (agent reads the last id from `status.json`).
+- Numbering: every shard owns a disjoint id block for each prefix (see the `numbering` block in each `.in.json` and `MANIFEST.json`); within a shard ids are monotonic and continue from the `next_ids` of the previous batch. Epics `ADO-1…ADO-143` are pre-assigned by build (reserved block 1–10000); use exactly those keys for the KIPs your batch owns. Never use an id outside your shard's block — merge rejects it.
 
 ## Coverage targets (per whole slice, ±5%)
 | what | target |
