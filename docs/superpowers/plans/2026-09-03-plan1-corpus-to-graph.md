@@ -192,3 +192,23 @@
 - Spec coverage: §3.1→T1, §3.2→T2+T3, §3.3→T4, §3.4→T5, §3.5→T6, §3.6→T7, §3.7→T8, §3.8→T9, §3.9 (incremental) → T1 `--since`, T5 hash-based re-embed, T8 `member_hash` (full incremental test is Plan 3).
 - Plan 0 carryovers placed: allowlist + `KAFKA-1` (T2), reciprocal dedupe (T4), Person marker (T4/T7), `write_jsonl` temp+rename (T2), PR key with repo — single repo in this POC; `Change.id` stays sha / `pr:N`, documented as a known limitation in T2's report.
 - No code in this plan by design; contracts name every file, command, property and report.
+
+---
+
+## Task 10 — modularity: source registry, auth via env, `brain reset`, connector guide (agents: `brain-ingest-engineer`, `brain-infra`) · lesson 10
+
+**Goal (ADR-0005):** a new org system plugs in with three files and one config entry; test data can be wiped in one command.
+
+**Contract**
+- `sources.yaml` (root, committed) — list of sources: `name, type (jira|confluence|git|ado|xray), base_url, query (JQL/CQL/clone spec), project_keys[], auth_env, enabled`. `brain harvest --source <name>` resolves through a registry (`brain/harvest/registry.py`); the Kafka entries reproduce today's behaviour exactly. Project-key allowlist and KIP-title patterns move from code to config.
+- Auth: connectors accept an optional bearer/basic token from `os.environ[auth_env]`; anonymous when unset. No secrets in code or config.
+- `brain reset [--graph] [--data] [--synthetic] [--all] --yes`: graph wipe keeps schema; `--synthetic` deletes only nodes/records with `synthetic=true` + the ledger; `--data` clears `data/raw|canonical|batches|reports|eval` (never `data/fixtures`). Refuses without `--yes`. Prints what it deleted. After `--all`, `brain doctor` is green and every count is 0.
+- Synthetic layer is opt-in (`brain synth …` only); `brain load/chunk/extract` work identically with or without it.
+- `docs/guides/adding-a-connector.md` (Hebrew): the three files (connector, mapper, golden test), the `sources.yaml` entry, `brain harvest --source x && brain canon && brain load`, and what the report must show. Includes a worked skeleton for **Azure DevOps** (WIQL + work item links + iterations → canonical) using a PAT, and for **Xray** (GraphQL/REST → Test/TestExecution) — as templates with `probe()` implemented against the public docs, no live run.
+
+**Acceptance**
+- [ ] Kafka harvest through the registry yields byte-identical raw/canonical outputs (shasum) vs before.
+- [ ] `brain reset --all --yes` on a scratch copy → 0 nodes, empty data dirs, fixtures intact, `brain doctor` 7/7; reload from scratch reproduces the same census.
+- [ ] `brain reset --synthetic --yes` removes exactly the synthetic records/nodes (counts before/after).
+- [ ] Unit tests: registry resolution, auth header injection (mocked), reset refusal without `--yes`, synthetic-only deletion on the mini fixture.
+- [ ] Guide reviewed by `brain-reviewer` for completeness against the actual code paths.
