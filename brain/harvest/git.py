@@ -154,7 +154,8 @@ class GitConnector(BaseConnector):
     ) -> None:
         super().__init__(raw_dir)
         self.source = source or get_registry().source(self.name)
-        self.name = self.source.name
+        # The registry id, not the type: `data/raw/<id>/` and the report key.
+        self.name = self.source.id
         self._runner = runner
         self.credentials = credentials or credentials_for(self.source)
         #: The public remote, safe to print. The credential is added only when git is

@@ -79,7 +79,9 @@ def test_the_registry_facts_are_the_configured_ones():
         "title_pattern_loose": r"KIP\s+(\d+)",
         "key_format": "KIP-{number}",
     }
-    assert [s["name"] for s in facts["sources"] if s["enabled"]] == ["jira", "confluence", "git"]
+    assert [s["id"] for s in facts["sources"] if s["enabled"]] == ["jira", "confluence", "git"]
+    # The registry allows two sources of one type; this corpus has none, and says so.
+    assert facts["same_type_ids"] == {}
     assert all(s["display_name"] for s in facts["sources"])
     # Every disabled source that still contributes keys is named, not silently folded in.
     assert len(facts["allowlist_warnings"]) == 2

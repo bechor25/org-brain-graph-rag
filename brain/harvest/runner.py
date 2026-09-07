@@ -32,20 +32,15 @@ CONNECTORS: dict[str, type] = {
 
 
 def resolve_sources(source: str, registry: Registry | None = None) -> list[str]:
-    """`--source` → the source names to run, through the registry (`sources.yaml`)."""
-    reg = registry or get_registry()
-    # Two enabled sources of one type write records the canonical model cannot tell apart
-    # (it records a type, not a registry name). Refuse at the top of the pipeline, not
-    # after 130 MB has landed on disk.
-    reg.unique_enabled_types()
-    return reg.resolve(source)
+    """`--source` → the source ids to run, through the registry (`sources.yaml`)."""
+    return (registry or get_registry()).resolve(source)
 
 
 def build_connector(config: SourceConfig, raw_dir: Path) -> Any:
     cls = CONNECTORS.get(config.type)
     if cls is None:
         raise RegistryError(
-            f"source {config.name!r} has type {config.type!r}, which has no connector yet. "
+            f"source {config.id!r} has type {config.type!r}, which has no connector yet. "
             f"Implemented: {', '.join(sorted(CONNECTORS))}. "
             "docs/guides/adding-a-connector.md has the skeleton."
         )

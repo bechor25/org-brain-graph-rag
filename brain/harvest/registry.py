@@ -6,8 +6,8 @@ golden test and one entry here — never a new constant in `brain/harvest/*.py`.
 
 Three consumers, and each one is a place where a hardcoded value used to sit:
 
-* `brain harvest` resolves `--source <name>` to an entry and builds the connector from it
-  (`base_url`, `query`, the per-connector `options`).
+* `brain harvest` resolves `--source <id>` to an entry and builds the connector from it
+  (`base_url`, `query`, the per-connector `options`), writing into `data/raw/<id>/`.
 * `brain canon` reads the issue-key allowlist — the union of every enabled source's
   `project_keys` plus the synthetic prefixes — and the document-title pattern that turns a
   Confluence title into `Document.key`.
@@ -52,7 +52,7 @@ AUTH_SCHEMES: frozenset[str] = frozenset({"bearer", "basic", "url_token", "none"
 _TOP_KEYS: frozenset[str] = frozenset({"version", "sources", "canon", "synthetic"})
 _SOURCE_KEYS: frozenset[str] = frozenset(
     {
-        "name",
+        "id",
         "type",
         "enabled",
         "base_url",
@@ -206,9 +206,17 @@ class DocumentKeySpec:
 
 @dataclass(frozen=True)
 class SourceConfig:
-    """One entry of `sources.yaml`, validated."""
+    """One entry of `sources.yaml`, validated.
 
-    name: str
+    `id` is the entry's identity everywhere: `--source <id>`, `data/raw/<id>/`, the
+    per-source keys in `data/reports/harvest.json` and `canon.json`, and `source_id` on
+    every canonical record it produces. It is unique by construction — the registry
+    refuses a duplicate — which is what lets two Jira instances coexist.
+
+    `type` stays the *kind* of system, and it is what picks the connector and the mapper.
+    """
+
+    id: str
     type: str
     base_url: str
     query: str
@@ -233,7 +241,7 @@ class SourceConfig:
             return int(value)
         except (TypeError, ValueError) as exc:
             raise RegistryError(
-                f"sources[{self.name}].options.{key} must be an integer, got {value!r}"
+                f"sources[{self.id}].options.{key} must be an integer, got {value!r}"
             ) from exc
 
     @classmethod
@@ -241,9 +249,23 @@ class SourceConfig:
         where = f"sources[{index}]"
         if not isinstance(raw, dict):
             raise RegistryError(f"{path}: {where} must be a mapping, got {type(raw).__name__}")
-        name = str(raw.get("name") or "").strip()
+        if "name" in raw and "id" not in raw:
+            # The field was called `name` until two same-type sources became legal. Saying
+            # so beats "unknown key name", which reads like a typo.
+            raise RegistryError(
+                f"{path}: {where} uses `name`; the field is now `id` (unique per source, "
+                "and the directory under data/raw/). Rename it."
+            )
+        name = str(raw.get("id") or "").strip()
         if not name:
-            raise RegistryError(f"{path}: {where} has no `name`")
+            raise RegistryError(f"{path}: {where} has no `id`")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name):
+            # It becomes a directory name and a report key; a `/` or a space in it would
+            # write raw pages somewhere nobody asked for.
+            raise RegistryError(
+                f"{path}: {where}.id is {name!r}; an id is letters, digits, `_`, `.` and "
+                "`-` — it is used as the directory name under data/raw/."
+            )
         _unknown(path, f"sources[{name}]", raw, _SOURCE_KEYS)
 
         type_ = str(raw.get("type") or "").strip()
@@ -279,7 +301,7 @@ class SourceConfig:
             )
 
         return cls(
-            name=name,
+            id=name,
             type=type_,
             base_url=base_url,
             query=str(query),
@@ -310,23 +332,23 @@ class Registry:
 
     # -- lookup ------------------------------------------------------------
 
-    def source(self, name: str) -> SourceConfig:
+    def source(self, id_: str) -> SourceConfig:
         for s in self.sources:
-            if s.name == name:
+            if s.id == id_:
                 return s
         raise RegistryError(
-            f"unknown source {name!r}; {self.path} defines "
-            f"{', '.join(s.name for s in self.sources) or '(none)'}"
+            f"unknown source {id_!r}; {self.path} defines "
+            f"{', '.join(s.id for s in self.sources) or '(none)'}"
         )
 
     def enabled(self) -> tuple[SourceConfig, ...]:
         return tuple(s for s in self.sources if s.enabled)
 
     def names(self, *, only_enabled: bool = True) -> tuple[str, ...]:
-        return tuple(s.name for s in (self.enabled() if only_enabled else self.sources))
+        return tuple(s.id for s in (self.enabled() if only_enabled else self.sources))
 
     def resolve(self, selector: str) -> list[str]:
-        """`"all"` → every enabled source, in file order; otherwise one name, enabled or not.
+        """`"all"` → every enabled source, in file order; otherwise one id, enabled or not.
 
         Naming a disabled source explicitly is allowed: that is how a new connector is
         tried once before it joins `--source all`.
@@ -336,7 +358,7 @@ class Registry:
             if not names:
                 raise RegistryError(f"{self.path} has no enabled source")
             return names
-        return [self.source(selector).name]
+        return [self.source(selector).id]
 
     # -- canon policies ----------------------------------------------------
 
@@ -366,50 +388,44 @@ class Registry:
             extra = sorted({k.upper() for k in source.project_keys} - live)
             if extra:
                 out.append(
-                    f"source {source.name!r} is disabled but its project keys "
+                    f"source {source.id!r} is disabled but its project keys "
                     f"({', '.join(extra)}) still normalize text matches into issue refs"
                 )
         return out
 
     def document_spec_default(self) -> DocumentKeySpec:
-        """The title→key rule of the one enabled source that produces `Document`s.
+        """The corpus-wide title→key rule: the first enabled source that makes `Document`s.
 
-        Unambiguous by construction: `unique_enabled_types` refuses a second enabled
-        source of the same type, so there is at most one wiki. With none configured the
-        built-in `KIP-N` default applies and nothing downstream has to branch.
+        Corpus-wide because it answers a question that has no per-source answer —
+        :func:`brain.canon.mentions.extract_refs` reads `KIP-848` out of a *Jira comment*
+        and has to know that spelling belongs to a design doc. With two wikis configured
+        the first in file order wins, and the second one's pages still get their own keys:
+        the mapper is handed :meth:`document_spec` for the source it is mapping.
+
+        With no such source the built-in `KIP-N` default applies, so nothing downstream
+        has to branch on "no wiki configured".
         """
         for source in self.enabled():
             if source.type in DOCUMENT_TYPES:
                 return source.document
         return DocumentKeySpec()
 
-    def unique_enabled_types(self) -> None:
-        """Refuse two enabled sources of one type.
+    def same_type_ids(self) -> dict[str, list[str]]:
+        """`{type: [id, ...]}` for the types more than one enabled source claims.
 
-        The canonical model records a source *type* (`jira`, `git`), never the registry
-        *name*: `Change` has no `source` field at all, and `Person.identities[].source` is
-        a `Source` literal. So two enabled Jira instances produce records that no later
-        step — `brain canon --source jira-eu`, `brain reset`, resolution — can tell apart,
-        and a partial canon run would silently delete the other instance's work items.
-
-        The fix is a `name` on the canonical record, which is a model change and needs a
-        brief (spec §2.2). Until then this refuses instead of corrupting.
+        Not an error any more — two Jira instances are supported, and told apart by
+        `source_id` on the canonical record. It is still worth *saying*, because the
+        canonical **keys** are not namespaced: `KAFKA-1` from two Jiras is one node
+        (docs/guides/adding-a-connector.md §5, known limitation). The harvest report
+        carries this so a two-instance setup is visible rather than inferred.
         """
         seen: dict[str, list[str]] = {}
         for source in self.enabled():
-            seen.setdefault(source.type, []).append(source.name)
-        clashes = {t: names for t, names in seen.items() if len(names) > 1}
-        if clashes:
-            detail = "; ".join(f"{t}: {', '.join(names)}" for t, names in sorted(clashes.items()))
-            raise RegistryError(
-                f"{self.path} enables more than one source of the same type ({detail}). The "
-                "canonical model records a source type, not a registry name, so later steps "
-                "could not tell their records apart. Disable all but one, or add `name` to "
-                "the canonical records first (docs/guides/adding-a-connector.md §2)."
-            )
+            seen.setdefault(source.type, []).append(source.id)
+        return {t: ids for t, ids in sorted(seen.items()) if len(ids) > 1}
 
-    def document_spec(self, name: str) -> DocumentKeySpec:
-        return self.source(name).document
+    def document_spec(self, id_: str) -> DocumentKeySpec:
+        return self.source(id_).document
 
     # -- parsing -----------------------------------------------------------
 
@@ -430,9 +446,14 @@ class Registry:
         sources = tuple(SourceConfig.parse(path, i, e) for i, e in enumerate(entries))
         seen: set[str] = set()
         for s in sources:
-            if s.name in seen:
-                raise RegistryError(f"{path}: duplicate source name {s.name!r}")
-            seen.add(s.name)
+            if s.id in seen:
+                raise RegistryError(
+                    f"{path}: duplicate source id {s.id!r}. Ids are the pipeline's identity "
+                    "for a source — the directory under data/raw/, the key in every report, "
+                    "and `source_id` on the canonical records — so two entries sharing one "
+                    "would overwrite each other's raw pages."
+                )
+            seen.add(s.id)
 
         canon = raw.get("canon") or {}
         _unknown(path, "canon", canon, _CANON_KEYS)

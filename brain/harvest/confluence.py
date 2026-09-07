@@ -94,7 +94,8 @@ class ConfluenceConnector(BaseConnector):
     ) -> None:
         super().__init__(raw_dir)
         self.source = source or get_registry().source(self.name)
-        self.name = self.source.name
+        # The registry id, not the type: `data/raw/<id>/` and the report key.
+        self.name = self.source.id
         self.limit = self.source.int_option("limit", LIMIT)
         self.expand = str(self.source.option("expand", EXPAND))
         self.credentials = credentials_for(self.source)

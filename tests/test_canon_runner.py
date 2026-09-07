@@ -11,7 +11,8 @@ from brain.canon.models import Change, Document, Person, WorkItem
 from brain.canon.report import summarize
 from brain.canon.runner import CanonError, natural_key, resolve_sources, run_canon
 from brain.cli import app
-from brain.harvest.registry import RegistryError
+from brain.config import get_settings
+from brain.harvest.registry import RegistryError, reset_caches
 from tests.canon_helpers import commit, issue, page, plant_commits, plant_pages
 
 
@@ -253,3 +254,90 @@ def test_the_report_counts_what_a_partial_run_carried_over(corpus):
     # a full run builds everything it writes
     report, _ = run(corpus, ["jira", "confluence", "git"])
     assert all(v["total"] == 0 for v in report["carried_over"].values())
+
+
+# ------------------------------------------------------- two sources of one type (11b)
+
+
+TWO_JIRAS = """
+version: 1
+canon:
+  issue_key_blacklist: [KAFKA-1]
+sources:
+  - id: jira-eu
+    type: jira
+    base_url: https://eu.example.test/jira
+    query: 'project = KAFKA'
+    project_keys: [KAFKA]
+  - id: jira-us
+    type: jira
+    base_url: https://us.example.test/jira
+    query: 'project = KAFKA'
+    project_keys: [KAFKA]
+"""
+
+
+@pytest.fixture
+def two_jiras(tmp_path, monkeypatch):
+    """A registry with two Jira instances, and one raw issue in each.
+
+    Two of everything is the case `source_id` exists for: the canonical `source` says
+    `jira` on both sides, so nothing else in a record can tell the runs apart.
+    """
+    path = tmp_path / "sources.yaml"
+    path.write_text(TWO_JIRAS, encoding="utf-8")
+    monkeypatch.setenv("SOURCES_FILE", str(path))
+    get_settings.cache_clear()
+    reset_caches()
+    raw = tmp_path / "raw"
+    plant_pages(raw, "jira-eu", [issue("KAFKA-100")], kind="jira")
+    plant_pages(raw, "jira-us", [issue("KAFKA-900")], kind="jira")
+    return tmp_path
+
+
+def keys(tmp_path, stem="workitems"):
+    path = tmp_path / "canonical" / f"{stem}.jsonl"
+    return sorted(json.loads(line)["key"] for line in path.read_text().splitlines() if line.strip())
+
+
+def test_each_instance_stamps_its_own_source_id(two_jiras):
+    run(two_jiras, ["jira-eu", "jira-us"])
+    rows = {
+        r["key"]: r
+        for r in (
+            json.loads(line)
+            for line in (two_jiras / "canonical" / "workitems.jsonl").read_text().splitlines()
+            if line.strip()
+        )
+    }
+    assert rows["KAFKA-100"]["source_id"] == "jira-eu"
+    assert rows["KAFKA-900"]["source_id"] == "jira-us"
+    # the *type* is still what the model records, so nothing downstream has to learn a new one
+    assert {r["source"] for r in rows.values()} == {"jira"}
+
+
+def test_a_partial_run_keeps_the_other_instances_records(two_jiras):
+    """Without `source_id` both records look like `source: jira` and one run eats the other."""
+    run(two_jiras, ["jira-eu", "jira-us"])
+    assert keys(two_jiras) == ["KAFKA-100", "KAFKA-900"]
+
+    run(two_jiras, ["jira-eu"])
+
+    assert keys(two_jiras) == ["KAFKA-100", "KAFKA-900"], "jira-us's work item was deleted"
+
+
+def test_a_single_instance_registry_writes_no_source_id_at_all(corpus):
+    """Byte-identity: `id == type` says nothing `source` does not, so it is not written."""
+    run(corpus, ["jira", "confluence", "git"])
+    for stem in ("workitems", "documents", "persons", "changes", "containers"):
+        path = corpus / "canonical" / f"{stem}.jsonl"
+        for line in path.read_text().splitlines():
+            if line.strip():
+                assert "source_id" not in json.loads(line)
+
+
+def test_the_change_owner_is_the_git_entry_whose_id_is_the_bare_type(two_jiras):
+    """A `Change` has no `source` at all; the fallback must still be deterministic."""
+    from brain.canon.runner import change_owner
+
+    assert change_owner() == "git"  # no git source enabled -> the convention name

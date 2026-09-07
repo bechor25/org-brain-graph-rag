@@ -43,8 +43,8 @@ DEDUPE: dict[str, dict[str, str | None]] = {
 
 
 def report_sources(registry: Registry | None = None) -> tuple[tuple[str, str], ...]:
-    """`(name, type)` for every enabled source, in `sources.yaml` order."""
-    return tuple((s.name, s.type) for s in (registry or get_registry()).enabled())
+    """`(id, type)` for every enabled source, in `sources.yaml` order."""
+    return tuple((s.id, s.type) for s in (registry or get_registry()).enabled())
 
 
 LAYOUT_RULE = (
@@ -85,10 +85,10 @@ def link_density(raw_dir: Path, results: dict[str, HarvestResult], since: date |
     jira = next((s for s in get_registry().enabled() if s.type == "jira"), None)
     if jira is None:
         return {}
-    if since is None and jira.name in results and results[jira.name].stats.get("link_density"):
-        return results[jira.name].stats["link_density"]
+    if since is None and jira.id in results and results[jira.id].stats.get("link_density"):
+        return results[jira.id].stats["link_density"]
     return jira_mod.analyze(
-        jira_mod.iter_raw_issues(raw_dir / jira.name),
+        jira_mod.iter_raw_issues(raw_dir / jira.id),
         components=tuple(jira.option("components", ()) or ()),
     ).get("link_density", {})
 

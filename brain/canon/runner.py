@@ -30,7 +30,13 @@ from brain.canon.mappers.jira import map_issues
 from brain.canon.models import Change, Container, Document, Person, WorkItem
 from brain.canon.raw import load_source
 from brain.canon.report import build_report, summarize, write_report
-from brain.harvest.registry import Registry, RegistryError, get_registry
+from brain.harvest.registry import (
+    DOCUMENT_TYPES,
+    Registry,
+    RegistryError,
+    SourceConfig,
+    get_registry,
+)
 
 #: source **type** -> its mapper. Adding an org system is a new entry here plus an entry
 #: in `sources.yaml`, never a new schema. Keyed by type, so a second Jira instance is a
@@ -57,15 +63,21 @@ CHANGE_OWNER_TYPE = "git"
 
 
 def change_owner(registry: Registry | None = None) -> str:
-    """The registry name of the source that owns `changes.jsonl`.
+    """Which registry entry owns a `Change` that does not say (`source_id` unset).
 
-    `Change` has no `source` field at all (spec §2.2), so its ownership is by convention:
-    the one git source. `Registry.unique_enabled_types` guarantees there is at most one,
-    which is why this can pick without a tie-break.
+    `Change` has no `source` field at all, so before `source_id` existed its ownership was
+    pure convention. It still is for records written then: this is the fallback, and it is
+    deliberately deterministic rather than an error, because refusing here would make a
+    two-git-source registry unable to re-run canon at all.
+
+    The entry whose `id` *is* `git` wins, because that is the one that would have written
+    an unstamped record; otherwise the first git source in file order. Every record a
+    two-instance registry writes from now on carries `source_id` and never reaches this.
     """
     reg = registry or get_registry()
-    reg.unique_enabled_types()
-    git = [s.name for s in reg.enabled() if s.type == CHANGE_OWNER_TYPE]
+    git = [s.id for s in reg.enabled() if s.type == CHANGE_OWNER_TYPE]
+    if CHANGE_OWNER_TYPE in git:
+        return CHANGE_OWNER_TYPE
     return git[0] if git else CHANGE_OWNER_TYPE
 
 
@@ -73,12 +85,8 @@ _DIGITS = re.compile(r"(\d+)")
 
 
 def resolve_sources(source: str, registry: Registry | None = None) -> list[str]:
-    """`--source` → the source names to map, through the registry (`sources.yaml`)."""
+    """`--source` → the source ids to map, through the registry (`sources.yaml`)."""
     reg = registry or get_registry()
-    # Before anything is mapped: the canonical model records a source *type*, so two
-    # enabled sources of one type would produce records no later step can tell apart —
-    # and a partial `--source` run would delete the other one's. Refuse, do not corrupt.
-    reg.unique_enabled_types()
     names = reg.resolve(source)
     unmapped = [n for n in names if reg.source(n).type not in MAPPERS]
     if unmapped:
@@ -91,18 +99,61 @@ def resolve_sources(source: str, registry: Registry | None = None) -> list[str]:
     return names
 
 
+def mapper_kwargs(config: SourceConfig) -> dict[str, Any]:
+    """Per-source arguments a mapper needs from the registry.
+
+    Only the wiki has one: its title→key rule. Passing *this source's* spec rather than
+    letting the mapper reach for the corpus-wide default is what keeps two wikis honest —
+    each page gets the key its own entry describes.
+    """
+    if config.type in DOCUMENT_TYPES:
+        return {"document": config.document}
+    return {}
+
+
+def stamp_source_id(bundle: Bundle, config: SourceConfig) -> int:
+    """Write `source_id` on everything the mapper produced — when it says something new.
+
+    An `id` equal to its `type` adds no information: `source` already carries it, and
+    every record in a single-instance registry would gain a field repeating itself. That
+    is not only noise, it would rewrite all five canonical files and retire the
+    byte-identity check in `data/reports/modularity.json`. The field appears exactly when
+    it disambiguates, which is when a second instance of a type exists — its id cannot
+    also be the bare type.
+
+    Returns the number of records stamped, for the report.
+    """
+    if config.id == config.type:
+        return 0
+    records = [
+        *bundle.workitems,
+        *bundle.documents,
+        *bundle.changes,
+        *bundle.persons.values(),
+        *bundle.containers.values(),
+    ]
+    for record in records:
+        record.source_id = config.id
+    return len(records)
+
+
 def natural_key(text: str) -> tuple[object, ...]:
     """`KAFKA-9` before `KAFKA-10`. Sorting is only for humans; determinism is the point."""
     return tuple(int(p) if p.isdigit() else p for p in _DIGITS.split(text))
 
 
 def owner_of(record: BaseModel, sources: Sequence[str] = ()) -> str:
-    """Which run is responsible for a record: its source, or — for a `Change` — the git one.
+    """Which run is responsible for a record: the registry entry that produced it.
 
-    A canonical `source` is a *type* (`jira`, `git`) while `--source` names a registry
-    *entry*. They are the same string in this POC and in every single-instance setup; when
-    they differ, the registry decides.
+    `source_id` answers directly when it is there, and it is there exactly when the answer
+    is not obvious — a registry entry whose `id` differs from its `type`, which is what a
+    second Jira instance must have. Without it the record comes from a single-instance
+    setup, where `source` (a *type*) and the entry id are the same string, and for a
+    `Change` — which has no `source` at all — from the git source by convention.
     """
+    source_id = getattr(record, "source_id", None)
+    if source_id:
+        return str(source_id)
     if isinstance(record, Person):
         owner = record.identities[0].source
     else:
@@ -199,7 +250,8 @@ def run_canon(
         began = time.perf_counter()
         config = registry.source(name)
         raw = load_source(raw_dir, name, source_type=config.type)
-        bundle = MAPPERS[config.type](raw.records)
+        bundle = MAPPERS[config.type](raw.records, **mapper_kwargs(config))
+        stamp_source_id(bundle, config)
         bundles[name] = bundle
         slices[name] = raw.stats()
         durations[name] = round(time.perf_counter() - began, 2)

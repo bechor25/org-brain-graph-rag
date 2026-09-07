@@ -116,7 +116,7 @@ def credentials_for(source: SourceConfig, environ: Mapping[str, str] | None = No
     token = raw.strip()
     if not token:
         raise AuthError(
-            f"${source.auth_env} is set but empty. Unset it to harvest {source.name!r} "
+            f"${source.auth_env} is set but empty. Unset it to harvest {source.id!r} "
             "anonymously; an empty token is almost always a broken export, and treating "
             "it as anonymous would silently fetch only the public subset."
         )

@@ -1,6 +1,6 @@
 # The source registry (ADR-0005). Every org system the pipeline reads is one entry here.
 #
-# `brain harvest --source <name>` resolves the connector through this file, and
+# `brain harvest --source <id>` resolves the connector through this file, and
 # `brain canon` reads the issue-key allowlist and the document-title pattern from it — so
 # no project key, URL or query lives in Python. Adding a system is three files plus one
 # entry: docs/guides/adding-a-connector.md.
@@ -11,6 +11,13 @@
 # Parsed by brain/common/yaml_mini.py — block mappings, block sequences, quoted strings,
 # `[a, b]` flow sequences. Anchors, tags, block scalars and multi-document streams are
 # rejected with a line number rather than half-understood.
+
+# Every source needs a unique `id`. It is the pipeline's name for that system: the
+# directory under data/raw/, the key in data/reports/harvest.json and canon.json, and
+# `source_id` on every canonical record it produces. `type` is the *kind* of system and
+# picks the connector and the mapper, so two Jira instances are two ids with one type.
+# Known limitation: canonical KEYS are not namespaced — `KAFKA-1` in two Jiras is one
+# node (docs/guides/adding-a-connector.md §5).
 
 version: 1
 
@@ -32,7 +39,7 @@ synthetic:
     ADO: ado
 
 sources:
-  - name: jira
+  - id: jira
     type: jira
     display_name: Apache Kafka Jira
     enabled: true
@@ -57,7 +64,7 @@ sources:
       # The slice itself is whatever `query` says.
       components: [streams, connect, clients]
 
-  - name: confluence
+  - id: confluence
     type: confluence
     display_name: Apache cwiki (KIPs)
     enabled: true
@@ -84,7 +91,7 @@ sources:
       title_pattern_loose: 'KIP\s+(\d+)'
       key_format: 'KIP-{number}'
 
-  - name: git
+  - id: git
     type: git
     display_name: apache/kafka
     enabled: true
@@ -105,7 +112,7 @@ sources:
   # `brain harvest --source all` and out of the canon allowlist until someone fills in a
   # real org, sets the PAT and runs `brain harvest --source ado` once.
 
-  - name: ado
+  - id: ado
     type: ado
     display_name: Azure DevOps Boards
     enabled: false
@@ -120,7 +127,7 @@ sources:
       api_version: '7.1'
       page_size: 200
 
-  - name: xray
+  - id: xray
     type: xray
     display_name: Xray Test Management
     enabled: false

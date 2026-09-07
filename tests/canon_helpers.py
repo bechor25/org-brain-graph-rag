@@ -20,12 +20,20 @@ def plant_pages(
     *,
     since: str | None = None,
     name: str | None = None,
+    kind: str | None = None,
 ) -> Path:
-    """Write one raw page plus the checkpoint that lists it (never a bare page file)."""
+    """Write one raw page plus the checkpoint that lists it (never a bare page file).
+
+    `source` is the registry **id** — the directory under `data/raw/` — and `kind` is the
+    source type, which is what decides the payload shape. They are the same string in the
+    single-instance registry; a second Jira (`jira-eu`) is exactly the case where they are
+    not, so the type has to be sayable.
+    """
     run_dir = raw_dir / source / (f"since-{since}" if since else "")
     run_dir.mkdir(parents=True, exist_ok=True)
-    key = "issues" if source == "jira" else "results"
-    name = name or ("issues-0000.json" if source == "jira" else "pages-0000.json")
+    kind = kind or source
+    key = "issues" if kind == "jira" else "results"
+    name = name or ("issues-0000.json" if kind == "jira" else "pages-0000.json")
     (run_dir / name).write_text(json.dumps({key: records}), encoding="utf-8")
     (run_dir / "checkpoint.json").write_text(
         json.dumps({"source": source, "signature": "sig", "files": [name], "done": True}),

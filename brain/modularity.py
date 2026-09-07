@@ -104,12 +104,12 @@ def registry_facts(registry: Registry | None = None) -> dict[str, Any]:
     signatures: dict[str, str] = {}
     for source in reg.enabled():
         if source.type in CONNECTORS:
-            signatures[source.name] = build_connector(source, Path("data/raw")).signature(None)
+            signatures[source.id] = build_connector(source, Path("data/raw")).signature(None)
     return {
         "path": str(reg.path),
         "sources": [
             {
-                "name": s.name,
+                "id": s.id,
                 "type": s.type,
                 "display_name": s.display_name,
                 "enabled": s.enabled,
@@ -119,6 +119,10 @@ def registry_facts(registry: Registry | None = None) -> dict[str, Any]:
             }
             for s in reg.sources
         ],
+        #: Types more than one enabled source claims. Empty here, and the one line a
+        #: reviewer of a two-instance setup needs: the ids are separate, the canonical
+        #: *keys* are not (docs/guides/adding-a-connector.md §5).
+        "same_type_ids": reg.same_type_ids(),
         "issue_project_allowlist": sorted(reg.issue_project_allowlist()),
         "issue_key_blacklist": sorted(reg.issue_key_blacklist),
         "allowlist_warnings": reg.allowlist_warnings(),

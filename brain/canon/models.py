@@ -7,12 +7,50 @@ new mapper into this model — never a new graph schema.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SerializerFunctionWrapHandler, model_serializer
 
 Source = Literal["jira", "ado", "xray", "confluence", "git", "github"]
 RefKind = Literal["issue", "kip", "pr", "url", "user"]
+
+
+class Origin(BaseModel):
+    """`source_id`: which *registry entry* produced this record.
+
+    `source` is a **type** (`jira`), and two Jira instances in `sources.yaml` produce
+    records it cannot tell apart — so a partial `brain canon --source jira-eu` would carry
+    over the other instance's work items as "not mine" or delete them as "mine", depending
+    on a coin flip. `source_id` is the registry `id`, and it is what `owner_of` asks.
+
+    It is written **only when the id differs from the type**, and dropped from the JSON
+    when it is None. Two reasons, and the second is the important one:
+
+    * The single-instance registry — one `jira`, one `confluence`, one `git` — is the whole
+      POC and every `id` there already equals its `type`. Recording the same string twice
+      on 19,266 records buys nothing.
+    * The canonical corpus is compared byte-for-byte against the digests taken before the
+      registry refactor (`data/reports/modularity.json`). A field that always serialized
+      would change every line of every file and retire that check permanently — the check
+      that exists to prove config-driven sources changed nothing.
+
+    A reader wanting "which entry" without caring which case it is in asks
+    :meth:`origin`. Nothing downstream branches on the field being absent.
+    """
+
+    source_id: str | None = None
+
+    @model_serializer(mode="wrap")
+    def _drop_default_source_id(self, handler: SerializerFunctionWrapHandler) -> Any:
+        data = handler(self)
+        if isinstance(data, dict) and data.get("source_id") is None:
+            data.pop("source_id", None)
+        return data
+
+    @property
+    def origin(self) -> str:
+        """The registry entry this record came from, whether or not it was written down."""
+        return self.source_id or str(getattr(self, "source", "") or "")
 
 
 class Ref(BaseModel):
@@ -60,7 +98,7 @@ class Link(BaseModel):
     direction: Literal["out", "in"] = "out"
 
 
-class WorkItem(BaseModel):
+class WorkItem(Origin):
     id: str  # "<source>:<key>"
     key: str  # KAFKA-15123 / ADO-77 / XT-12
     source: Source
@@ -90,7 +128,7 @@ class WorkItem(BaseModel):
     raw_url: str | None = None
 
 
-class Document(BaseModel):
+class Document(Origin):
     id: str  # "confluence:<pageId>"
     key: str  # "KIP-848" or page id
     source: Source
@@ -119,7 +157,7 @@ class Identity(BaseModel):
     email: str | None = None
 
 
-class Person(BaseModel):
+class Person(Origin):
     id: str  # pre-resolution: "<source>:<key>"; post-resolution: canonical id
     identities: list[Identity] = Field(min_length=1)
     #: False until `brain resolve` merges identities into one person (spec §3.6).
@@ -128,7 +166,7 @@ class Person(BaseModel):
     synthetic: bool = False
 
 
-class Change(BaseModel):
+class Change(Origin):
     id: str  # commit sha or "pr:<number>"
     kind: Literal["commit", "pr"]
     #: For a commit: the id of the pull request it *is* (`pr:21175`), from the trailing
@@ -145,7 +183,7 @@ class Change(BaseModel):
     raw_url: str | None = None
 
 
-class Container(BaseModel):
+class Container(Origin):
     id: str  # "<source>:<kind>:<name>"
     source: Source
     kind: Literal["component", "version", "sprint", "area", "space", "testplan", "testset"]

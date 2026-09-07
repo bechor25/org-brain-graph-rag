@@ -54,7 +54,7 @@ def write(tmp_path, body: str):
 MINIMAL = """
 version: 1
 sources:
-  - name: jira
+  - id: jira
     type: jira
     base_url: https://example.test/jira
     query: 'project = X'
@@ -140,10 +140,67 @@ def test_a_connector_writes_under_its_registry_name_not_its_type(tmp_path, regis
     """Two Jira instances are two directories; the name is the identity."""
     from dataclasses import replace
 
-    config = replace(registry.source("jira"), name="jira-eu")
+    config = replace(registry.source("jira"), id="jira-eu")
     connector = JiraConnector(tmp_path, source=config)
     assert connector.name == "jira-eu"
     assert connector.source_dir() == tmp_path / "jira-eu"
+
+
+# --------------------------------------------------------------------------- source ids
+
+TWO_JIRAS = """
+version: 1
+sources:
+  - id: jira-eu
+    type: jira
+    base_url: https://eu.example.test/jira
+    query: 'project = EU'
+    project_keys: [EU]
+  - id: jira-us
+    type: jira
+    base_url: https://us.example.test/jira
+    query: 'project = US'
+    project_keys: [US]
+"""
+
+
+def test_two_sources_may_not_share_an_id(tmp_path):
+    """The id is the directory under data/raw/ and the key in every report."""
+    body = TWO_JIRAS.replace("id: jira-us", "id: jira-eu")
+    with pytest.raises(RegistryError, match="duplicate source id 'jira-eu'"):
+        load_registry(write(tmp_path, body))
+
+
+def test_the_field_is_id_and_the_old_name_says_so(tmp_path):
+    with pytest.raises(RegistryError, match="uses `name`; the field is now `id`"):
+        load_registry(write(tmp_path, MINIMAL.replace("- id: jira", "- name: jira")))
+
+
+def test_an_id_that_could_not_be_a_directory_is_refused(tmp_path):
+    with pytest.raises(RegistryError, match="it is used as the directory name"):
+        load_registry(write(tmp_path, MINIMAL.replace("- id: jira", "- id: jira/eu")))
+
+
+def test_two_sources_of_one_type_are_allowed_and_keep_their_own_ids(tmp_path):
+    """The planner's call (step 11b): two Jiras are two ids, one type, one connector class."""
+    registry = load_registry(write(tmp_path, TWO_JIRAS))
+    assert registry.names() == ("jira-eu", "jira-us")
+    assert registry.same_type_ids() == {"jira": ["jira-eu", "jira-us"]}
+    assert registry.issue_project_allowlist() == {"EU", "US"}
+
+
+def test_two_same_type_sources_write_to_separate_raw_directories(tmp_path):
+    registry = load_registry(write(tmp_path, TWO_JIRAS))
+    dirs = {
+        name: build_connector(registry.source(name), tmp_path / "raw").source_dir()
+        for name in registry.names()
+    }
+    assert dirs["jira-eu"] != dirs["jira-us"]
+    assert dirs["jira-eu"] == tmp_path / "raw" / "jira-eu"
+
+
+def test_one_source_of_a_type_is_not_reported_as_a_clash(registry):
+    assert registry.same_type_ids() == {}
 
 
 # --------------------------------------------------------------------------- canon policy
@@ -171,7 +228,7 @@ def test_a_different_registry_is_a_different_allowlist(tmp_path):
         canon:
           issue_key_blacklist: [ACME-1]
         sources:
-          - name: tracker
+          - id: tracker
             type: jira
             base_url: https://acme.test/jira
             query: 'project = ACME'
@@ -203,7 +260,7 @@ def test_a_design_doc_pattern_can_be_reconfigured_without_touching_code(tmp_path
         """
         version: 1
         sources:
-          - name: wiki
+          - id: wiki
             type: confluence
             base_url: https://acme.test/wiki
             query: 'space=ENG'
@@ -227,7 +284,7 @@ def test_a_design_doc_pattern_can_be_reconfigured_without_touching_code(tmp_path
     [
         ("version: 1\nsources: []", "non-empty list"),
         ("version: 9\n" + MINIMAL.split("version: 1\n", 1)[1], "version 9"),
-        (MINIMAL + "  - name: jira\n    type: git\n    base_url: x\n    query: y", "duplicate"),
+        (MINIMAL + "  - id: jira\n    type: git\n    base_url: x\n    query: y", "duplicate"),
         (MINIMAL.replace("type: jira", "type: gitlab"), "expected one of"),
         (MINIMAL.replace("    base_url: https://example.test/jira\n", ""), "no `base_url`"),
         (MINIMAL.replace("    query: 'project = X'\n", ""), "no `query`"),

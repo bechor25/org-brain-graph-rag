@@ -69,7 +69,8 @@ class JiraConnector(BaseConnector):
     ) -> None:
         super().__init__(raw_dir)
         self.source = source or get_registry().source(self.name)
-        self.name = self.source.name
+        # The registry id, not the type: `data/raw/<id>/` and the report key.
+        self.name = self.source.id
         self.page_size = self.source.int_option("page_size", PAGE_SIZE)
         self.fields = str(self.source.option("fields", FIELDS))
         self.expand = str(self.source.option("expand", EXPAND))

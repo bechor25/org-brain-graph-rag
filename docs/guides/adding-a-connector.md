@@ -11,7 +11,7 @@
 
 | # | קובץ | תפקיד |
 |---|---|---|
-| 1 | `brain/harvest/<source>.py` | קונקטור: `probe()`, `fetch()`, checkpoint אחרי כל דף. כותב raw גולמי ל-`data/raw/<name>/` ולא מנרמל כלום. |
+| 1 | `brain/harvest/<source>.py` | קונקטור: `probe()`, `fetch()`, checkpoint אחרי כל דף. כותב raw גולמי ל-`data/raw/<id>/` ולא מנרמל כלום. |
 | 2 | `brain/canon/mappers/<source>.py` | mapper: raw → חמשת הטיפוסים הקנוניים (`WorkItem`, `Document`, `Person`, `Change`, `Container`). |
 | 3 | `tests/test_canon_<source>.py` | בדיקת golden: תשובה גולמית אמיתית אחת מול רשומה קנונית קפואה. |
 | 4 | `sources.yaml` | רשומה אחת: איפה, מה השאילתה, אילו מפתחות פרויקט, איזה משתנה סביבה. |
@@ -34,13 +34,29 @@ SOURCE_TYPES = frozenset({"jira", "confluence", "git", "ado", "xray", "<new>"})
 Source = Literal["jira", "ado", "xray", "confluence", "git", "github", "<new>"]
 ```
 
-שתי המפות של הקונקטור/mapper ממופתחות ב-**type** ולא ב-**name**. הכוונה היא ששני מופעי Jira יהיו שתי שורות ב-`sources.yaml` ואפס קוד — אבל **זה עדיין לא נתמך**: המודל הקנוני רושם `source` שהוא **type** (`WorkItem.source`, `Identity.source`), ול-`Change` אין שדה `source` בכלל. שני מקורות enabled מאותו type יפיקו רשומות ששום שלב אחרי canon לא יודע להפריד, והרצת `brain canon --source jira-eu` הייתה מוחקת את הרשומות של האחר. לכן `Registry.unique_enabled_types()` **מסרבת**:
+שתי המפות של הקונקטור/mapper ממופתחות ב-**type** ולא ב-**id**, ולכן **שני מופעי Jira הם שתי שורות ב-`sources.yaml` ואפס קוד**:
 
-```
-sources.yaml enables more than one source of the same type (jira: jira-core, jira-eu).
+```yaml
+sources:
+  - id: jira-core          # data/raw/jira-core/ ; source_id: jira-core
+    type: jira
+    base_url: https://jira.acme.test
+    project_keys: [CORE]
+  - id: jira-eu            # data/raw/jira-eu/   ; source_id: jira-eu
+    type: jira
+    base_url: https://jira-eu.acme.test
+    project_keys: [EU]
 ```
 
-לפתיחת החסם צריך `name` על הרשומה הקנונית — שינוי מודל, כלומר brief (spec §2.2). עד אז: מקור אחד enabled מכל type, והשני `enabled: false`.
+מה שמחזיק את זה (הכרעת מתכנן, שלב 11b):
+
+| | |
+|---|---|
+| `id` ייחודי, חובה | הרג'יסטרי דוחה כפילות. ה-`id` הוא הזהות בכל מקום: `--source <id>`, `data/raw/<id>/`, המפתח ב-`harvest.json` וב-`canon.json`. |
+| `source_id` על הרשומה הקנונית | `WorkItem.source` הוא **type** (`jira`) ולשני המופעים הוא זהה. `source_id` הוא ה-`id`, והוא מה ש-`owner_of` שואל — בלעדיו הרצת `brain canon --source jira-eu` הייתה מוחקת את הרשומות של `jira-core`. |
+| נכתב רק כשהוא אומר משהו | `id == type` (המצב של ה-POC) ⇒ השדה לא מופיע ב-JSON כלל. אחרת כל רשומה בקורפוס הייתה משתנה, וה-byte-identity ב-`data/reports/modularity.json` היה נפסל לתמיד. |
+
+**מגבלה ידועה — מפתחות קנוניים לא מקבלים prefix.** `WorkItem.key` נשאר `KAFKA-1` בשני המופעים, ולכן `KAFKA-1` מ-`jira-core` ומ-`jira-eu` הוא **צומת אחד** בגרף, ושתי הרשומות הקנוניות חולקות את אותו `id` (`jira:KAFKA-1`) — האחרונה שנכתבת מנצחת. זה מחוץ להיקף ה-POC: תיקון אמיתי הוא namespace על `WorkItem.key`, שמשנה כל מפתח בכל דוח, בכל ref ובכל ציטוט של MCP, ודורש brief. עד אז: שני מופעים של אותו type בטוחים כשמרחבי המפתחות שלהם זרים (`project_keys` שונים), וזה גם מה שמומלץ. `Registry.same_type_ids()` מדווח על כל type שיש לו יותר ממקור enabled אחד, והמספר נרשם ב-`data/reports/modularity.json`.
 
 ---
 
@@ -48,9 +64,9 @@ sources.yaml enables more than one source of the same type (jira: jira-core, jir
 
 ```yaml
 sources:
-  - name: ado                      # שם ייחודי; גם שם התיקייה ב-data/raw/<name>/
+  - id: ado                        # מזהה ייחודי; גם שם התיקייה ב-data/raw/<id>/
     type: ado                      # jira | confluence | git | ado | xray (SOURCE_TYPES)
-    display_name: Azure DevOps     # מה שקוראים למערכת בתשובה למשתמש (Plan 2). ברירת מחדל: name
+    display_name: Azure DevOps     # מה שקוראים למערכת בתשובה למשתמש (Plan 2). ברירת מחדל: id
     enabled: true                  # false = מחוץ ל-`--source all`, אבל עדיין אפשר `--source ado`
     base_url: https://dev.azure.com/acme/platform
     query: "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project"
@@ -65,6 +81,7 @@ sources:
 
 **מה בדיוק עובר לקונפיג** (ולכן כבר אסור שיהיה קבוע בקוד):
 
+- `id` — הזהות. אותיות, ספרות, `_`, `.`, `-` בלבד, כי זו גם תיקייה. כפילות נדחית: שתי רשומות עם אותו `id` היו דורסות זו את הדפים הגולמיים של זו. השדה נקרא `name` עד שלב 11b; רשומה ישנה נדחית עם הודעה שאומרת לשנות את השם.
 - `base_url` — הכתובת של המערכת.
 - `query` — ה-JQL / CQL / WIQL / חלון ה-commits. ל-git הפורמט הוא `<since>..<until>`, וסוף פתוח אומר "עד HEAD".
 - `project_keys` — ה-allowlist. הרגקס שמזהה `ABC-123` לא יודע להבדיל בין `KAFKA-15123` ל-`UTF-8`; רק מפתח שמקור מוגדר כלשהו מחזיק יודע. ה-allowlist הוא **איחוד של כל המקורות — enabled או לא** ועוד הקידומות הסינתטיות. `enabled` שולט על **משיכה**, לא על **זיהוי**: הערה ב-Jira שמזכירה `PLAT-91` היא הפניה אמיתית למערכת שהארגון מפעיל, וזריקה שלה רק כי הקונקטור הזה כבוי הייתה הופכת את העקיבות בגרף לתלויה בשאלה איזו משיכה רצה אחרונה. ה-ref נשמר ונספר; אם אין צומת כזה בגרף, `brain load` סופר אותו ב-`dangling_refs`. `Registry.allowlist_warnings()` מונה את המפתחות שמגיעים ממקור כבוי, והם נרשמים ב-`data/reports/modularity.json`.
@@ -84,8 +101,8 @@ sources:
 
 ```python
 class MyConnector(BaseConnector):
-    name = "ado"            # ה-type; שם המופע נדרס מ-source.name ב-__init__
-    page_stem = "workitems" # data/raw/<name>/workitems-0000.json
+    name = "ado"            # ה-type; שם המופע נדרס מ-source.id ב-__init__
+    page_stem = "workitems" # data/raw/<id>/workitems-0000.json
 
     def query_text(self, since) -> str: ...   # מה שנכתב ל-checkpoint, קריא לאדם
     def signature(self, since) -> str: ...    # hash של כל מה שמגדיר "אותה משיכה"
@@ -115,6 +132,14 @@ self.http = HttpFetcher(
 - `basic` → `Authorization: Basic base64(<user>:<token>)`; משתמש ריק = צורת ה-PAT של Azure DevOps
 - `url_token` → הטוקן נכנס ל-URL של ה-clone (ל-git אין header), ו-`redact()` מוציא אותו מכל הודעת שגיאה
 - משתנה **לא מוגדר** = אנונימי. משתנה **מוגדר וריק** = שגיאה, לא נסיגה שקטה: אנונימי מול Jira פרטי מוריד את תת-הקבוצה הציבורית ומדווח הצלחה.
+
+**הטוקן לא אמור להופיע בשום מחרוזת שנשמרת.** שלוש שכבות, וכולן נדרשות:
+
+1. `HttpFetcher._safe` — כל detail שנרשם או נזרק (גוף תשובת 4xx כולל), לפני שהוא מגיע ל-`errors`.
+2. `brain/harvest/git.py::_run` — git מקבל את הטוקן ב-argv, וספריית התקן מדפיסה את ה-argv בחריגות שלה (`TimeoutExpired.__str__` מדפיסה את כל הפקודה). לכן ה-`except` שם הוא **רחב בכוונה**: לא מונים אילו חריגות מצטטות argv, אלא מוודאים ששום מחרוזת לא יוצאת משם בלי `redact`.
+3. `BaseConnector.collected_errors` — scrub אחרון בגבול הדוח, כי `data/reports/harvest.json` הוא קובץ שמדביקים ל-issue. גם `stats()` שנכשל וגם חריגה שרירותית מספרייה שלישית עוברים דרכו.
+
+בנוסף: `git clone <url-עם-טוקן>` שומר את ה-URL ב-`.git/config`. הקונקטור מריץ `git remote set-url origin <public>` מיד אחרי ה-clone — אחרי זה הוא לא מושך שוב אף פעם (`git log` מקומי בלבד), אז זה לא עולה כלום. `tests/test_harvest_auth.py` מקבע את כל אלה, כולל מבחן end-to-end שמריץ קונקטור שמצטט את הטוקן של עצמו ובודק שהוא לא נמצא בקובץ `harvest.json` שנכתב.
 
 ---
 
@@ -161,11 +186,11 @@ uv run brain load                     # MERGE בלבד; הרצה שנייה = 0 
 
 | שדה | מה בודקים |
 |---|---|
-| `sources.<name>.records` / `pages` | כמה ירד בהרצה הזו. הרצה שנייה חייבת להיות 0. |
-| `sources.<name>.checkpoint.done` | `true`. `false` = המשיכה נקטעה, יש להריץ שוב (תמשיך מאיפה שנעצרה). |
-| `sources.<name>.errors` | כל retry וכל כישלון. `fatal: true` אחד = קוד יציאה 1. |
-| `raw_layout.sources.<name>` | התיקייה הסמכותית, תיקיות ה-`since-*`, ומפתח ה-dedupe. |
-| `sources.<name>.stats` | הסטטיסטיקה של המקור: כמה רשומות, כמה עם קישור פורמלי, כמה עם מפתח בטקסט. |
+| `sources.<id>.records` / `pages` | כמה ירד בהרצה הזו. הרצה שנייה חייבת להיות 0. |
+| `sources.<id>.checkpoint.done` | `true`. `false` = המשיכה נקטעה, יש להריץ שוב (תמשיך מאיפה שנעצרה). |
+| `sources.<id>.errors` | כל retry וכל כישלון. `fatal: true` אחד = קוד יציאה 1. |
+| `raw_layout.sources.<id>` | התיקייה הסמכותית, תיקיות ה-`since-*`, ומפתח ה-dedupe. |
+| `sources.<id>.stats` | הסטטיסטיקה של המקור: כמה רשומות, כמה עם קישור פורמלי, כמה עם מפתח בטקסט. |
 
 **`data/reports/canon.json`**
 
@@ -534,7 +559,8 @@ uv run brain reset --all --yes         # graph + data
 - **`--data` אף פעם לא נוגע ב-`data/fixtures/`.** זה הקורפוס המוקטן שעליו רצות הבדיקות ו-`make smoke`.
 - **`--synthetic` הוא לא `WHERE n.synthetic = true` פשוט.** containers ממוזגים לפי `name`, ולכן `Component {name: "clients"}` הוא צומת אחד שגם Jira וגם שכבת ה-ADO טוענים לו, והכותב האחרון הוא שקבע את הדגל. הסריקה קוראת קודם את הקבצים הקנוניים כדי לדעת אילו מפתחות רשומה **אמיתית** עדיין מחזיקה, משאירה את הצמתים האלה ומאפסת להם את הדגל — בדיוק מה ש-`brain load` הבא היה כותב.
 - **הפייפליין חייב להיות idle.** `brain reset` נועל את עצמו (`data/reset.lock`, `O_EXCL`) כדי ששני resets לא ירוצו יחד, אבל שאר השלבים עדיין לא בודקים את הנעילה — `brain load` או `brain chunk` שרץ במקביל יכתוב לתוך מצב חצי-מחוק. המניפסט פותח בשורה שאומרת את זה. קובץ נעילה שנשאר אחרי קריסה נמחק ביד.
-- **`--synthetic` מוחק צ'אנקים בשתי דרכים.** `Chunk.synthetic` מוטבע ב-`brain chunk` מרשומת האב; אבל גרף שעבר chunking לפני שהתכונה הזו קיימת מחזיק null בכולם, ולכן יש גם סריקה שנייה: צ'אנק בלי `HAS_CHUNK` נכנס — האב שלו נמחק. שניהם נספרים בנפרד במניפסט (`chunks_orphaned_by_parent`).
+- **צ'אנקים נמחקים לפי הדגל שלהם, לא לפי אב חסר.** `Chunk.synthetic` מוטבע ב-`brain chunk` מרשומת האב, וכך הצ'אנקים הסינתטיים נמחקים בסריקת התווית `Chunk` ומופיעים ב-`nodes_by_label` — מספר שאפשר לקרוא ולהשוות. `chunks_orphaned_by_parent` הוא **נפילה אחורה**: צ'אנק שלא סומן ובכל זאת נשאר בלי `HAS_CHUNK`. במניפסט הוא לא נספר פעמיים — הסריקה החזויה מחסירה את מה שסריקת התווית כבר לקחה.
+- **גרף שעבר chunking לפני שהתכונה קיימת: `brain chunk --stamp-synthetic`.** הוא גוזר מחדש את `Chunk.synthetic` מהאב ואת `Entity.synthetic` מצ'אנקי הראיה, כותב בוליאני אחד לצומת, לא מוחק כלום, לא צריך embedder, ו-הרצה שנייה מטביעה 0. הוא כן מריצים אותו על הגרף האמיתי — בניגוד ל-`brain reset`. `--dry-run` מדפיס מה היה משתנה ויוצא עם קוד 1 כל עוד נשאר מה להטביע. הכיוון שמרני בשני הכיוונים: צומת שאי אפשר לייחס יוצא **אמיתי**, כי צומת ששרד reset אפשר למחוק אחר כך, וצומת שנמחק לוקח את הפרובננס שלו איתו.
 - **`Entity.synthetic` נקבע לפי ה-evidence.** ישות היא סינתטית רק אם **כל** צ'אנקי הראיה שלה סינתטיים; צ'אנק אמיתי אחד הופך אותה לעובדה על הקורפוס האמיתי. ישות שנשארה בלי אף צ'אנק ראיה **מדווחת ולא נמחקת** — resolution אולי מיזג לתוכה זהויות אמיתיות, ו-`MERGE` לא יודע לפרק את זה בחזרה. הפתרון הוא `brain extract merge` חוזר.
 - אחרי `--all --yes`: `brain doctor` נשאר 7/7 (הוא בודק סביבה, לא תוכן), וכל ספירה בגרף היא 0. המניפסט נכתב ל-`data/reports/reset.json` — הקובץ היחיד שנשאר, והוא זה שמתעד שהניקוי קרה.
 
@@ -564,8 +590,8 @@ uv run brain reset --all --yes         # graph + data
 
 ```bash
 uv run brain doctor                    # 7/7
-uv run brain harvest --source <name>   # פעם ראשונה
-uv run brain harvest --source <name>   # פעם שנייה: 0 דפים, 0 רשומות
+uv run brain harvest --source <id>     # פעם ראשונה
+uv run brain harvest --source <id>     # פעם שנייה: 0 דפים, 0 רשומות
 uv run brain canon && uv run brain load
 uv run brain load                      # פעם שנייה: nodes_created 0
 make check                             # כל הבדיקות offline
