@@ -39,6 +39,7 @@
 - Plan 1 שלב 05: `docs/lessons/04-load.md`
 - Plan 1 שלב 06: `docs/lessons/05-chunk.md`
 - Plan 1 שלב 07: `docs/lessons/06-extract.md`
+- Plan 1 שלב 08: `docs/lessons/07-resolve.md`
 
 ## ממצאים (findings)
 - (2026-09-06 21:11) שינה של המק + מכסת session של Opus הפילו 4 סוכנים באמצע; status.json לכל shard אפשר להמשיך מהנקודה. מעכשיו `caffeinate -dims` רץ בזמן batches.
