@@ -143,6 +143,14 @@ def test_a_count_query_is_generated_from_the_same_branch_as_the_projection():
     assert nodes.endswith("RETURN count(DISTINCT n) AS n")
 
 
+def test_density_is_computed_here_because_the_projection_call_returns_none():
+    """`gds.graph.project` yields graphName/nodeCount/relationshipCount/projectMillis only."""
+    assert proj.density(0, 0) == 0.0
+    assert proj.density(1, 0) == 0.0
+    assert proj.density(4, 6) == 1.0  # every pair joined
+    assert 0.0 < proj.density(11875, 19291) < 0.001
+
+
 def test_leiden_runs_at_concurrency_one_so_the_seed_actually_fixes_the_run():
     config = proj.leiden_config(seed=7)
     assert config["concurrency"] == 1

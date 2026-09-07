@@ -278,6 +278,18 @@ def exists(ctx: GraphContext, name: str | None = None) -> bool:
     return bool(rows and rows[0]["e"])
 
 
+def density(nodes: int, edges: int) -> float:
+    """Undirected edge density. Computed here: the projection call does not return one.
+
+    `gds.graph.project` yields `graphName`, `nodeCount`, `relationshipCount` and
+    `projectMillis` and nothing else, so reading a missing `density` off it and defaulting
+    to zero would print a measurement nobody made.
+    """
+    if nodes < 2:
+        return 0.0
+    return round(2 * edges / (nodes * (nodes - 1)), 8)
+
+
 def project(ctx: GraphContext, *, include_synthetic: bool = False) -> dict[str, Any]:
     """Build the in-memory graph. Dropped first, so a crashed run does not block the next.
 
@@ -292,7 +304,9 @@ def project(ctx: GraphContext, *, include_synthetic: bool = False) -> dict[str, 
         raise ProjectionError("gds.graph.project returned no result")
     g = rows[0]["g"]
     elapsed = round((time.perf_counter() - started) * 1000)
-    if not g.get("nodeCount"):
+    # An aggregation over zero rows returns null rather than a map with nodeCount 0, so
+    # "there is nothing to project" arrives here as a None and has to be named as such.
+    if not isinstance(g, dict) or not g.get("nodeCount"):
         drop(ctx, name)
         raise ProjectionError(
             f"the projection is empty. Are there {'/'.join(LABELS)} nodes in "
@@ -305,8 +319,9 @@ def project(ctx: GraphContext, *, include_synthetic: bool = False) -> dict[str, 
         # is half that, and both are reported so neither can be mistaken for the other.
         "relationships_stored": int(g["relationshipCount"]),
         "edges": int(g["relationshipCount"]) // 2,
-        "density": round(float(g.get("density") or 0.0), 8),
+        "density": density(int(g["nodeCount"]), int(g["relationshipCount"]) // 2),
         "project_ms": elapsed,
+        "gds_project_ms": int(g.get("projectMillis") or 0),
         "include_synthetic": include_synthetic,
         "labels": list(LABELS),
         "excluded_labels": dict(EXCLUDED_LABELS),
