@@ -330,3 +330,28 @@ def test_every_rule_a_tier_one_merge_can_carry_is_in_the_declared_set():
         f"a tier emits a rule nothing declares: {emitted - declared}"
     )
     assert declared - emitted - {"embedding_auto", "embedding_grey"} == set()
+
+
+def test_an_entity_stem_drops_the_kind_prefix_that_every_entity_of_that_kind_shares():
+    """`Entity.id` is `kind|norm_name`, not `source:key`. Keeping the kind would give every
+    one of the 3,701 Decisions the word `decision`, and grey-band blocking that passes
+    everything is the same as no blocking at all."""
+    from brain.resolve.tiers import name_blocked, stems
+    from tests.resolve_helpers import entity
+
+    a = entity("Decision|drop securitymanager support", "Drop SecurityManager support")
+    b = entity("Decision|increase the default linger ms", "Increase the default linger ms")
+
+    assert "decision" not in stems(a)
+    assert stems(a) == {"drop", "securitymanager", "support"}
+    assert not name_blocked(a, b), "two unrelated Decisions blocked only by their kind"
+    # …and a shared word still blocks
+    assert name_blocked(a, entity("Feature|securitymanager shim", "SecurityManager shim"))
+
+
+def test_a_person_stem_still_comes_from_the_identity_key():
+    from brain.resolve.tiers import stems
+    from tests.resolve_helpers import person
+
+    assert stems(person("ado:an.sanghyeok.10115", "S. An")) == {"sanghyeok"}
+    assert stems(person("jira:chickenchickenlove", "x")) == {"chickenchickenlove"}

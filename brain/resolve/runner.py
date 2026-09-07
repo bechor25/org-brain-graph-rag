@@ -394,6 +394,10 @@ def score_tier2(
     usage = resolve_embed.ensure_embeddings(
         ctx, label, candidates, embedder, evidence=vector_evidence, echo=echo
     )
+    # Between writing the vectors and probing them, which is the only place a wait can
+    # help: `db.index.vector.queryNodes` answers from whatever the index holds and says
+    # nothing about what it does not.
+    index_state = resolve_graph.await_index(ctx, label)
     scored = resolve_graph.knn(
         ctx, label, k=k, floor=ADJUDICATE_FLOOR, within_kind=(kind == "entity")
     )
@@ -414,6 +418,11 @@ def score_tier2(
         "band": [ADJUDICATE_FLOOR, AUTO_THRESHOLD],
         "min_substantive_tokens": MIN_SUBSTANTIVE_TOKENS,
         "embedding": usage,
+        "index_state": index_state,
+        # A probe over more than one vector that comes back with nothing is not "no
+        # duplicates" — every pair the index failed to return is a merge nobody will ever
+        # know was missed. Reported, never acted on: the run continues and says so.
+        "empty_probe": bool(not scored and int(usage.get("candidates") or 0) > 1),
         "scored_pairs": len(scored),
         "auto": len(auto),
         "grey": len(grey),
@@ -706,6 +715,13 @@ def run_resolve(
                 warnings.append(
                     f"{kind} tier 2: {stats['no_activity_pairs']} auto-merges where at least "
                     "one side has no activity at all — the vector saw a bare name"
+                )
+            if stats.get("empty_probe"):
+                warnings.append(
+                    f"{kind} tier 2: the vector index returned no neighbours for "
+                    f"{stats['embedding']['candidates']} embedded nodes (index "
+                    f"{stats['index_state']}). Tier 2 found nothing because it was told "
+                    "nothing — this is not a measurement that the corpus holds no duplicates"
                 )
             echo(
                 f"{kind} tier {tier}: {stats.get('pairs', 0)} pairs, "

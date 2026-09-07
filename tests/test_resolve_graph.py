@@ -137,3 +137,47 @@ def test_an_index_that_does_not_exist_reads_as_none_and_asks_the_server_only_abo
 
     c = ctx("_Res", reads={"SHOW INDEXES": [{"name": "_Resperson_embedding", "state": "ONLINE"}]})
     assert resolve_graph.index_status(c, "Person")["state"] == "ONLINE"
+
+
+class SequencedClient(FakeClient):
+    """`SHOW INDEXES` answers differently each time it is asked."""
+
+    def __init__(self, states: list[str]) -> None:
+        super().__init__()
+        self.states = list(states)
+        self.asked = 0
+
+    def read(self, cypher: str, **params: Any) -> list[dict[str, Any]]:
+        if "SHOW INDEXES" not in cypher:
+            return []
+        self.asked += 1
+        state = self.states.pop(0) if self.states else "ONLINE"
+        return [] if state == "MISSING" else [{"name": params["name"], "state": state}]
+
+
+def test_the_wait_polls_this_index_alone_until_it_is_online():
+    """`db.awaitIndexes` waits for every index in the database — including the ones another
+    agent's live suite left at POPULATING, which is a wait this step can neither shorten
+    nor be right about."""
+    c = GraphContext(SequencedClient(["POPULATING", "POPULATING", "ONLINE"]))
+    assert resolve_graph.await_index(c, "Person", sleep_s=0) == "ONLINE"
+    assert c.client.asked == 3
+    assert not c.client.writes  # it asks, it never calls a procedure
+
+
+def test_a_stuck_index_is_raised_not_read_from():
+    import pytest
+
+    c = GraphContext(SequencedClient(["POPULATING"] * 50))
+    with pytest.raises(resolve_graph.ResolveGraphError, match="POPULATING"):
+        resolve_graph.await_index(c, "Entity", timeout_s=0, sleep_s=0)
+
+
+def test_creating_the_schema_reports_the_state_it_waited_for():
+    c = GraphContext(SequencedClient(["ONLINE"]))
+    assert resolve_graph.apply_resolve_schema(c, "Person", 1024) == {
+        "index": "person_embedding",
+        "dim": 1024,
+        "state": "ONLINE",
+    }
+    assert "db.awaitIndexes" not in " ".join(cypher for cypher, _ in c.client.writes)

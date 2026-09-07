@@ -645,3 +645,74 @@ def test_the_entity_survivor_is_the_one_with_the_most_evidence(ctx, entities):
     # without evidence the shorter name wins; with it, the better-evidenced node does
     assert survivor("entity", by_id) == "Feature|a"
     assert survivor("entity", by_id, evidence_weight(by_id)) == "Feature|the a"
+
+
+# ------------------------------------------------- the duplicate edges a re-merge creates
+
+
+def test_dedupe_removes_the_identical_parallel_edge_and_keeps_the_differing_one(ctx):
+    """`brain extract merge` after resolve routes both sides of a merged pair onto one
+    node, so two extractions of two entities become two `DECIDES` between the same pair.
+    `MERGE` cannot see it — it matches on the pattern, not on the properties it then sets
+    on both. Two edges that differ in any property are two claims and stay."""
+    ctx.client.write(
+        f"CREATE (a:{ctx.label('Entity')} {{id: 'Decision|dedupe a'}}), "
+        f"(b:{ctx.label('Entity')} {{id: 'Decision|dedupe b'}}), "
+        "(a)-[:DECIDES {batch_id: 'shard-01/001'}]->(b), "
+        "(a)-[:DECIDES {batch_id: 'shard-01/001'}]->(b), "
+        "(a)-[:DECIDES {batch_id: 'shard-02/002'}]->(b), "
+        "(a)-[:MOTIVATED_BY {batch_id: 'shard-01/001'}]->(b)"
+    )
+    try:
+        deleted = resolve_graph.dedupe_relationships(ctx, "Entity", ["Decision|dedupe a"])
+        left = ctx.read(
+            f"MATCH (:{ctx.label('Entity')} {{id: 'Decision|dedupe a'}})-[r]->() "
+            "RETURN type(r) AS t, r.batch_id AS batch ORDER BY t, batch"
+        )
+
+        assert deleted == 1
+        assert left == [
+            {"t": "DECIDES", "batch": "shard-01/001"},
+            {"t": "DECIDES", "batch": "shard-02/002"},
+            {"t": "MOTIVATED_BY", "batch": "shard-01/001"},
+        ]
+        # …and running it again deletes nothing
+        assert resolve_graph.dedupe_relationships(ctx, "Entity", ["Decision|dedupe a"]) == 0
+    finally:
+        ctx.client.write(
+            f"MATCH (e:{ctx.label('Entity')}) WHERE e.id STARTS WITH 'Decision|dedupe' "
+            "DETACH DELETE e"
+        )
+
+
+def test_dedupe_finds_a_duplicate_pointing_at_the_survivor_too(ctx):
+    """The 113 on the real graph were mostly `(Document)-[:DECIDES]->(Entity)` and
+    `(Chunk)-[:MENTIONS]->(Entity)`: the survivor is the *incoming* end, so a dedupe that
+    only looked outwards would have found four of them."""
+    ctx.client.write(
+        f"CREATE (d:{ctx.label('Document')} {{key: 'KIP-dedupe'}}), "
+        f"(e:{ctx.label('Entity')} {{id: 'Decision|dedupe in'}}), "
+        "(d)-[:DECIDES {batch_id: 'shard-01/001'}]->(e), "
+        "(d)-[:DECIDES {batch_id: 'shard-01/001'}]->(e)"
+    )
+    try:
+        assert resolve_graph.dedupe_relationships(ctx, "Entity", ["Decision|dedupe in"]) == 1
+        assert ctx.read(
+            f"MATCH (:{ctx.label('Document')} {{key: 'KIP-dedupe'}})-[r:DECIDES]->() "
+            "RETURN count(r) AS n"
+        ) == [{"n": 1}]
+    finally:
+        ctx.client.write(
+            "MATCH (n) WHERE n.key = 'KIP-dedupe' OR n.id = 'Decision|dedupe in' DETACH DELETE n"
+        )
+
+
+def test_a_probe_that_comes_back_empty_is_reported_not_read_as_no_duplicates(after_tier2):
+    """Measured under load: three live suites against one server and the vector probe
+    returned nothing for five embedded people, which tier 2 would otherwise have written
+    up as `auto: 0` — indistinguishable from a corpus with no duplicates in it."""
+    tier2 = after_tier2["person"]["tier2"]
+
+    assert tier2["index_state"] == "ONLINE"
+    assert tier2["scored_pairs"] > 0
+    assert tier2["empty_probe"] is False

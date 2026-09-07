@@ -16,12 +16,18 @@ hand-written blocking key gets to decide, in advance, which duplicates are finda
 
 from __future__ import annotations
 
+import time
 from collections.abc import Iterable, Sequence
 from typing import Any
 
 from brain.graph.context import GraphContext
 from brain.resolve.models import Candidate, Evidence, Pair
 from brain.resolve.names import first_line
+
+
+class ResolveGraphError(RuntimeError):
+    """The vector index this step reads is not in a state it can be read from."""
+
 
 PERSON_LABEL = "Person"
 ENTITY_LABEL = "Entity"
@@ -74,8 +80,7 @@ def apply_resolve_schema(ctx: GraphContext, label: str, dim: int) -> dict[str, A
         "OPTIONS {indexConfig: {`vector.dimensions`: " + str(dim) + ", "
         "`vector.similarity_function`: 'cosine'}}"
     )
-    ctx.client.write("CALL db.awaitIndexes(300)")
-    return {"index": INDEX_NAMES[label], "dim": dim}
+    return {"index": INDEX_NAMES[label], "dim": dim, "state": await_index(ctx, label)}
 
 
 META_LABEL = "IndexMeta"
@@ -100,6 +105,41 @@ def index_status(ctx: GraphContext, label: str) -> dict[str, Any] | None:
         name=index_name(ctx, label),
     )
     return rows[0] if rows else None
+
+
+#: How long to wait for the vector index to come online. Long enough to build one over
+#: 9,000 nodes, short enough that a stuck index is reported rather than waited on.
+INDEX_TIMEOUT_S = 300.0
+
+
+def await_index(
+    ctx: GraphContext, label: str, timeout_s: float = INDEX_TIMEOUT_S, sleep_s: float = 0.25
+) -> str:
+    """Wait for *this* index to come online, and for no other one.
+
+    `db.awaitIndexes` is database-wide: it waits for every index in the database. On a
+    shared server that is a wait on other people's work — measured here, with four agents
+    each running a live suite in its own label namespace, a tier-2 run sat behind two of
+    their indexes stuck at `POPULATING 100%` until the ceiling, and one `brain resolve`
+    failed outright on a third. Polling this one name costs a cheap `SHOW INDEXES` per turn
+    and cannot be held up by an index this step will never read.
+
+    A timeout raises rather than returning: tier 2 probes the index with
+    `db.index.vector.queryNodes`, which answers from a half-built index without saying so,
+    and every neighbour it fails to return is a duplicate nobody knows was missed.
+    """
+    deadline = time.monotonic() + timeout_s
+    while True:
+        state = str((index_status(ctx, label) or {}).get("state") or "MISSING")
+        if state == "ONLINE":
+            return state
+        if time.monotonic() >= deadline:
+            raise ResolveGraphError(
+                f"{index_name(ctx, label)} is {state} after {timeout_s:.0f}s. Tier 2 reads it "
+                "with `db.index.vector.queryNodes`, which answers from a half-built index "
+                "without saying so."
+            )
+        time.sleep(sleep_s)
 
 
 def write_index_meta(ctx: GraphContext, label: str, *, model: str, dim: int, now: str) -> dict:
