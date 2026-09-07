@@ -118,11 +118,8 @@ def test_synthetic_reset_removes_exactly_the_synthetic_nodes(ctx, canonical, loa
     )[0]["c"]
     assert synthetic_before == 4 and real_before == 3, "the mini fixture changed"
 
-    records = sum(
-        1
-        for line in (canonical / "workitems.jsonl").read_text(encoding="utf-8").splitlines()
-        if line.strip() and json.loads(line).get("synthetic")
-    )
+    with (canonical / "workitems.jsonl").open(encoding="utf-8") as handle:
+        records = sum(1 for line in handle if line.strip() and json.loads(line).get("synthetic"))
     assert records == synthetic_before
 
     report = wipe_synthetic(canonical, ctx=ctx, batches_dir=None, apply=True)

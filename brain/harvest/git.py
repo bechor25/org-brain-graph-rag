@@ -14,7 +14,7 @@ import json
 import os
 import re
 import subprocess
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -57,8 +57,21 @@ RS = "\x1e"
 US = "\x1f"
 LOG_FORMAT = f"{RS}%H{US}%an{US}%ae{US}%aI{US}%s{US}%b{US}"
 
-ISSUE_KEY = re.compile(r"\bKAFKA-\d+\b")
 PR_NUMBER = re.compile(r"\(#\d+\)")
+
+
+def issue_key_pattern(projects: Sequence[str] = ()) -> re.Pattern[str]:
+    r"""`\bKAFKA-\d+\b` — built from the allowlist, not from a literal.
+
+    `analyze` reports how many commit subjects carry a tracker key. Which prefixes count
+    is `sources.yaml`; with none configured nothing matches, and the report says 0 rather
+    than quietly measuring somebody else's project.
+    """
+    keys = list(projects) or sorted(get_registry().issue_project_allowlist())
+    if not keys:
+        return re.compile(r"(?!)")  # matches nothing, and says so
+    alternatives = "|".join(re.escape(k) for k in keys)
+    return re.compile(rf"\b(?:{alternatives})-\d+\b")
 
 
 def _run(
@@ -73,14 +86,22 @@ def _run(
     back in most of its errors — so the one string this function raises is the one place
     a credential could reach `data/reports/harvest.json`.
     """
-    proc = subprocess.run(  # noqa: S603 - fixed argv, no shell
-        args,
-        cwd=str(cwd) if cwd else None,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        check=False,
-    )
+    try:
+        proc = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            args,
+            cwd=str(cwd) if cwd else None,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        # `TimeoutExpired.__str__` prints the whole command, which for a clone is the
+        # remote *with the token in it*. It has to be caught and rewritten here — letting
+        # it propagate would put the credential in the report as a `fatal` detail.
+        raise HarvestError(
+            redact(f"{' '.join(args)} timed out after {timeout}s", *secrets)
+        ) from None
     if proc.returncode != 0:
         detail = f"{' '.join(args)} failed ({proc.returncode}): {proc.stderr[:400]}"
         raise HarvestError(redact(detail, *secrets))
@@ -287,7 +308,8 @@ def iter_raw_commits(path: Path) -> Iterator[dict[str, Any]]:
                 yield json.loads(line)
 
 
-def analyze(commits: Iterable[dict[str, Any]]) -> dict[str, Any]:
+def analyze(commits: Iterable[dict[str, Any]], *, projects: Sequence[str] = ()) -> dict[str, Any]:
+    issue_key = issue_key_pattern(projects)
     total = 0
     keyed = 0
     keyed_with_pr = 0
@@ -298,7 +320,7 @@ def analyze(commits: Iterable[dict[str, Any]]) -> dict[str, Any]:
     for commit in commits:
         total += 1
         text = f"{commit.get('subject', '')}\n{commit.get('body', '')}"
-        found = ISSUE_KEY.findall(text)
+        found = issue_key.findall(text)
         has_pr = bool(PR_NUMBER.search(text))
         files += len(commit.get("files") or [])
         with_pr += 1 if has_pr else 0

@@ -17,19 +17,22 @@ from typing import Any
 from brain.graph.client import COUNTER_FIELDS
 from brain.graph.context import GraphContext
 
-_LABEL = re.compile(r"MATCH \(n?:`(?P<label>[^`]+)`\)")
+_LABEL = re.compile(r"MATCH \([a-z]?:`(?P<label>[^`]+)`\)")
 _LIMIT = re.compile(r"WITH n LIMIT (?P<limit>\d+)")
 
 
 class FakeGraph:
-    """Nodes are `(label, key, props)`; edges are `(src_index, dst_index)`."""
+    """Nodes are `(label, key, props)`; edges are `(src_index, dst_index[, type])`."""
 
     def __init__(self, nodes: list[tuple[str, str, dict[str, Any]]], edges=()) -> None:
         self.nodes = [
             {"label": label, "key": key, "props": dict(props)} for label, key, props in nodes
         ]
-        self.edges = [tuple(e) for e in edges]
+        self.edges = [(e[0], e[1], e[2] if len(e) > 2 else "REL") for e in edges]
         self.queries: list[str] = []
+
+    def _incoming(self, index: int, rel: str) -> bool:
+        return any(b == index and t == rel for _a, b, t in self.edges)
 
     # -- helpers -----------------------------------------------------------
 
@@ -42,6 +45,8 @@ class FakeGraph:
             raise AssertionError(f"FakeGraph does not understand: {cypher}")
         label = m.group("label")
         rows = [n for n in self._live() if n["label"] == label]
+        if "NOT ()-[:HAS_CHUNK]->(c)" in cypher:
+            rows = [n for n in rows if not self._incoming(self.nodes.index(n), "HAS_CHUNK")]
         if "n.synthetic = true" in cypher:
             rows = [n for n in rows if n["props"].get("synthetic") is True]
         keep = set(params.get("keep") or [])
@@ -57,15 +62,37 @@ class FakeGraph:
         self.queries.append(cypher)
         if "db.labels()" in cypher:
             return [{"labels": sorted({n["label"] for n in self._live()})}]
-        if "-[r]-()" in cypher:
-            m = _LABEL.search(cypher)
-            label = m.group("label") if m else ""
-            indexes = {
-                i for i, n in enumerate(self.nodes) if n["label"] == label and not n.get("deleted")
+        if "all(p IN parents WHERE p.synthetic = true)" in cypher:
+            # The dry-run prediction: chunks with no parent, or whose every parent is
+            # about to be deleted for being synthetic.
+            out = 0
+            for i, node in enumerate(self.nodes):
+                if node.get("deleted") or node["label"] != "Chunk":
+                    continue
+                parents = [a for a, b, t in self.edges if b == i and t == "HAS_CHUNK"]
+                if not parents or all(
+                    self.nodes[a]["props"].get("synthetic") is True for a in parents
+                ):
+                    out += 1
+            return [{"c": out}]
+        if "WITH DISTINCT r RETURN count(r) AS c" in cypher:
+            # `MATCH (n)-[r]-() WHERE n:`A` OR n:`B` …` — every edge with one of our ends.
+            labels = set(re.findall(r"n:`([^`]+)`", cypher))
+            ours = {
+                i for i, n in enumerate(self.nodes) if n["label"] in labels and not n.get("deleted")
             }
-            hits = sum(1 for a, b in self.edges if a in indexes or b in indexes)
-            return [{"c": hits}]
-        if "RETURN count(n) AS c" in cypher:
+            return [{"c": sum(1 for a, b, _t in self.edges if a in ours or b in ours)}]
+        if "e.evidence_chunk_ids" in cypher:
+            chunks = {n["key"] for n in self._live() if n["label"] == "Chunk"}
+            stranded = [
+                n
+                for n in self._live()
+                if n["label"] == "Entity"
+                and n["props"].get("evidence_chunk_ids") is not None
+                and not (set(n["props"]["evidence_chunk_ids"]) & chunks)
+            ]
+            return [{"c": len(stranded)}]
+        if "RETURN count(n) AS c" in cypher or "RETURN count(c) AS c" in cypher:
             return [{"c": len(self._match(cypher, params))}]
         raise AssertionError(f"FakeGraph does not understand: {cypher}")
 

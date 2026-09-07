@@ -34,6 +34,7 @@ synthetic:
 sources:
   - name: jira
     type: jira
+    display_name: Apache Kafka Jira
     enabled: true
     base_url: https://issues.apache.org/jira
     # `connect` is a reserved JQL word — it MUST stay quoted (probe 2026-09-03 §3).
@@ -58,6 +59,7 @@ sources:
 
   - name: confluence
     type: confluence
+    display_name: Apache cwiki (KIPs)
     enabled: true
     base_url: https://cwiki.apache.org/confluence
     query: 'space=KAFKA and type=page and title ~ "KIP-"'
@@ -70,6 +72,9 @@ sources:
       limit: 25
       expand: body.storage,version,history,ancestors,metadata.labels
       since_field: lastmodified
+      # Fallback for a page whose `_links` do not name its space. The CQL above already
+      # says it; this is what `Document.space` gets when the response does not.
+      space: KAFKA
     document:
       # How a page title becomes `Document.key`. `title_pattern` is the canonical spelling;
       # `title_pattern_loose` is the tolerated one ("KIP 156 Add option …") — recognised,
@@ -81,6 +86,7 @@ sources:
 
   - name: git
     type: git
+    display_name: apache/kafka
     enabled: true
     base_url: https://github.com/apache/kafka
     # A git "query" is the commit window: `<since>..<until>`; an open end means "to HEAD".
@@ -101,6 +107,7 @@ sources:
 
   - name: ado
     type: ado
+    display_name: Azure DevOps Boards
     enabled: false
     base_url: https://dev.azure.com/<org>/<project>
     query: "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project AND [System.ChangedDate] >= '2023-01-01' ORDER BY [System.Id]"
@@ -115,6 +122,7 @@ sources:
 
   - name: xray
     type: xray
+    display_name: Xray Test Management
     enabled: false
     base_url: https://xray.cloud.getxray.app
     query: "project = KAFKA AND issuetype in (Test, 'Test Execution')"

@@ -16,6 +16,7 @@ import pytest
 from brain.cli import app
 from brain.reset import (
     DATA_DIRS,
+    LOCK_NAME,
     PROTECTED_DIRS,
     Manifest,
     ResetError,
@@ -127,9 +128,21 @@ def graph() -> FakeGraph:
             ("Sprint", "Sprint 2023-01", {"synthetic": True}),
             # merged on `name` by both Jira and the synthetic layer; last writer stamped it
             ("Component", "clients", {"synthetic": True}),
+            # c1: a chunk of a real item. c2: a synthetic chunk, found by its own flag.
+            # c3: a chunk of a synthetic item written BEFORE `Chunk.synthetic` existed —
+            # null flag, so only the vanished parent can find it.
             ("Chunk", "c1", {"synthetic": False}),
+            ("Chunk", "c2", {"synthetic": True}),
+            ("Chunk", "c3", {}),
+            ("Entity", "Feature|rebalance", {"synthetic": False, "evidence_chunk_ids": ["c3"]}),
         ],
-        edges=[(0, 2), (2, 7), (0, 8)],
+        edges=[
+            (0, 2),
+            (2, 7),
+            (0, 8, "HAS_CHUNK"),
+            (2, 9, "HAS_CHUNK"),
+            (3, 10, "HAS_CHUNK"),
+        ],
     )
 
 
@@ -168,8 +181,10 @@ def test_the_dry_run_manifest_counts_what_it_would_delete(data_dir, graph):
         confirmed=False,
         echo=lambda _m: None,
     )
-    assert report["graph"]["nodes"] == 9
+    assert report["graph"]["nodes"] == 12
     assert report["graph"]["nodes_by_label"]["WorkItem"] == 4
+    # Exact, not a halved per-label sum: 5 edges, every one with an end we own.
+    assert report["graph"]["edges"] == 5
     assert report["data"]["dirs"]["canonical"]["entries"] > 0
 
 
@@ -204,7 +219,7 @@ def test_graph_scopes_need_a_connection(data_dir):
 def test_graph_wipe_removes_every_node_and_keeps_the_schema(graph):
     context = ctx(graph)
     report = wipe_graph(context)
-    assert report["nodes"] == 9
+    assert report["nodes"] == 12
     assert graph.labels() == {}
     assert census(context) == dict.fromkeys(census(context), 0)
     # not one DROP CONSTRAINT / DROP INDEX was issued
@@ -212,7 +227,7 @@ def test_graph_wipe_removes_every_node_and_keeps_the_schema(graph):
 
 
 def test_the_wipe_batches_its_deletes(graph):
-    """9 nodes at BATCH_ROWS=1000 is one slice per label plus the terminating empty one."""
+    """12 nodes at BATCH_ROWS=1000 is one slice per label plus the terminating empty one."""
     wipe_graph(ctx(graph))
     deletes = [q for q in graph.queries if "DETACH DELETE" in q]
     assert all("WITH n LIMIT 1000" in q for q in deletes)
@@ -230,12 +245,9 @@ def test_synthetic_removes_only_the_synthetic_records(data_dir):
         "changes": 0,
         "containers": 2,
     }
-    kept = [
-        json.loads(line)
-        for line in (data_dir / "canonical" / "workitems.jsonl")
-        .read_text(encoding="utf-8")
-        .splitlines()
-    ]
+    with (data_dir / "canonical" / "workitems.jsonl").open(encoding="utf-8") as handle:
+        # never `splitlines()`: it breaks on the raw U+2028 the corpus contains
+        kept = [json.loads(line) for line in handle if line.strip()]
     assert len(kept) == 3
     assert all(not r.get("synthetic") for r in kept)
 
@@ -267,9 +279,45 @@ def test_a_container_a_real_record_still_claims_survives(data_dir, graph):
     )
     assert graph.prop("Component", "clients", "synthetic") is False
     assert report["shared_nodes_kept"] == 1
-    assert report["nodes_by_label"] == {"WorkItem": 2, "Person": 1, "Sprint": 1}
-    assert sorted(graph.labels()) == ["Chunk", "Component", "Person", "WorkItem"]
+    assert report["nodes_by_label"] == {"WorkItem": 2, "Person": 1, "Sprint": 1, "Chunk": 1}
+    assert sorted(graph.labels()) == ["Chunk", "Component", "Entity", "Person", "WorkItem"]
     assert graph.labels()["WorkItem"] == 2
+
+
+def test_chunks_lose_their_flagged_ones_and_then_their_orphans(data_dir, graph):
+    """Two ways a chunk goes: its own `synthetic`, and a parent that no longer exists.
+
+    The second is what covers a graph chunked before `Chunk.synthetic` existed — every one
+    of those has a null flag, and only the missing `HAS_CHUNK` can find it.
+    """
+    report = wipe_synthetic(
+        data_dir / "canonical", ctx=ctx(graph), batches_dir=data_dir / "batches", apply=True
+    )
+    assert report["nodes_by_label"]["Chunk"] == 1  # c2, by its own flag
+    assert report["chunks_orphaned_by_parent"] == 1  # c3, by its vanished parent
+    assert graph.labels()["Chunk"] == 1  # c1, whose parent is real, survives
+
+
+def test_the_dry_run_predicts_the_orphans_instead_of_reporting_zero(data_dir, graph):
+    """On a dry run the parents are all still there, so "no HAS_CHUNK" would say 0 —
+    a manifest promising nothing and then deleting thousands."""
+    report = wipe_synthetic(
+        data_dir / "canonical", ctx=ctx(graph), batches_dir=data_dir / "batches", apply=False
+    )
+    # c2 (synthetic parent) and c3 (synthetic parent, null flag); c1's parent is real.
+    assert report["chunks_orphaned_by_parent"] == 2
+    assert graph.labels()["Chunk"] == 3  # nothing was deleted
+
+
+def test_an_entity_left_without_evidence_is_reported_not_deleted(data_dir, graph):
+    """Resolution may have merged real identities into it; `MERGE` cannot take that apart."""
+    report = wipe_synthetic(
+        data_dir / "canonical", ctx=ctx(graph), batches_dir=data_dir / "batches", apply=True
+    )
+    assert report["entities_without_evidence"] == 1
+    assert graph.labels()["Entity"] == 1
+    text = format_manifest(Manifest(scopes=["synthetic"], applied=True, synthetic=report))
+    assert "no surviving evidence chunk" in text
 
 
 def test_synthetic_deletes_the_ledger_the_truth_and_the_synthetic_batches(data_dir, graph):
@@ -339,7 +387,9 @@ def test_all_leaves_zero_nodes_and_empty_dirs_and_writes_its_manifest(data_dir, 
     assert graph.labels() == {}
     assert all(v == 0 for v in report["census_after"].values())
     for name in DATA_DIRS:
-        assert list((data_dir / name).iterdir()) == [str(p) for p in []] or name == "reports"
+        left = sorted(p.name for p in (data_dir / name).iterdir())
+        # `reports` holds exactly one file afterwards: the manifest of this wipe.
+        assert left == (["reset.json"] if name == "reports" else []), name
     assert (data_dir / "fixtures" / "mini" / "workitems.jsonl").exists()
     # the manifest is written back into the directory it just emptied
     written = json.loads((data_dir / "reports" / "reset.json").read_text(encoding="utf-8"))
@@ -396,3 +446,57 @@ def test_the_cli_applies_data_with_yes(runner, tmp_path, monkeypatch):
     assert out.exit_code == 0, out.output
     assert not (tmp_path / "raw" / "x.json").exists()
     assert (tmp_path / "fixtures" / "keep.jsonl").exists()
+
+
+# --------------------------------------------------------------------------- the lock
+
+
+def test_a_second_reset_is_refused_while_one_holds_the_lock(data_dir):
+    (data_dir / LOCK_NAME).write_text("pid 1\n", encoding="utf-8")
+    with pytest.raises(ResetError, match="another `brain reset` is running"):
+        run_reset(
+            data_dir=data_dir,
+            canonical_dir=data_dir / "canonical",
+            batches_dir=data_dir / "batches",
+            reports_dir=data_dir / "reports",
+            data=True,
+            confirmed=True,
+            echo=lambda _m: None,
+        )
+
+
+def test_the_lock_is_released_even_when_the_reset_fails(data_dir, graph):
+    (data_dir / "canonical" / "workitems.jsonl").write_text("{not json\n", encoding="utf-8")
+    with pytest.raises(ResetError, match="not JSON"):
+        run_reset(
+            data_dir=data_dir,
+            canonical_dir=data_dir / "canonical",
+            batches_dir=data_dir / "batches",
+            reports_dir=data_dir / "reports",
+            ctx=ctx(graph),
+            synthetic=True,
+            confirmed=True,
+            echo=lambda _m: None,
+        )
+    assert not (data_dir / LOCK_NAME).exists()
+
+
+def test_a_dry_run_does_not_take_the_lock(data_dir, graph):
+    """ "What would this delete" is a question you ask while the pipeline is running."""
+    (data_dir / LOCK_NAME).write_text("pid 1\n", encoding="utf-8")
+    _report, code = run_reset(
+        data_dir=data_dir,
+        canonical_dir=data_dir / "canonical",
+        batches_dir=data_dir / "batches",
+        reports_dir=data_dir / "reports",
+        ctx=ctx(graph),
+        graph=True,
+        confirmed=False,
+        echo=lambda _m: None,
+    )
+    assert code == 1
+
+
+def test_the_manifest_opens_by_saying_the_pipeline_must_be_idle():
+    text = format_manifest(Manifest(scopes=["graph"], applied=True))
+    assert "must be IDLE" in text.splitlines()[1]

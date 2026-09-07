@@ -59,18 +59,13 @@ CHANGE_OWNER_TYPE = "git"
 def change_owner(registry: Registry | None = None) -> str:
     """The registry name of the source that owns `changes.jsonl`.
 
-    One git source is the POC's shape. With more than one, ownership by convention stops
-    working and `Change` needs the `source` field the spec left off — so this refuses
-    rather than picking one and silently deleting the other's commits on a partial run.
+    `Change` has no `source` field at all (spec §2.2), so its ownership is by convention:
+    the one git source. `Registry.unique_enabled_types` guarantees there is at most one,
+    which is why this can pick without a tie-break.
     """
     reg = registry or get_registry()
+    reg.unique_enabled_types()
     git = [s.name for s in reg.enabled() if s.type == CHANGE_OWNER_TYPE]
-    if len(git) > 1:
-        raise RegistryError(
-            f"{reg.path} enables {len(git)} git sources ({', '.join(git)}). `Change` has no "
-            "`source` field, so `brain canon --source <one of them>` could not tell which "
-            "commits to keep. Add `source` to `Change` first (spec §2.2)."
-        )
     return git[0] if git else CHANGE_OWNER_TYPE
 
 
@@ -80,6 +75,10 @@ _DIGITS = re.compile(r"(\d+)")
 def resolve_sources(source: str, registry: Registry | None = None) -> list[str]:
     """`--source` → the source names to map, through the registry (`sources.yaml`)."""
     reg = registry or get_registry()
+    # Before anything is mapped: the canonical model records a source *type*, so two
+    # enabled sources of one type would produce records no later step can tell apart —
+    # and a partial `--source` run would delete the other one's. Refuse, do not corrupt.
+    reg.unique_enabled_types()
     names = reg.resolve(source)
     unmapped = [n for n in names if reg.source(n).type not in MAPPERS]
     if unmapped:

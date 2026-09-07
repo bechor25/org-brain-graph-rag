@@ -498,10 +498,36 @@ class BaseConnector:
         write_json_atomic(path, payload)
         return path
 
+    @property
+    def secrets(self) -> tuple[str, ...]:
+        """Every credential this connector holds. The last line of defence for a token.
+
+        `HttpFetcher` and the git runner already redact what they raise, but they are two
+        of many places a string can come from — a third-party library's message, a
+        `TimeoutExpired` repr, a `stats()` failure. This is what the report boundary
+        scrubs, so a leak has to get past *both* layers to reach `harvest.json`.
+        """
+        credentials = getattr(self, "credentials", None)
+        return tuple(getattr(credentials, "secrets", ()) or ())
+
+    def redact(self, text: str) -> str:
+        for secret in self.secrets:
+            text = text.replace(secret, "***")
+        return text
+
+    def _scrub(self, errors: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not self.secrets:
+            return errors
+        return [{**e, "detail": self.redact(str(e.get("detail", "")))} for e in errors]
+
     def collected_errors(self) -> list[dict[str, Any]]:
-        """Connector-level notes plus whatever the HTTP layer recorded (retries included)."""
+        """Connector-level notes plus whatever the HTTP layer recorded (retries included).
+
+        Redacted here, at the boundary: everything past this point is written verbatim to
+        `data/reports/harvest.json`, which is a file people paste into issues.
+        """
         http = getattr(self, "http", None)
-        return list(self.errors) + (list(http.errors) if http is not None else [])
+        return self._scrub(list(self.errors) + (list(http.errors) if http is not None else []))
 
     def run(self, since: date | None = None) -> HarvestResult:
         started = time.perf_counter()
@@ -513,7 +539,9 @@ class BaseConnector:
                 result.pages += 1
                 result.records += len(page.records)
         except Exception as exc:  # noqa: BLE001 - one bad source must not sink the others
-            failure = f"{type(exc).__name__}: {exc}"
+            # An arbitrary exception from an arbitrary library: assume its message quotes
+            # whatever it was given, which for a clone is a URL with the token in it.
+            failure = self.redact(f"{type(exc).__name__}: {exc}")
         finally:
             result.errors.extend(self.collected_errors())
             if failure and not any(e.get("fatal") for e in result.errors):
@@ -526,6 +554,11 @@ class BaseConnector:
                 result.stats = self.stats(since)
             except Exception as exc:  # noqa: BLE001 - stats must never sink a run
                 result.errors.append(
-                    {"when": utc_now_iso(), "kind": "stats", "detail": str(exc), "fatal": False}
+                    {
+                        "when": utc_now_iso(),
+                        "kind": "stats",
+                        "detail": self.redact(str(exc)),
+                        "fatal": False,
+                    }
                 )
         return result

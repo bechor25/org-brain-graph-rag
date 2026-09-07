@@ -99,6 +99,24 @@ def existing_chunk_ids(ctx: GraphContext, ids: Sequence[str]) -> set[str]:
     return {r["id"] for r in rows}
 
 
+def synthetic_chunk_ids(ctx: GraphContext, ids: Sequence[str]) -> set[str]:
+    """Which of these chunks came from a synthetic record.
+
+    `brain chunk` stamps `Chunk.synthetic` from the parent; chunks written before that
+    property existed have it as null, which reads here as "not synthetic" — the safe
+    direction, since a wrongly-real entity survives a `--synthetic` reset and a wrongly-
+    synthetic one would be deleted.
+    """
+    if not ids:
+        return set()
+    rows = ctx.read(
+        f"MATCH (c:{ctx.label(CHUNK_LABEL)}) WHERE c.id IN $ids AND c.synthetic = true "
+        "RETURN c.id AS id",
+        ids=list(ids),
+    )
+    return {r["id"] for r in rows}
+
+
 def component_names(ctx: GraphContext) -> dict[str, str]:
     """`{casefolded name: real name}` — an extractor writes `Connect`, the node is `connect`."""
     rows = ctx.read(f"MATCH (n:{ctx.label('Component')}) RETURN n.name AS name")

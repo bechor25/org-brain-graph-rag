@@ -33,7 +33,12 @@ CONNECTORS: dict[str, type] = {
 
 def resolve_sources(source: str, registry: Registry | None = None) -> list[str]:
     """`--source` → the source names to run, through the registry (`sources.yaml`)."""
-    return (registry or get_registry()).resolve(source)
+    reg = registry or get_registry()
+    # Two enabled sources of one type write records the canonical model cannot tell apart
+    # (it records a type, not a registry name). Refuse at the top of the pipeline, not
+    # after 130 MB has landed on disk.
+    reg.unique_enabled_types()
+    return reg.resolve(source)
 
 
 def build_connector(config: SourceConfig, raw_dir: Path) -> Any:

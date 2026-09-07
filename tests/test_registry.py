@@ -180,7 +180,11 @@ def test_a_different_registry_is_a_different_allowlist(tmp_path):
     )
     policy = RefPolicy.from_registry(load_registry(path))
     assert policy.allowlist == {"ACME", "PLAT"}
-    kept, removed = filter_refs(extract_refs("ACME-7 KAFKA-15123 ACME-1"), **policy.__dict__)
+    kept, removed = filter_refs(
+        extract_refs("ACME-7 KAFKA-15123 ACME-1", document=policy.doc_spec()),
+        allowlist=policy.allowlist,
+        blacklist=policy.blacklist,
+    )
     assert [r.key for r in kept] == ["ACME-7"]
     assert dict(removed) == {"KAFKA-15123": "not_in_allowlist", "ACME-1": "blacklisted"}
 

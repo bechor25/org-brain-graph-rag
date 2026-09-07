@@ -25,6 +25,13 @@ What it does support:
 * ``#`` comments — a whole line, or after a value when preceded by whitespace and not
   inside quotes (so ``base_url: https://host/x#y`` keeps its fragment).
 
+Not supported and deliberately so: **block scalars** (``|`` / ``>``). Every value a source
+entry holds is a single line — a URL, a query, a pattern, a variable name — and the one
+that tempts you to use ``|`` is a long JQL, which single quotes carry perfectly well. A
+multi-line value that really needs its own formatting belongs in its own file with the
+path named here. Adding ``|`` means chomping indicators, indentation indicators, and
+trailing-newline semantics that are easy to implement *almost* right.
+
 Plain scalars keep their inner ``#`` and ``:`` — a JQL string with a colon does not need
 quoting to survive, and quoting it anyway is always allowed.
 """
@@ -59,7 +66,11 @@ class YamlError(ValueError):
 _REJECT: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"^[&*]\S"), "anchors and aliases are not supported"),
     (re.compile(r"^!"), "tags are not supported"),
-    (re.compile(r"^[|>][-+0-9]*$"), "block scalars (| and >) are not supported"),
+    (
+        re.compile(r"^[|>][-+0-9]*$"),
+        "block scalars (| and >) are not supported — quote the string, or put a long value "
+        "in its own file and name the path here",
+    ),
 )
 
 _KEY = re.compile(r"^(?P<key>[A-Za-z0-9_][A-Za-z0-9_.\-]*)\s*:(?:\s+(?P<value>.*))?$")
@@ -272,7 +283,13 @@ class _Parser:
                 if inner is None:
                     raise YamlError(nxt.no, "expected `key: value` inside a sequence item", nxt.raw)
                 self.pos += 1
-                item[inner.group("key")] = self._value(nxt, inner, inner_indent)
+                key = inner.group("key")
+                # The same check block mappings get. A source entry that names `query`
+                # twice is a config where the second silently wins — which is the whole
+                # class of bug this loader exists to make loud.
+                if key in item:
+                    raise YamlError(nxt.no, f"duplicate key {key!r}", nxt.raw)
+                item[key] = self._value(nxt, inner, inner_indent)
             return item
         return parse_scalar(rest, line.no, line.raw)
 

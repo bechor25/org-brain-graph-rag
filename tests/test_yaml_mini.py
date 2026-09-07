@@ -122,6 +122,8 @@ def test_double_quote_escapes():
         ("a: [x, y", "not closed"),
         ("a: 'unterminated", "unterminated"),
         ("a: 1\na: 2", "duplicate key"),
+        # …and inside a sequence item, where the second value would silently win.
+        ("s:\n  - name: a\n    query: x\n    query: y", "duplicate key"),
         ("just a line", "expected `key: value`"),
     ],
 )
@@ -130,6 +132,11 @@ def test_unsupported_or_malformed_constructs_raise_with_a_line_number(source, me
         safe_load(source)
     assert message in str(exc.value)
     assert "line " in str(exc.value)
+
+
+def test_a_block_scalar_says_what_to_do_instead():
+    with pytest.raises(YamlError, match="quote the string"):
+        safe_load("query: |\n  project = X\n  AND y")
 
 
 def test_an_empty_document_is_none():

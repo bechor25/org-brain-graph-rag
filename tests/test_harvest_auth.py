@@ -154,3 +154,49 @@ def test_credentials_describe_never_contains_the_value():
     creds = Credentials(scheme="bearer", token=TOKEN, env="JIRA_TOKEN")
     assert TOKEN not in creds.describe()
     assert creds.secrets == (TOKEN,)
+
+
+def test_a_clone_timeout_does_not_print_the_token(tmp_path, monkeypatch):
+    """`TimeoutExpired.__str__` prints the whole command — including the remote URL."""
+    import subprocess
+
+    monkeypatch.setenv("GIT_TOKEN", TOKEN)
+
+    def runner(args, cwd=None, timeout=900.0, secrets=()):
+        from brain.harvest.git import _run
+
+        def boom(*_a, **_kw):
+            raise subprocess.TimeoutExpired(cmd=list(args), timeout=timeout)
+
+        monkeypatch.setattr(subprocess, "run", boom)
+        return _run(args, cwd, timeout, secrets)
+
+    connector = GitConnector(tmp_path, source=source("git"), runner=runner)
+    result = connector.run()
+    details = " ".join(e["detail"] for e in result.errors)
+    assert TOKEN not in details
+    assert "timed out" in details and "***" in details
+
+
+def test_the_report_boundary_scrubs_whatever_slipped_through(tmp_path, monkeypatch):
+    """Belt and braces: an error appended by something that never heard of redaction."""
+    monkeypatch.setenv("GIT_TOKEN", TOKEN)
+    connector = GitConnector(tmp_path, source=source("git"), runner=lambda *a, **k: "")
+    assert connector.secrets == (TOKEN,)
+    connector.errors.append(
+        {"when": "now", "kind": "clone", "detail": f"remote https://{TOKEN}@x/y", "fatal": False}
+    )
+    scrubbed = connector.collected_errors()
+    assert TOKEN not in scrubbed[0]["detail"]
+    assert "***" in scrubbed[0]["detail"]
+
+
+def test_an_arbitrary_exception_from_fetch_is_redacted_too(tmp_path, monkeypatch):
+    monkeypatch.setenv("GIT_TOKEN", TOKEN)
+
+    def runner(*_a, **_kw):
+        raise RuntimeError(f"library said: https://{TOKEN}@github.com/x")
+
+    result = GitConnector(tmp_path, source=source("git"), runner=runner).run()
+    details = " ".join(e["detail"] for e in result.errors)
+    assert TOKEN not in details and "***" in details

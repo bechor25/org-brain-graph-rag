@@ -24,16 +24,26 @@ import re
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
+from brain.canon.models import Document
 from brain.common.yaml_mini import YamlError, safe_load
 
 DEFAULT_FILENAME = "sources.yaml"
+
+#: `Document.kind` is a closed set in the canonical model (spec §2.2). Read from the model
+#: rather than restated, so a registry that names a fourth kind fails here instead of at
+#: the first pydantic validation halfway through a mapper run.
+DOCUMENT_KINDS: frozenset[str] = frozenset(get_args(Document.model_fields["kind"].annotation))
 
 #: Source types the registry accepts. `ado`/`xray` are the templates in
 #: `docs/guides/adding-a-connector.md` — a registry entry may name them, and
 #: `brain harvest` says what is missing if one is enabled without a connector.
 SOURCE_TYPES: frozenset[str] = frozenset({"jira", "confluence", "git", "ado", "xray"})
+
+#: Source types whose mapper produces `Document` records, and therefore carry a
+#: `document:` title→key rule.
+DOCUMENT_TYPES: frozenset[str] = frozenset({"confluence"})
 
 #: How a token from `os.environ[auth_env]` is presented. `url_token` is git's: the token
 #: goes into the clone URL, because `git clone` takes no Authorization header.
@@ -53,6 +63,7 @@ _SOURCE_KEYS: frozenset[str] = frozenset(
         "auth_user_env",
         "options",
         "document",
+        "display_name",
     }
 )
 _CANON_KEYS: frozenset[str] = frozenset({"issue_key_blacklist"})
@@ -114,12 +125,41 @@ class DocumentKeySpec:
         m = self.loose.search(title or "")
         return self.format(m.group(1)) if m else None
 
-    def format(self, number: str) -> str:
-        """`"0848"` → `KIP-848`: the number is normalized so `KIP-0848` cannot be a second key."""
-        try:
-            value: object = int(number)
-        except ValueError:
-            value = number
+    def owns(self, key: str) -> bool:
+        """Is this `Document.key` one this spec minted (`KIP-848`), or a plain page id?
+
+        `key.startswith("KIP-")` was the old test and it hardcoded the org's vocabulary.
+        Re-formatting the captured number is the same question asked of the configured
+        pattern, so an org whose design docs are `RFC-12` needs no code change.
+        """
+        m = self.pattern.fullmatch(key or "")
+        return bool(m) and self.format(m.group(1)) == key
+
+    @property
+    def mention_pattern(self) -> re.Pattern[str]:
+        """The same pattern, word-anchored, for finding the key *inside prose*.
+
+        `search`ing the bare pattern would match the tail of `XKIP-848` and the middle of
+        a config value. The title pattern is applied to a whole title and does not need
+        the anchors; a mention does.
+        """
+        return re.compile(rf"\b(?:{self.pattern.pattern})\b", re.IGNORECASE)
+
+    def format(self, number: str, *, normalize: bool = True) -> str:
+        """`"0848"` → `KIP-848`: the number is normalized so `KIP-0848` cannot be a second key.
+
+        `normalize=False` is what :func:`brain.canon.mentions.extract_refs` uses: a *ref*
+        records the key as the author typed it, and a text mention that normalized while
+        the surrounding audit did not would report a key nobody wrote. The two forms not
+        meeting — a `KIP-0848` ref against a `KIP-848` document — is a known and counted
+        gap (`dangling_refs`), not something to fix silently inside a config refactor.
+        """
+        value: object = number
+        if normalize:
+            try:
+                value = int(number)
+            except ValueError:
+                value = number
         return self.key_format.format(number=value)
 
     @classmethod
@@ -146,8 +186,15 @@ class DocumentKeySpec:
             raise RegistryError(
                 f"{path}: sources[{name}].document.key_format must contain {{number}}"
             )
+        kind = str(raw.get("kind") or "KIP")
+        if kind not in DOCUMENT_KINDS:
+            raise RegistryError(
+                f"{path}: sources[{name}].document.kind is {kind!r}; `Document.kind` is a "
+                f"closed set in the canonical model: {', '.join(sorted(DOCUMENT_KINDS))}. "
+                "A new kind needs a brief, not a config line."
+            )
         return cls(
-            kind=str(raw.get("kind") or "KIP"),
+            kind=kind,
             pattern=compiled,
             loose=loose,
             key_format=key_format,
@@ -165,6 +212,9 @@ class SourceConfig:
     type: str
     base_url: str
     query: str
+    #: What a human calls this system ("Kafka Jira"). Plan 2's MCP tools cite sources to a
+    #: reader, and `jira-eu` is a directory name, not an answer. Defaults to `name`.
+    display_name: str = ""
     project_keys: tuple[str, ...] = ()
     auth_env: str | None = None
     auth_scheme: str = "none"
@@ -233,6 +283,7 @@ class SourceConfig:
             type=type_,
             base_url=base_url,
             query=str(query),
+            display_name=str(raw.get("display_name") or name),
             project_keys=_str_list(path, f"sources[{name}].project_keys", raw.get("project_keys")),
             auth_env=str(auth_env) if auth_env else None,
             auth_scheme=scheme,
@@ -292,12 +343,70 @@ class Registry:
     def issue_project_allowlist(self) -> frozenset[str]:
         """Project keys an `ABC-123` text match may become an issue ref for.
 
-        The union of every *enabled* source's `project_keys` and the synthetic prefixes.
-        The regex cannot tell `KAFKA-15123` from `UTF-8` or `SHA-256`; only a key some
-        configured source actually owns can.
+        The union of **every** source's `project_keys` — enabled or not — plus the
+        synthetic prefixes. `enabled` gates *harvesting*, not *recognising*: a Jira comment
+        in the harvested slice that names `PLAT-91` is a real cross-reference to a system
+        this org runs, and dropping it because that connector is switched off would make
+        the graph's traceability depend on which pull ran last. The refs are kept and
+        counted; whether the target node exists is `brain load`'s `dangling_refs`.
+
+        The cost is one class of false positive — a disabled source's key that is also an
+        English token — which :meth:`allowlist_warnings` names.
         """
-        keys = {k.upper() for s in self.enabled() for k in s.project_keys}
+        keys = {k.upper() for s in self.sources for k in s.project_keys}
         return frozenset(keys | {p.upper() for p in self.synthetic_prefixes})
+
+    def allowlist_warnings(self) -> list[str]:
+        """Keys the allowlist accepts from sources nothing is harvesting. For the report."""
+        live = {k.upper() for s in self.enabled() for k in s.project_keys}
+        out = []
+        for source in self.sources:
+            if source.enabled:
+                continue
+            extra = sorted({k.upper() for k in source.project_keys} - live)
+            if extra:
+                out.append(
+                    f"source {source.name!r} is disabled but its project keys "
+                    f"({', '.join(extra)}) still normalize text matches into issue refs"
+                )
+        return out
+
+    def document_spec_default(self) -> DocumentKeySpec:
+        """The title→key rule of the one enabled source that produces `Document`s.
+
+        Unambiguous by construction: `unique_enabled_types` refuses a second enabled
+        source of the same type, so there is at most one wiki. With none configured the
+        built-in `KIP-N` default applies and nothing downstream has to branch.
+        """
+        for source in self.enabled():
+            if source.type in DOCUMENT_TYPES:
+                return source.document
+        return DocumentKeySpec()
+
+    def unique_enabled_types(self) -> None:
+        """Refuse two enabled sources of one type.
+
+        The canonical model records a source *type* (`jira`, `git`), never the registry
+        *name*: `Change` has no `source` field at all, and `Person.identities[].source` is
+        a `Source` literal. So two enabled Jira instances produce records that no later
+        step — `brain canon --source jira-eu`, `brain reset`, resolution — can tell apart,
+        and a partial canon run would silently delete the other instance's work items.
+
+        The fix is a `name` on the canonical record, which is a model change and needs a
+        brief (spec §2.2). Until then this refuses instead of corrupting.
+        """
+        seen: dict[str, list[str]] = {}
+        for source in self.enabled():
+            seen.setdefault(source.type, []).append(source.name)
+        clashes = {t: names for t, names in seen.items() if len(names) > 1}
+        if clashes:
+            detail = "; ".join(f"{t}: {', '.join(names)}" for t, names in sorted(clashes.items()))
+            raise RegistryError(
+                f"{self.path} enables more than one source of the same type ({detail}). The "
+                "canonical model records a source type, not a registry name, so later steps "
+                "could not tell their records apart. Disable all but one, or add `name` to "
+                "the canonical records first (docs/guides/adding-a-connector.md §2)."
+            )
 
     def document_spec(self, name: str) -> DocumentKeySpec:
         return self.source(name).document
@@ -407,6 +516,12 @@ def reset_caches() -> None:
     at a different `sources.yaml`; a stale allowlist is a silently different corpus.
     """
     get_registry.cache_clear()
+    # Everything derived from the registry and memoized. Each of these is read once per
+    # process and would otherwise hold the previous `sources.yaml`'s answer: a stale
+    # allowlist is a silently different corpus, and a stale title pattern is silently
+    # different `Document.key`s.
     from brain.canon import mentions
+    from brain.harvest import confluence
 
     mentions.default_policy.cache_clear()
+    confluence.default_document_spec.cache_clear()

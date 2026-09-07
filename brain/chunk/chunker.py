@@ -64,6 +64,11 @@ class Chunk:
     heading: str | None = None
     author: str | None = None
     at: datetime | None = None
+    #: Copied from the parent record, never inferred. A chunk of a synthetic ADO story is
+    #: synthetic; a chunk of a real KIP is not. Without it `brain reset --synthetic` can
+    #: only find chunks by the parent that no longer exists, which works but cannot tell
+    #: an orphan of the synthetic layer from an orphan of a reworded real page.
+    synthetic: bool = False
 
     @property
     def id(self) -> str:
@@ -107,6 +112,7 @@ class Chunk:
             "at": self.at,
             "hash": self.hash,
             "orphaned": False,
+            "synthetic": self.synthetic,
         }
 
 
@@ -316,6 +322,7 @@ def _emit(
     author: str | None = None,
     at: datetime | None = None,
     source_balanced: bool = True,
+    synthetic: bool = False,
 ) -> Iterator[Chunk]:
     position = 0
     for item in packed:
@@ -334,6 +341,7 @@ def _emit(
             heading=item.heading,
             author=author,
             at=at,
+            synthetic=synthetic,
         )
         stats.count(
             chunk,
@@ -354,6 +362,7 @@ def chunk_document(doc: Document, stats: ChunkStats) -> Iterator[Chunk]:
         pack(split_blocks(doc.body_md), stats),
         stats,
         source_balanced=fence_parity(doc.body_md),
+        synthetic=doc.synthetic,
     )
 
 
@@ -375,6 +384,7 @@ def chunk_workitem_description(item: WorkItem, stats: ChunkStats) -> Iterator[Ch
         packed,
         stats,
         source_balanced=fence_parity(text),
+        synthetic=item.synthetic,
     )
 
 
@@ -404,6 +414,7 @@ def _comment_chunk(item: WorkItem, position: int, comment: Comment, stats: Chunk
         text=text,
         author=comment.author,
         at=comment.at,
+        synthetic=item.synthetic,
     )
     # A comment is never split, so its parity is whatever the author typed.
     stats.count(chunk, OVERSIZE_SINGLE_UNIT, blames_us=False)
@@ -423,6 +434,7 @@ def chunk_commit(change: Change, stats: ChunkStats) -> Iterator[Chunk]:
         at=change.at,
         # Never split either, so an unclosed fence came from the commit message itself.
         source_balanced=False,
+        synthetic=change.synthetic,
     )
 
 

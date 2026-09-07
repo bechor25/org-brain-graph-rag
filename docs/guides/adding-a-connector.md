@@ -25,7 +25,22 @@ CONNECTORS = {"jira": JiraConnector, ..., "ado": AdoConnector}
 MAPPERS = {"jira": map_issues, ..., "ado": map_work_items}
 ```
 
-שתי המפות ממופתחות ב-**type** ולא ב-**name**, כך ששני מופעי Jira (`jira-core`, `jira-eu`) הם שתי שורות ב-`sources.yaml` ואפס קוד.
+ועוד שתי שורות שמרחיבות את אוצר המילים הסגור, אם ה-type חדש לגמרי:
+
+```python
+# brain/harvest/registry.py — ה-type חייב להיות ברשימה, אחרת sources.yaml נדחה
+SOURCE_TYPES = frozenset({"jira", "confluence", "git", "ado", "xray", "<new>"})
+# brain/canon/models.py — `Source` הוא Literal סגור; רשומה קנונית עם source לא מוכר נדחית
+Source = Literal["jira", "ado", "xray", "confluence", "git", "github", "<new>"]
+```
+
+שתי המפות של הקונקטור/mapper ממופתחות ב-**type** ולא ב-**name**. הכוונה היא ששני מופעי Jira יהיו שתי שורות ב-`sources.yaml` ואפס קוד — אבל **זה עדיין לא נתמך**: המודל הקנוני רושם `source` שהוא **type** (`WorkItem.source`, `Identity.source`), ול-`Change` אין שדה `source` בכלל. שני מקורות enabled מאותו type יפיקו רשומות ששום שלב אחרי canon לא יודע להפריד, והרצת `brain canon --source jira-eu` הייתה מוחקת את הרשומות של האחר. לכן `Registry.unique_enabled_types()` **מסרבת**:
+
+```
+sources.yaml enables more than one source of the same type (jira: jira-core, jira-eu).
+```
+
+לפתיחת החסם צריך `name` על הרשומה הקנונית — שינוי מודל, כלומר brief (spec §2.2). עד אז: מקור אחד enabled מכל type, והשני `enabled: false`.
 
 ---
 
@@ -34,7 +49,8 @@ MAPPERS = {"jira": map_issues, ..., "ado": map_work_items}
 ```yaml
 sources:
   - name: ado                      # שם ייחודי; גם שם התיקייה ב-data/raw/<name>/
-    type: ado                      # jira | confluence | git | ado | xray
+    type: ado                      # jira | confluence | git | ado | xray (SOURCE_TYPES)
+    display_name: Azure DevOps     # מה שקוראים למערכת בתשובה למשתמש (Plan 2). ברירת מחדל: name
     enabled: true                  # false = מחוץ ל-`--source all`, אבל עדיין אפשר `--source ado`
     base_url: https://dev.azure.com/acme/platform
     query: "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project"
@@ -51,8 +67,9 @@ sources:
 
 - `base_url` — הכתובת של המערכת.
 - `query` — ה-JQL / CQL / WIQL / חלון ה-commits. ל-git הפורמט הוא `<since>..<until>`, וסוף פתוח אומר "עד HEAD".
-- `project_keys` — ה-allowlist. הרגקס שמזהה `ABC-123` לא יודע להבדיל בין `KAFKA-15123` ל-`UTF-8`; רק מפתח שמקור מוגדר כלשהו מחזיק יודע. ה-allowlist הוא **איחוד** של `project_keys` מכל המקורות ה-**enabled** ועוד הקידומות הסינתטיות.
-- `document.title_pattern` — איך כותרת של דף הופכת ל-`Document.key`. בקפקא זה `KIP-(\d+)`; בארגון שקורא למסמכי העיצוב שלו `RFC-12` זו שורה אחת ב-YAML ולא שינוי קוד.
+- `project_keys` — ה-allowlist. הרגקס שמזהה `ABC-123` לא יודע להבדיל בין `KAFKA-15123` ל-`UTF-8`; רק מפתח שמקור מוגדר כלשהו מחזיק יודע. ה-allowlist הוא **איחוד של כל המקורות — enabled או לא** ועוד הקידומות הסינתטיות. `enabled` שולט על **משיכה**, לא על **זיהוי**: הערה ב-Jira שמזכירה `PLAT-91` היא הפניה אמיתית למערכת שהארגון מפעיל, וזריקה שלה רק כי הקונקטור הזה כבוי הייתה הופכת את העקיבות בגרף לתלויה בשאלה איזו משיכה רצה אחרונה. ה-ref נשמר ונספר; אם אין צומת כזה בגרף, `brain load` סופר אותו ב-`dangling_refs`. `Registry.allowlist_warnings()` מונה את המפתחות שמגיעים ממקור כבוי, והם נרשמים ב-`data/reports/modularity.json`.
+- `document.title_pattern` — איך כותרת של דף הופכת ל-`Document.key`. בקפקא זה `KIP-(\d+)`; בארגון שקורא למסמכי העיצוב שלו `RFC-12` זו שורה אחת ב-YAML ולא שינוי קוד. אותה תבנית מזהה גם **אזכור** בטקסט חופשי (`brain/canon/mentions.py`) ואת השאלה "האם המפתח הזה הוא מסמך עיצוב או סתם מזהה דף" (`DocumentKeySpec.owns`), כך שהשתיים לא יכולות להתפצל. `document.kind` נבדק מול הקבוצה הסגורה של `Document.kind` במודל הקנוני — `KIP | Page | Readme`.
+- `options.space` (confluence) — מרחב ברירת המחדל כשה-`_links` של דף לא נותנים אותו.
 - `canon.issue_key_blacklist` — מפתחות שנראים אמיתיים ואינם. אצלנו `KAFKA-1`, ה-placeholder בתבנית ה-KIP.
 
 **מה לא עובר לקונפיג:** סודות. אף פעם. `auth_env` הוא **שם של משתנה סביבה**, והרג'יסטרי דוחה ערך שלא נראה כמו שם משתנה — בדיוק כדי שטוקן לא ייכנס בטעות לקובץ שנכנס ל-git.
@@ -160,13 +177,19 @@ uv run brain load                     # MERGE בלבד; הרצה שנייה = 0 
 | `unmapped_fields.<source>.dropped_with_data` | שדות שהמקור מילא וה-mapper זרק. הרשימה הזו היא התשובה הכנה ל"מה איבדנו". |
 | `slices.<source>.duplicates` | חפיפה בין המשיכה המלאה למשיכות `--since`. |
 
+**`data/reports/modularity.json`** — נכתב ע"י `brain.modularity.write_report`: sha1/sha256 של חמשת הקבצים הקנוניים מול ה-digests שנרשמו לפני מעבר ל-registry (`matches_baseline`), כמה רשומות `--synthetic` הייתה מוחקת, ומה ה-registry באמת נפתר אליו — כולל חתימות השאילתות. זה הקובץ שמוכיח שהעברת הקונפיג לא שינתה את הקורפוס.
+
 **`data/reports/load.json`** — הרצה שנייה חייבת `nodes_created: 0, relationships_created: 0`. `dangling_refs` סופר הפניות למפתחות שמחוץ לפרוסה; זה מספר תקין, לא באג — אף שאילתת edge לא יוצרת צומת.
 
 ---
 
 ## 7. שלד: Azure DevOps
 
-> ⚠️ **תבנית שלא נבדקה מול שרת חי.** כתובה מול התיעוד הציבורי של REST API 7.1. ה-`probe()` שלם; ה-mapper הוא stub מטופס למודל הקנוני. לפני שימוש: להריץ `probe()` פעם אחת מול הארגון שלכם, לשמור דף גולמי, ולכתוב את בדיקת ה-golden.
+> ⚠️ **תבנית שמעולם לא רצה. הקוד למטה לא יתקמפל כמו שהוא.**
+> - כתובה מול התיעוד הציבורי של Azure DevOps REST API 7.1 בלבד; אף קריאה לא בוצעה מול שרת.
+> - **חסר `HttpFetcher.post_json`** — WIQL הוא `POST`, ו-`brain/harvest/base.py` מממש `get_json` בלבד. להוסיף אותו (עם אותו pacing, backoff, headers ו-`_safe`) הוא הצעד הראשון.
+> - ה-`probe()` שלם לוגית; ה-mapper הוא stub מטופס למודל הקנוני, עם `...` במקום רשימת ה-`MAPPED` המלאה.
+> - לפני שימוש: להוסיף `post_json`, להריץ `probe()` פעם אחת מול הארגון, לשמור דף גולמי ל-`tests/fixtures/ado/`, ולכתוב את בדיקת ה-golden.
 
 **מה שחשוב לדעת לפני שכותבים:** WIQL מחזיר **רק ids** (עד 20,000), ואת השדות מושכים בקריאה שנייה שמוגבלת ל-**200 ids** לקריאה. כלומר דף = 200 work items, וזה גם `options.page_size`. ה-PAT נשלח כ-HTTP basic עם **שם משתמש ריק**.
 
@@ -399,7 +422,10 @@ def _iteration(bundle: Bundle, record) -> None:
 
 ## 8. שלד: Xray
 
-> ⚠️ **תבנית שלא נבדקה מול שרת חי.** כתובה מול התיעוד הציבורי של Xray Cloud GraphQL v2.
+> ⚠️ **תבנית שמעולם לא רצה. הקוד למטה לא יתקמפל כמו שהוא.**
+> - כתובה מול התיעוד הציבורי של Xray Cloud GraphQL v2 בלבד; אף קריאה לא בוצעה מול שרת.
+> - **חסרים `HttpFetcher.post_json` ו-`post_text`** — GraphQL ו-`/authenticate` שניהם `POST`, ו-`base.py` מממש `get_json` בלבד.
+> - חסרים גם ה-`__init__`, `query_text`, `signature` ו-`fetch` — מוצגים כאן רק `probe()` ושאילתות ה-GraphQL, שהם החלקים שהתיעוד קובע.
 
 **מה שחשוב לדעת:** ב-Xray Cloud ה-`Authorization` הוא JWT שמונפק מ-`POST /api/v2/authenticate` עם `client_id` + `client_secret`, והוא תקף שעה. אפשר להחזיק טוקן מוכן ב-`XRAY_TOKEN` (מה שהתבנית מניחה), או להנפיק אותו ב-`probe()` מ-`XRAY_CLIENT_ID`/`XRAY_CLIENT_SECRET`. `getTests` מוגבל ל-**100** תוצאות לעמוד.
 
@@ -507,6 +533,9 @@ uv run brain reset --all --yes         # graph + data
 - **`--graph` לא מוחק את הסכמה.** constraints ו-indexes הם סכמה, לא דאטה: בלעדיהם ה-`brain load` הבא הוא label scan לכל `MERGE`, ובנייה מחדש שלהם היא החלק היחיד בטעינה שלא ניתן להריץ במקביל.
 - **`--data` אף פעם לא נוגע ב-`data/fixtures/`.** זה הקורפוס המוקטן שעליו רצות הבדיקות ו-`make smoke`.
 - **`--synthetic` הוא לא `WHERE n.synthetic = true` פשוט.** containers ממוזגים לפי `name`, ולכן `Component {name: "clients"}` הוא צומת אחד שגם Jira וגם שכבת ה-ADO טוענים לו, והכותב האחרון הוא שקבע את הדגל. הסריקה קוראת קודם את הקבצים הקנוניים כדי לדעת אילו מפתחות רשומה **אמיתית** עדיין מחזיקה, משאירה את הצמתים האלה ומאפסת להם את הדגל — בדיוק מה ש-`brain load` הבא היה כותב.
+- **הפייפליין חייב להיות idle.** `brain reset` נועל את עצמו (`data/reset.lock`, `O_EXCL`) כדי ששני resets לא ירוצו יחד, אבל שאר השלבים עדיין לא בודקים את הנעילה — `brain load` או `brain chunk` שרץ במקביל יכתוב לתוך מצב חצי-מחוק. המניפסט פותח בשורה שאומרת את זה. קובץ נעילה שנשאר אחרי קריסה נמחק ביד.
+- **`--synthetic` מוחק צ'אנקים בשתי דרכים.** `Chunk.synthetic` מוטבע ב-`brain chunk` מרשומת האב; אבל גרף שעבר chunking לפני שהתכונה הזו קיימת מחזיק null בכולם, ולכן יש גם סריקה שנייה: צ'אנק בלי `HAS_CHUNK` נכנס — האב שלו נמחק. שניהם נספרים בנפרד במניפסט (`chunks_orphaned_by_parent`).
+- **`Entity.synthetic` נקבע לפי ה-evidence.** ישות היא סינתטית רק אם **כל** צ'אנקי הראיה שלה סינתטיים; צ'אנק אמיתי אחד הופך אותה לעובדה על הקורפוס האמיתי. ישות שנשארה בלי אף צ'אנק ראיה **מדווחת ולא נמחקת** — resolution אולי מיזג לתוכה זהויות אמיתיות, ו-`MERGE` לא יודע לפרק את זה בחזרה. הפתרון הוא `brain extract merge` חוזר.
 - אחרי `--all --yes`: `brain doctor` נשאר 7/7 (הוא בודק סביבה, לא תוכן), וכל ספירה בגרף היא 0. המניפסט נכתב ל-`data/reports/reset.json` — הקובץ היחיד שנשאר, והוא זה שמתעד שהניקוי קרה.
 
 ---

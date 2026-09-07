@@ -47,8 +47,6 @@ SINCE_FIELD = "updated"
 #: is whatever `query` says.
 COMPONENTS: tuple[str, ...] = ()
 
-_KIP = re.compile(r"KIP-\d+", re.IGNORECASE)
-
 
 def build_jql(source: SourceConfig, since: date | None = None) -> str:
     """The slice, as JQL. `--since` narrows by `updated` — ORDER BY must stay last."""
@@ -168,6 +166,14 @@ def iter_raw_issues(run_dir: Path) -> Iterator[dict[str, Any]]:
         yield from payload.get("issues") or []
 
 
+def _kip_pattern() -> re.Pattern[str]:
+    """`pct_kip_mention` asks "does this issue name a design doc". Which prefix that is
+    belongs to the wiki source in `sources.yaml`, not to the Jira connector."""
+    from brain.harvest.confluence import default_document_spec
+
+    return default_document_spec().mention_pattern
+
+
 def _issue_text(issue: dict[str, Any]) -> str:
     fields = issue.get("fields") or {}
     parts = [str(fields.get("summary") or ""), str(fields.get("description") or "")]
@@ -206,6 +212,7 @@ def analyze(
     issues: Iterable[dict[str, Any]], *, components: Sequence[str] = COMPONENTS
 ) -> dict[str, Any]:
     """Acceptance stats + the per-component link-density table, in one pass over raw."""
+    kip = _kip_pattern()
     buckets: dict[str, dict[str, Any]] = {c: _blank_bucket() for c in components}
     buckets["all"] = _blank_bucket()
     other = _blank_bucket()
@@ -233,7 +240,7 @@ def analyze(
 
         flags = {
             "_formal_links": bool(fields.get("issuelinks")),
-            "_kip_mention": bool(_KIP.search(_issue_text(issue))),
+            "_kip_mention": bool(kip.search(_issue_text(issue))),
             "_history": has_histories,
             "_assignee": fields.get("assignee") is not None,
             "_fix_versions": bool(fields.get("fixVersions")),

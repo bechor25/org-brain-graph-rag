@@ -24,7 +24,6 @@ from urllib.parse import unquote
 from brain.canon.models import Ref
 
 _ISSUE = re.compile(r"\b([A-Za-z][A-Za-z0-9]{1,9})-(\d+)\b")
-_KIP = re.compile(r"\bKIP-(\d+)\b", re.IGNORECASE)
 _PR = re.compile(r"(?<![\w/#])#(\d{1,7})\b")
 _URL = re.compile(r"https?://[^\s)\]>\"']+")
 _USER = re.compile(r"(?<![\w.])@([A-Za-z0-9_.-]+)")
@@ -54,10 +53,21 @@ class RefPolicy:
 
     `blacklist`: keys that match the shape and still are not references. `KAFKA-1` is the
     placeholder in the KIP page template — on ~2% of KIP pages, and never the real issue.
+
+
+    `document`: how a design-doc key is spelled — `KIP-848` here, `RFC-12` elsewhere. It
+    is the *same* rule that turns a wiki title into `Document.key`, read from
+    `sources.yaml`, so a mention and the page it names cannot drift apart.
     """
 
     allowlist: frozenset[str]
     blacklist: frozenset[str]
+    document: Any = None  # DocumentKeySpec; typed loosely to keep canon free of harvest
+
+    def doc_spec(self):
+        from brain.harvest.registry import DocumentKeySpec
+
+        return self.document or DocumentKeySpec()
 
     @classmethod
     def from_registry(cls, registry: Any = None) -> RefPolicy:
@@ -67,6 +77,7 @@ class RefPolicy:
         return cls(
             allowlist=reg.issue_project_allowlist(),
             blacklist=frozenset(k.upper() for k in reg.issue_key_blacklist),
+            document=reg.document_spec_default(),
         )
 
 
@@ -77,7 +88,6 @@ def default_policy() -> RefPolicy:
 
 
 _URL_ISSUE = re.compile(r"/browse/([A-Za-z][A-Za-z0-9]{1,9})-(\d+)")
-_URL_KIP = re.compile(r"KIP-(\d+)", re.IGNORECASE)
 _URL_PR = re.compile(r"/pull/(\d+)")
 
 
@@ -91,18 +101,22 @@ def _issue_key(project: str, number: str, allowlist: Collection[str]) -> str:
     return f"{project.upper()}-{number}" if project.upper() in allowlist else f"{project}-{number}"
 
 
-def _classify_url(url: str, allowlist: Collection[str]) -> Ref:
+def _classify_url(url: str, allowlist: Collection[str], document: Any) -> Ref:
     u = unquote(url)
     if m := _URL_ISSUE.search(u):
         return Ref(kind="issue", key=_issue_key(m.group(1), m.group(2), allowlist))
-    if "confluence" in u and (m := _URL_KIP.search(u)):
-        return Ref(kind="kip", key=f"KIP-{m.group(1)}")
+    # A wiki URL carries the key with no word boundary around it
+    # (`.../display/KAFKA/KIP-848+Title`), so the bare title pattern is right here.
+    if "confluence" in u and (m := document.pattern.search(u)):
+        return Ref(kind="kip", key=document.format(m.group(1), normalize=False))
     if "github.com" in u and (m := _URL_PR.search(u)):
         return Ref(kind="pr", key=m.group(1))
     return Ref(kind="url", key=url.rstrip(".,;"))
 
 
-def extract_refs(text: str, *, allowlist: Collection[str] | None = None) -> list[Ref]:
+def extract_refs(
+    text: str, *, allowlist: Collection[str] | None = None, document: Any = None
+) -> list[Ref]:
     """Every cross-reference in `text`, in first-appearance order, deduplicated.
 
     `allowlist` only decides *case normalization* here; dropping the rest is
@@ -111,24 +125,29 @@ def extract_refs(text: str, *, allowlist: Collection[str] | None = None) -> list
     """
     if not text:
         return []
-    allowed = {p.upper() for p in (default_policy().allowlist if allowlist is None else allowlist)}
+    policy = default_policy()
+    allowed = {p.upper() for p in (policy.allowlist if allowlist is None else allowlist)}
+    spec = document if document is not None else policy.doc_spec()
+    kip = spec.mention_pattern
     found: list[tuple[int, Ref]] = []
 
     urls = list(_URL.finditer(text))
     for m in urls:
-        found.append((m.start(), _classify_url(m.group(0), allowed)))
+        found.append((m.start(), _classify_url(m.group(0), allowed, spec)))
     # mask URLs so their inner tokens are not re-matched as keys
     masked = _URL.sub(lambda m: " " * len(m.group(0)), text)
 
     for m in _ISSUE.finditer(masked):
         project = m.group(1)
-        if project.upper() == "KIP":
+        # A design-doc key is not an issue key: `KIP-848` is a Document, and the branch
+        # below claims it. Which prefix that is comes from the registry, not from a literal.
+        if kip.fullmatch(m.group(0)):
             continue
         if project != project.upper() and _HOST_CONTEXT.match(masked, m.end()):
             continue
         found.append((m.start(), Ref(kind="issue", key=_issue_key(*m.groups(), allowed))))
-    for m in _KIP.finditer(masked):
-        found.append((m.start(), Ref(kind="kip", key=f"KIP-{m.group(1)}")))
+    for m in kip.finditer(masked):
+        found.append((m.start(), Ref(kind="kip", key=spec.format(m.group(1), normalize=False))))
     for m in _PR.finditer(masked):
         found.append((m.start(), Ref(kind="pr", key=m.group(1))))
     for m in _USER.finditer(masked):

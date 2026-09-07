@@ -226,10 +226,22 @@ def test_props_carry_exactly_the_briefs_property_set():
         "at",
         "hash",
         "orphaned",
+        "synthetic",
     }
     assert chunk.props()["char_len"] == 200
     assert chunk.props()["token_est"] == 50
     assert chunk.props()["orphaned"] is False
+    assert chunk.props()["synthetic"] is False
+
+
+def test_a_chunk_inherits_synthetic_from_its_parent_record():
+    """`brain reset --synthetic` needs to find a chunk without re-reading the corpus."""
+    doc = kip("x" * 200)
+    doc.synthetic = True
+    assert all(c.synthetic for c in chunk_document(doc, ChunkStats()))
+    item = issue(description="y" * 200, synthetic=True)
+    assert all(c.synthetic for c in chunk_workitem_description(item, ChunkStats()))
+    assert all(not c.synthetic for c in chunk_document(kip("z" * 200), ChunkStats()))
 
 
 # ------------------------------------------------ the Confluence list-item dialect

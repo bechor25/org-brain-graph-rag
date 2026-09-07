@@ -34,9 +34,11 @@ have applied and exits non-zero, so a script cannot mistake a refusal for a wipe
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import time
 from collections.abc import Callable, Iterable
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -79,8 +81,38 @@ SYNTHETIC_BATCH_DIR = "synthetic"
 BATCH_ROWS = 1000
 
 
+LOCK_NAME = "reset.lock"
+
+
 class ResetError(RuntimeError):
     """The reset cannot be done safely, or did not finish."""
+
+
+@contextmanager
+def reset_lock(data_dir: Path):
+    """One reset at a time, via `O_EXCL` on `<data_dir>/reset.lock`.
+
+    Honest about its scope: this stops a *second reset*, which is the case that produces
+    the worst state (two sweeps interleaving a node deletion with a canonical rewrite).
+    It does **not** stop a concurrent `brain load` or `brain chunk` — no other step takes
+    the lock yet — which is why the manifest opens by saying the pipeline must be idle.
+    A stale file after a crash is removed by hand; the message says so.
+    """
+    data_dir.mkdir(parents=True, exist_ok=True)
+    path = data_dir / LOCK_NAME
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError as exc:
+        raise ResetError(
+            f"{path} exists: another `brain reset` is running, or one crashed. Delete the "
+            "file to continue."
+        ) from exc
+    try:
+        os.write(fd, f"pid {os.getpid()} at {utc_now_iso()}\n".encode())
+        os.close(fd)
+        yield path
+    finally:
+        path.unlink(missing_ok=True)
 
 
 # --------------------------------------------------------------------------- manifest
@@ -117,7 +149,9 @@ def format_manifest(manifest: Manifest) -> str:
     """The human line-by-line the command prints. Counts first; paths second."""
     verb = "deleted" if manifest.applied else "would delete"
     lines = [
-        f"reset ({', '.join(manifest.scopes)}) — {'applied' if manifest.applied else 'DRY RUN'}"
+        f"reset ({', '.join(manifest.scopes)}) — {'applied' if manifest.applied else 'DRY RUN'}",
+        "  the pipeline must be IDLE: a harvest, load, chunk, extract or resolve running "
+        "against this graph or data dir will write into a half-deleted state.",
     ]
 
     graph = manifest.graph
@@ -142,6 +176,17 @@ def format_manifest(manifest: Manifest) -> str:
             lines.append(
                 f"  synthetic  kept {syn['shared_nodes_kept']} node(s) a real record also "
                 "claims; their synthetic flag was cleared"
+            )
+        if syn.get("chunks_orphaned_by_parent"):
+            lines.append(
+                f"  synthetic  {verb} {syn['chunks_orphaned_by_parent']:>7} chunks whose "
+                "parent record is gone"
+            )
+        if syn.get("entities_without_evidence"):
+            lines.append(
+                f"  synthetic  WARNING {syn['entities_without_evidence']} entities have no "
+                "surviving evidence chunk. They are kept (resolution merged real identities "
+                "into some of them); re-run `brain extract merge` to rebuild provenance."
             )
         if syn.get("ledger_rows_dropped"):
             lines.append(
@@ -202,21 +247,29 @@ def _delete_where(ctx: GraphContext, label: str, where: str = "") -> dict[str, i
             return totals
 
 
+def edge_total(ctx: GraphContext, present: set[str] | None = None) -> int:
+    """Distinct edges with at least one endpoint this pipeline owns — counted exactly.
+
+    Halving a per-label sum would be wrong twice over: an edge between two of our labels
+    is counted from both ends, an edge to a node we do not own only from one. `DISTINCT r`
+    asks the question directly.
+    """
+    labels = [label for label in GRAPH_LABELS if label in (present or existing_labels(ctx))]
+    if not labels:
+        return 0
+    where = " OR ".join(f"n:{ctx.label(label)}" for label in labels)
+    rows = ctx.read(f"MATCH (n)-[r]-() WHERE {where} WITH DISTINCT r RETURN count(r) AS c")
+    return int(rows[0]["c"]) if rows else 0
+
+
 def plan_graph(ctx: GraphContext) -> dict[str, Any]:
     """Counts before anything is deleted — the manifest's `would delete` numbers."""
     counts = census(ctx)
     present = existing_labels(ctx)
-    edges = 0
-    for label in GRAPH_LABELS:
-        if label not in present:
-            continue
-        rows = ctx.read(f"MATCH (:{ctx.label(label)})-[r]-() RETURN count(r) AS c")
-        edges += int(rows[0]["c"]) if rows else 0
     return {
         "labels": list(GRAPH_LABELS),
         "nodes_by_label": counts,
-        # Each edge touches two nodes and is counted from both ends when both are ours.
-        "edges": edges // 2 if edges else 0,
+        "edges": edge_total(ctx, present),
         "nodes": sum(counts.values()),
         "schema": "constraints and indexes are kept",
     }
@@ -429,12 +482,78 @@ def _wipe_synthetic_graph(
                 keep=sorted(names),
             )
 
+    orphans = _orphaned_chunks(ctx, apply=apply)
+    stranded = _entities_without_evidence(ctx)
     return {
         "nodes_by_label": {k: v for k, v in by_label.items() if v},
         "nodes": sum(by_label.values()),
         "shared_nodes_kept": kept,
+        "chunks_orphaned_by_parent": orphans,
+        "entities_without_evidence": stranded,
         "counters": counters,
     }
+
+
+def _orphaned_chunks(ctx: GraphContext, *, apply: bool) -> int:
+    """Chunks whose parent record was just deleted.
+
+    Two reasons this is not covered by `Chunk.synthetic`. First, the flag arrived after
+    the corpus was first chunked, so every chunk written before it is null and no
+    property-based sweep can find it. Second, `HAS_CHUNK` is the authoritative statement
+    of parentage — a chunk with no incoming one has no record behind it, and leaving it
+    would leave text in the vector index that retrieval can return and nothing can cite.
+
+    The two modes ask *different queries on purpose*. Applying, the parents are already
+    gone, so "no incoming HAS_CHUNK" is the answer. On a dry run they are all still there
+    and that query would return 0 — a manifest promising to delete nothing and then
+    deleting thousands. So a dry run counts the chunks whose parent is *about to* go
+    instead, plus the ones already orphaned.
+    """
+    if "Chunk" not in existing_labels(ctx):
+        return 0
+    label = ctx.label("Chunk")
+    if not apply:
+        rows = ctx.read(
+            f"MATCH (c:{label})\n"
+            "OPTIONAL MATCH (p)-[:HAS_CHUNK]->(c)\n"
+            "WITH c, collect(p) AS parents\n"
+            "WHERE size(parents) = 0 OR all(p IN parents WHERE p.synthetic = true)\n"
+            "RETURN count(c) AS c"
+        )
+        return int(rows[0]["c"]) if rows else 0
+    rows = ctx.read(f"MATCH (c:{label}) WHERE NOT ()-[:HAS_CHUNK]->(c) RETURN count(c) AS c")
+    total = int(rows[0]["c"]) if rows else 0
+    if apply and total:
+        while True:
+            counters = ctx.write(
+                f"MATCH (c:{label}) WHERE NOT ()-[:HAS_CHUNK]->(c) "
+                f"WITH c LIMIT {BATCH_ROWS} DETACH DELETE c"
+            )
+            if not counters.get("nodes_deleted"):
+                break
+    return total
+
+
+def _entities_without_evidence(ctx: GraphContext) -> int:
+    """Entities whose every evidence chunk is gone. Counted, never deleted here.
+
+    An entity is LLM-derived and conventions rule 3 says it names its evidence, so one
+    with none left is a defect. It is still not this command's call to delete it: tier-2
+    and tier-3 resolution may have merged real identities into that node, and a survivor
+    carries edges no `MERGE` can put back. The manifest says the number and names the fix.
+
+    Unlike the chunk sweep this is *not* predicted on a dry run — it counts the graph as
+    it stands. That is safe in a way the chunk count was not: this number never causes a
+    deletion, so under-reporting it warns less rather than destroying more.
+    """
+    if "Entity" not in existing_labels(ctx) or "Chunk" not in existing_labels(ctx):
+        return 0
+    rows = ctx.read(
+        f"MATCH (e:{ctx.label('Entity')}) WHERE e.evidence_chunk_ids IS NOT NULL\n"
+        f"OPTIONAL MATCH (c:{ctx.label('Chunk')}) WHERE c.id IN e.evidence_chunk_ids\n"
+        "WITH e, count(c) AS alive WHERE alive = 0 RETURN count(e) AS c"
+    )
+    return int(rows[0]["c"]) if rows else 0
 
 
 # --------------------------------------------------------------------------- data
@@ -508,26 +627,29 @@ def run_reset(
 
     manifest = Manifest(scopes=scopes, applied=confirmed)
     apply = confirmed
+    # A dry run reads nothing destructive, so it must NOT take the lock: "what would this
+    # delete" is exactly the question you ask while something else is running.
+    lock = reset_lock(data_dir) if apply else nullcontext()
+    with lock:
+        if synthetic:
+            manifest.synthetic = wipe_synthetic(
+                canonical_dir, ctx=ctx, batches_dir=batches_dir, apply=apply
+            )
+        if graph:
+            manifest.graph = wipe_graph(ctx) if apply else plan_graph(ctx)  # type: ignore[arg-type]
+        if data:
+            manifest.data = wipe_data(data_dir, apply=apply)
+        if ctx is not None:
+            manifest.census_after = census(ctx)
 
-    if synthetic:
-        manifest.synthetic = wipe_synthetic(
-            canonical_dir, ctx=ctx, batches_dir=batches_dir, apply=apply
-        )
-    if graph:
-        manifest.graph = wipe_graph(ctx) if apply else plan_graph(ctx)  # type: ignore[arg-type]
-    if data:
-        manifest.data = wipe_data(data_dir, apply=apply)
-    if ctx is not None:
-        manifest.census_after = census(ctx)
-
-    echo(format_manifest(manifest))
-    report = manifest.as_dict()
-    report["duration_s"] = round(time.perf_counter() - started, 2)
-    # `--data` just emptied `data/reports`; writing the manifest back into it is the point
-    # — it is the only record that the wipe happened, and the only file in there that
-    # describes an empty directory rather than a pipeline run.
-    if write_report and apply:
-        reports_dir.mkdir(parents=True, exist_ok=True)
-        write_json_atomic(reports_dir / REPORT_NAME, report)
-        echo(f"report: {reports_dir / REPORT_NAME}")
+        echo(format_manifest(manifest))
+        report = manifest.as_dict()
+        report["duration_s"] = round(time.perf_counter() - started, 2)
+        # `--data` just emptied `data/reports`; writing the manifest back into it is the
+        # point — it is the only record that the wipe happened, and the only file in there
+        # that describes an empty directory rather than a pipeline run.
+        if write_report and apply:
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            write_json_atomic(reports_dir / REPORT_NAME, report)
+            echo(f"report: {reports_dir / REPORT_NAME}")
     return report, (0 if apply else 1)

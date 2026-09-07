@@ -31,10 +31,24 @@ from markdownify import markdownify
 from brain.canon.mappers.base import Bundle, FieldTracker, parse_dt
 from brain.canon.mentions import extract_refs
 from brain.canon.models import Document
-from brain.harvest.confluence import kip_key, spaced_kip_key
+from brain.harvest.confluence import default_document_spec, kip_key, spaced_kip_key
+from brain.harvest.registry import DocumentKeySpec, get_registry
 
 SOURCE = "confluence"
-DEFAULT_SPACE = "KAFKA"
+
+
+def default_space() -> str:
+    """The space a page falls back to when its own `_links` do not name one.
+
+    From `sources.yaml` (`options.space`), not a constant: it is the organisation's wiki
+    space, and the CQL in `query` already names it. Empty when nothing is configured —
+    `Document.space` is optional, and inventing a space name is worse than leaving it out.
+    """
+    for source in get_registry().enabled():
+        if source.type == "confluence":
+            return str(source.option("space", "") or "")
+    return ""
+
 
 MAPPED = frozenset(
     {
@@ -124,7 +138,7 @@ def page_space(page: dict[str, Any]) -> str:
     if m := re.search(r"/spaces/([^/]+)/", webui):
         return m.group(1)
     expandable = str((page.get("_expandable") or {}).get("space") or "")
-    return expandable.rsplit("/", 1)[-1] or DEFAULT_SPACE
+    return expandable.rsplit("/", 1)[-1] or default_space()
 
 
 def body_of(page: dict[str, Any]) -> str:
@@ -200,7 +214,12 @@ def decide_keys(pages: Iterable[dict[str, Any]]) -> tuple[dict[str, str], list[d
     return keys, decisions
 
 
-def map_pages(pages: Iterable[dict[str, Any]]) -> Bundle:
+def map_pages(
+    pages: Iterable[dict[str, Any]], *, document: DocumentKeySpec | None = None
+) -> Bundle:
+    # Resolved once per run: the title→key rule and therefore the test for "is this key
+    # one we minted" (`KIP-848`) versus "this page has no key of its own" (a page id).
+    spec = document or default_document_spec()
     bundle = Bundle(source=SOURCE)
     tracker = FieldTracker(mapped=MAPPED)
     pages = list(pages)
@@ -218,7 +237,7 @@ def map_pages(pages: Iterable[dict[str, Any]]) -> Bundle:
             continue
 
         key = keys.get(page_id, f"{SOURCE}:{page_id}")
-        is_kip = key.startswith("KIP-")
+        is_kip = spec.owns(key)
         labels = [
             str(x.get("name"))
             for x in ((page.get("metadata") or {}).get("labels") or {}).get("results") or []
@@ -268,7 +287,7 @@ def map_pages(pages: Iterable[dict[str, Any]]) -> Bundle:
                 id=f"{SOURCE}:{page_id}",
                 key=key,
                 source=SOURCE,
-                kind="KIP" if is_kip else "Page",
+                kind=spec.kind if is_kip else "Page",
                 space=space,
                 title=title,
                 body_md=body_md,
