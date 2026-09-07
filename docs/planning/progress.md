@@ -22,7 +22,7 @@
 | 1 | 04 synthetic | ✅ merge 27/27, 0 נדחו | d8b1a11…0f0eba2 | 1,849 items (817 tests, 897 ADO), 420 זהויות ל-308 אנשים, truth: 315 text-only/69 stale/255 renames; 17/19 ratios; **589/1,021 items כוסו** (באג קריאה בכלי — 42% לא נראו); הוחלט לקבל; supplement אופציונלי | 1,021 items נבחרו → 27 batches / 3 shards, 143 Epics מוקצים מראש; מרחבי מפתחות נפרדים לכל shard |
 | 1 | 05 load | ✅ + סינתטי | cc2ad87…47abc94 | 35,410 צמתים / 109,623 קשתות; 2,385 סינתטיים עם provenance; TESTS 660 / HAS_RUN 609 / IN_PLAN 78; rerun 0/0 | 32,855 צמתים / 95,695 קשתות ב-3.6s; ריצה שנייה 0/0; LINKS_TO 298 זוגות; dangling issue refs 8,217 (גבול הפרוסה); StatusChange 7,607 (18.9k רעש הוסר); 725 מרווחי assignee בלי Person → canon ימנטס מ-changelog |
 | 1 | 06 chunk+embed | ✅ (re-review; 651 בדיקות) | d1146be…636a83a | 12,915 chunks חיים (section 1,713 / desc 3,423 / comment 3,629 / commit 4,150) + 931 orphaned; embedding 416s+142s @ 6.5k tok/s; 3.49 chars/token; fences מוזחים 12→0; rerun 0/0; guard ברשת ב-conftest תפס בדיקות harvest שפנו לאינטרנט |
-| 1 | 07 extract Phase A | 🟡 merge ✅: 195/195 valid, 42/14,930 רשומות נדחו (0.28%); 9,237 ישויות (Decision 3,837 / Problem 2,277 / Feature 1,118 / Tech 739 / Alt 670 / Risk 596), 5,492 יחסים, 9,390 MENTIONS, 0 בלי provenance; 81% Decisions weak (Feature נושא את הסיבות); כמעט 0 dedup בין chunks → עבודה ל-resolve; בסקירה + מדגם 50 | | 2,743 chunks (1,713 KIP sections + 1,030 descriptions) → 195 batches ≤40KB רב-שורתיים, ~24/סוכן, ~187k tokens קלט לסוכן; schema+examples אושרו ע"י המתכנן |
+| 1 | 07 extract Phase A | 🟡 merge ✅: 195/195 valid, 42/14,930 רשומות נדחו (0.28%); 9,237 ישויות (Decision 3,837 / Problem 2,277 / Feature 1,118 / Tech 739 / Alt 670 / Risk 596), 5,492 יחסים, 9,390 MENTIONS, 0 בלי provenance; 81% Decisions weak (Feature נושא את הסיבות); 98.6% ישויות עם chunk ראייתי אחד ("restatement per chunk", לא איחוד) → resolve; **סקירה: accept**, מדגם 50: 46 נתמכים / 4 חלקיים / 0 לא (92%), kind נכון 45/50 | | 2,743 chunks (1,713 KIP sections + 1,030 descriptions) → 195 batches ≤40KB רב-שורתיים, ~24/סוכן, ~187k tokens קלט לסוכן; schema+examples אושרו ע"י המתכנן |
 | 1 | 08 resolve | 🟡 Persons: tiers 1–2 עם guard (185915b) — P=0.990 R=0.168; שיפוט ✅ 52/52: same 338 / different 744 / unsure 106; merge-decisions + eval רצים; resolve ישויות (ANN) רץ | 79f75cc…185915b | 2,187→1,425 Persons (762 מיזוגים: 275 דטרמיניסטי, 487 embedding); P=0.847 R=0.263 לפני tier 3; תחום אפור 2,354 זוגות → מצמצמים ב-blocking + guard של ≥2 tokens בשם (P→0.955); embedding עם "מה עבד עליו" **הפך** את הסיגנל (true pairs 0.76→0.63) → display בלבד |
 | 1 | 09 communities | ⬜ | | |
 | 1 | 10 index + gate | ⬜ | | |
@@ -73,6 +73,11 @@
 ## הכרעות מתכנן — סינתטי
 - לקבל את השכבה כמות שהיא (589/1,021 items מכוסים): ההערכה צריכה gold, לא כיסוי מלא. supplement ל-432 הפריטים שלא נראו — אופציונלי אחרי Plan 2 אם ההערכה תראה פערים.
 - 3 אוצרות-מילים ארגוניים (Team A / KFK2 / Kafka\…) נשארים — זה בדיוק "צוותים שקוראים לאותו דבר בשמות שונים"; לא נרשם ב-truth, לא ייבדק ב-resolution.
+
+## ל-Plan 2 (מסקירת extract)
+- Decision עם `weak=true` (81%) = עובדה מצוטטת, לא רשומת החלטה: לנתב דרך MENTIONS ("מה KIP-N אומר"), לא דרך מסלול "למה הוחלט".
+- 35% ישויות ללא קשת סמנטית (Technology 83%) → קהילות: Technology דרך MENTIONS בלבד או מחוץ לפרויקציה.
+- מדד חדש לכל שלב חילוץ: **consolidation rate** (mentions/entity, entities/chunk).
 
 ## ל-Plan 2 (מסקירת chunk)
 - `db.index.vector.queryNodes` deprecated ב-Neo4j 2026.06 → `SEARCH`. `IndexMeta.chunk_count` סופר orphans (13,846) — להשתמש ב-live (12,915).
