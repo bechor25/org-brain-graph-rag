@@ -577,7 +577,73 @@ def normalised(section: dict[str, Any]) -> dict[str, Any]:
     return {RENAMED_KEYS.get(k, k): v for k, v in section.items()}
 
 
-def with_last_applied(stats: dict[str, Any], prior_tier: dict[str, Any]) -> dict[str, Any]:
+def last_applied_run(
+    runs: Sequence[dict[str, Any]] | None, kind: str, tier: int
+) -> dict[str, Any] | None:
+    """The most recent run in the report's history that this tier actually merged with."""
+    for run in reversed(list(runs or [])):
+        if run.get("dry_run") or tier not in (run.get("tiers") or []):
+            continue
+        if int((run.get("merged") or {}).get(kind) or 0) > 0:
+            return run
+    return None
+
+
+#: Rebuilt sample rows, so a recovered section stays readable rather than exhaustive.
+REBUILT_SAMPLE = 20
+
+
+def rebuilt_tier(
+    ledger: ResolutionLedger, kind: str, tier: int, runs: Sequence[dict[str, Any]] | None
+) -> dict[str, Any] | None:
+    """Recover a tier section a no-op rerun overwrote, from the ledger rows it wrote.
+
+    `last_applied` only protects sections written after it existed; the tier-1 pass that
+    found the 16 `username_stem` pairs on the real graph was overwritten by the rerun that
+    proved it idempotent, before that. What survives is the history entry (its timestamp,
+    its merge count, its duration) and the ledger rows that run recorded — each carrying
+    the tier and the rule that merged it, stamped with the same timestamp. Those two
+    together are the by-rule breakdown, so it is recovered rather than hand-written.
+
+    Marked `derived_from: ledger`: it is a reconstruction, and it holds only what the
+    ledger knows. The pair count, the group sizes and the largest group are not in it,
+    because nothing recorded them.
+    """
+    run = last_applied_run(runs, kind, tier)
+    if run is None:
+        return None
+    rows = {
+        identity: entry
+        for identity, entry in ledger.section(kind).items()
+        if entry.get("resolved_at") == run["at"] and int(entry.get("tier") or 0) == tier
+    }
+    if not rows:
+        return None
+    by_rule: dict[str, int] = {}
+    for entry in rows.values():
+        rule = str(entry.get("rule") or "unknown")
+        by_rule[rule] = by_rule.get(rule, 0) + 1
+    return {
+        "at": run["at"],
+        "applied": True,
+        "derived_from": "ledger",
+        "identities_merged": len(rows),
+        "by_rule": dict(sorted(by_rule.items())),
+        "duration_s": run.get("duration_s"),
+        "sample": [[i, str(e.get("via") or e["canonical"])] for i, e in sorted(rows.items())][
+            :REBUILT_SAMPLE
+        ],
+        "note": "Rebuilt from the ledger rows stamped with this run's time, because a "
+        "later no-op run overwrote the section before `last_applied` existed. Holds what "
+        "the ledger records; the pair and group counts were never written down.",
+    }
+
+
+def with_last_applied(
+    stats: dict[str, Any],
+    prior_tier: dict[str, Any],
+    fallback: Callable[[], dict[str, Any] | None] | None = None,
+) -> dict[str, Any]:
     """A tier that merged nothing keeps the record of the last run of it that did.
 
     Proving a step idempotent means running the tier a second time and watching it merge
@@ -586,12 +652,15 @@ def with_last_applied(stats: dict[str, Any], prior_tier: dict[str, Any]) -> dict
     `merges_by_tier` and `merges_by_rule` are read from the ledger and survive; nothing
     else here does, and "tier 1 found 0 pairs" is exactly what the run before it disproved.
 
-    Never nests more than one deep: an applied run drops the key, and a second no-op run
-    carries the same kept section rather than wrapping it again.
+    `fallback` is the reconstruction for a section that was already lost — used only when
+    there is no real one left to keep, so a recovered section never displaces a recorded
+    one. Never nests more than one deep: an applied run drops the key, and a second no-op
+    run carries the same kept section rather than wrapping it again.
     """
     if stats.get("applied"):
         return stats
     kept = prior_tier.get("last_applied") or (prior_tier if prior_tier.get("applied") else None)
+    kept = kept or (fallback() if fallback else None)
     return {**stats, "last_applied": kept} if kept else stats
 
 
@@ -705,7 +774,11 @@ def run_resolve(
                 )
             section[f"tier{tier}"] = {
                 "at": stamp,
-                **with_last_applied(stats, prior.get(f"tier{tier}") or {}),
+                **with_last_applied(
+                    stats,
+                    prior.get(f"tier{tier}") or {},
+                    lambda t=tier, k=kind: rebuilt_tier(ledger, k, t, previous.get("runs")),
+                ),
             }
             for group in stats.get("large_groups", []):
                 warnings.append(

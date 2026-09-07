@@ -543,8 +543,20 @@ def run_merge(
     # pattern, not on the properties it is about to set. So the duplicates are removed
     # after the write, and only where every property agrees; two edges that differ in any
     # property are two claims and are left alone.
+    #
+    # The scope is reported beside the count because the two zeros mean opposite things: no
+    # duplicates found over 177 survivors is a clean graph, and no duplicates found over 0
+    # survivors is a dedupe that never looked — which is what an absent or emptied
+    # `resolution_ledger.json` produces, silently.
     survivors = sorted({str(e["canonical"]) for e in (ledger.entities if ledger else {}).values()})
     duplicate_edges = resolve_graph.dedupe_relationships(ctx, "Entity", survivors)
+    dedupe_scope = {
+        "survivors": len(survivors),
+        "ledger": "available" if ledger and ledger.available else "missing",
+        "note": "Duplicates can only arise where resolution routed two extracted entities "
+        "onto one node, so the scan is the ledger's survivors. `survivors: 0` means it "
+        "scanned nothing, not that it found nothing.",
+    }
 
     provenance = extract_graph.provenance_gaps(ctx)
     if provenance["total"]:
@@ -599,6 +611,7 @@ def run_merge(
         written=written,
         weak=weak,
         duplicate_edges=duplicate_edges,
+        dedupe_scope=dedupe_scope,
         gaps=gaps,
         provenance=provenance,
         census=census,
@@ -630,6 +643,7 @@ def build_report(
     written: dict[str, int],
     weak: dict[str, int],
     duplicate_edges: int = 0,
+    dedupe_scope: dict[str, Any] | None = None,
     gaps: dict[str, Any],
     provenance: dict[str, Any],
     census: dict[str, Any],
@@ -696,6 +710,7 @@ def build_report(
         "schema": schema_stats,
         "weak_decisions": weak,
         "duplicate_edges_deleted": duplicate_edges,
+        "dedupe_scope": dedupe_scope or {"survivors": 0, "ledger": "missing"},
         "rejected_records": {
             "total": rejected_records,
             "records_seen": records_seen,

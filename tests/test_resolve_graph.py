@@ -181,3 +181,43 @@ def test_creating_the_schema_reports_the_state_it_waited_for():
         "state": "ONLINE",
     }
     assert "db.awaitIndexes" not in " ".join(cypher for cypher, _ in c.client.writes)
+
+
+def test_stamping_provenance_can_only_write_provenance():
+    """It runs over survivors an *earlier* run merged. `resolved`, `merged_from` and the
+    alias lists describe that merge; this is a later run recording who decided it, and a
+    docstring is not what should be stopping it from rewriting the merge itself."""
+    import pytest
+
+    c = ctx()
+    written = resolve_graph.stamp_provenance(
+        c,
+        "Person",
+        [
+            {
+                "id": "jira:jrao",
+                "props": {
+                    "resolution_batch_id": "shard-02/007",
+                    "resolution_batch_ids": ["shard-02/007"],
+                    "resolution_model": "opus:entity-adjudicator",
+                },
+            }
+        ],
+    )
+    assert written == 1
+
+    with pytest.raises(ValueError, match="merged_from"):
+        resolve_graph.stamp_provenance(
+            c, "Person", [{"id": "jira:jrao", "props": {"merged_from": [], "resolved": False}}]
+        )
+
+
+def test_dropping_the_schema_also_takes_a_meta_node_written_before_the_name_was_namespaced():
+    """Two `_ResIndexMeta` nodes outlived their namespace on the shared server because the
+    old code stored the *unprefixed* index name and the drop matched on it."""
+    c = ctx("_Res")
+    resolve_graph.drop_resolve_schema(c)
+    names = [params.get("names") for _, params in c.client.writes if "names" in params]
+
+    assert ["_Resperson_embedding", "person_embedding"] in names
+    assert ["_Resentity_embedding", "entity_embedding"] in names

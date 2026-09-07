@@ -295,3 +295,97 @@ def test_a_rerun_that_merges_nothing_keeps_the_run_that_did():
 
 def test_a_first_run_has_nothing_to_keep():
     assert with_last_applied({"applied": False}, {}) == {"applied": False}
+
+
+def rebuilt_ledger():
+    """A ledger holding one tier-1 run's rows, as `record` wrote them."""
+    ledger = ResolutionLedger()
+    ledger.record(
+        "person",
+        [
+            ("ado:kfk2.ezhou", "jira:ezhou", {"tier": 1, "rule": "username_stem", "score": 1.0}),
+            ("xray:s3.e.zhou", "jira:ezhou", {"tier": 1, "rule": "username_stem", "score": 1.0}),
+            ("git:d@x.org", "jira:dlee", {"tier": 1, "rule": "jira_git_name", "score": 1.0}),
+        ],
+        resolved_at="2026-09-07T14:01:22+00:00",
+    )
+    ledger.record(
+        "person",
+        [("confluence:x", "jira:a", {"tier": 3, "rule": "adjudicator_same", "score": 0.9})],
+        resolved_at="2026-09-07T14:02:03+00:00",
+    )
+    ledger.available = True
+    return ledger
+
+
+RUNS = [
+    {
+        "at": "2026-09-07T14:01:22+00:00",
+        "kinds": ["person"],
+        "tiers": [1],
+        "dry_run": False,
+        "merged": {"person": 3},
+        "duration_s": 0.9,
+    },
+    {
+        "at": "2026-09-07T14:01:35+00:00",
+        "kinds": ["person"],
+        "tiers": [1],
+        "dry_run": False,
+        "merged": {"person": 0},
+        "duration_s": 0.51,
+    },
+    {
+        "at": "2026-09-07T14:02:03+00:00",
+        "kinds": ["person"],
+        "tiers": [3],
+        "dry_run": False,
+        "merged": {"person": 1},
+        "duration_s": 0.58,
+    },
+]
+
+
+def test_the_run_that_did_the_work_is_found_in_the_history():
+    from brain.resolve.runner import last_applied_run
+
+    assert last_applied_run(RUNS, "person", 1)["at"] == "2026-09-07T14:01:22+00:00"
+    assert last_applied_run(RUNS, "person", 3)["at"] == "2026-09-07T14:02:03+00:00"
+    assert last_applied_run(RUNS, "entity", 1) is None
+    assert last_applied_run([{**RUNS[0], "dry_run": True}], "person", 1) is None
+
+
+def test_a_lost_tier_section_is_rebuilt_from_the_ledger_rows_that_run_wrote():
+    """The rerun that proved idempotency overwrote the real tier-1 section before
+    `last_applied` existed. The ledger still holds every row that run recorded, keyed by
+    the timestamp the history names, so the by-rule breakdown is recoverable."""
+    from brain.resolve.runner import rebuilt_tier
+
+    got = rebuilt_tier(rebuilt_ledger(), "person", 1, RUNS)
+
+    assert got["at"] == "2026-09-07T14:01:22+00:00"
+    assert got["applied"] is True
+    assert got["identities_merged"] == 3
+    assert got["by_rule"] == {"jira_git_name": 1, "username_stem": 2}
+    assert got["derived_from"] == "ledger"
+    assert got["duration_s"] == 0.9
+    assert ("xray:s3.e.zhou", "jira:ezhou") in [tuple(p) for p in got["sample"]]
+
+
+def test_nothing_is_rebuilt_when_the_history_has_no_run_that_merged():
+    from brain.resolve.runner import rebuilt_tier
+
+    assert rebuilt_tier(rebuilt_ledger(), "person", 2, RUNS) is None
+    assert rebuilt_tier(ResolutionLedger(), "person", 1, []) is None
+
+
+def test_a_rebuilt_section_is_used_only_when_there_is_no_real_one_to_keep():
+    from brain.resolve.runner import with_last_applied
+
+    real = {"at": "1", "applied": True, "pairs": 16}
+    noop = {"applied": False, "pairs": 0}
+    rebuilt = {"at": "0", "applied": True, "derived_from": "ledger"}
+
+    assert with_last_applied(noop, real, lambda: rebuilt)["last_applied"] == real
+    assert with_last_applied(noop, {}, lambda: rebuilt)["last_applied"] == rebuilt
+    assert "last_applied" not in with_last_applied(noop, {}, lambda: None)

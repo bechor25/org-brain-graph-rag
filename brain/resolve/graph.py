@@ -198,12 +198,18 @@ def drop_resolve_schema(ctx: GraphContext) -> None:
 
     Leaving an `IndexMeta` behind would make the next run in this namespace describe an
     index that no longer exists, which is worse than describing none.
+
+    Both spellings of the name are matched. Before the meta node was namespaced it stored
+    the bare `person_embedding`, and two of those outlived their namespace on the shared
+    server precisely because the drop looked for the prefixed name only. The label is
+    already namespaced, so matching the bare name here cannot reach another namespace's
+    node — or the production `chunk_embedding`, which is not one of these two names.
     """
     for label, name in INDEX_NAMES.items():
         ctx.client.write(f"DROP INDEX {ctx.name(name)} IF EXISTS")
         ctx.client.write(
-            f"MATCH (m:{ctx.label(META_LABEL)} {{`name`: $name}}) DETACH DELETE m",
-            name=index_name(ctx, label),
+            f"MATCH (m:{ctx.label(META_LABEL)}) WHERE m.`name` IN $names DETACH DELETE m",
+            names=[index_name(ctx, label), name],
         )
 
 
@@ -604,16 +610,31 @@ def set_resolved(ctx: GraphContext, label: str, rows: Sequence[dict[str, Any]]) 
     return len(rows)
 
 
+#: The only properties `stamp_provenance` may write. Enforced, not documented: the
+#: function's whole reason to exist apart from `set_resolved` is that it runs over
+#: survivors an *earlier* run merged, and `resolved`, `resolved_at`, `merged_from` and the
+#: alias lists describe that merge. A later run recording who decided it has no business
+#: rewriting it, and the difference between the two functions is otherwise one docstring.
+PROVENANCE_PROPS: frozenset[str] = frozenset(
+    {"resolution_batch_id", "resolution_batch_ids", "resolution_model"}
+)
+
+
 def stamp_provenance(ctx: GraphContext, label: str, rows: Sequence[dict[str, Any]]) -> int:
     """Write `resolution_batch_id` / `resolution_model` onto survivors that already exist.
 
-    Separate from `set_resolved` because it must not touch `resolved`, `resolved_at`,
-    `merged_from` or the alias lists: those describe a merge that happened, and this is a
-    later run recording *who decided it*, not re-deciding it. Returns the rows written, not
-    the nodes matched — a survivor a reset has since deleted is simply not there.
+    Returns the rows written, not the nodes matched — a survivor a reset has since deleted
+    is simply not there.
     """
     if not rows:
         return 0
+    for row in rows:
+        stray = sorted(set(row.get("props") or {}) - PROVENANCE_PROPS)
+        if stray:
+            raise ValueError(
+                f"stamp_provenance may only write {sorted(PROVENANCE_PROPS)}, not {stray}. "
+                "Those describe the merge itself; use `set_resolved` if that is the intent."
+            )
     key = KEY_PROPS[label]
     ctx.write_rows(
         "UNWIND $rows AS row\n"
