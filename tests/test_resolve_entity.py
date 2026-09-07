@@ -181,3 +181,35 @@ def test_a_band_under_the_limit_is_untouched_and_reports_no_cut_off():
     pair = make_pair(a.id, b.id, **kw(0.85))
     kept, cut_off = cap_band([pair], {a.id: a, b.id: b}, limit=10)
     assert kept == [pair] and cut_off is None
+
+
+# ------------------------------------------------------------------ boilerplate guard
+
+
+def test_a_same_verdict_on_a_phrase_pasted_across_many_pages_is_refused():
+    """ "THIS TICKET CANNOT BE WORKED ON UNTIL…" is extracted once per page it appears in.
+    Two copies of it are two occurrences of a sentence, not one thing."""
+    from brain.resolve.decisions import is_boilerplate
+
+    a = with_parent("Problem|cannot be worked on", "cannot be worked on", "KAFKA-1")
+    b = with_parent("Problem|can not be worked on", "can not be worked on", "KAFKA-9")
+    a.evidence += [Evidence(role="PARENT", key=f"KAFKA-{i}", title="t") for i in range(2, 5)]
+    assert is_boilerplate(a, b) is True
+
+
+def test_a_shared_parent_exempts_a_pair_however_widely_quoted():
+    from brain.resolve.decisions import is_boilerplate
+
+    a = with_parent("Problem|x", "x", "KIP-1")
+    b = with_parent("Problem|y", "y", "KIP-1")
+    a.evidence += [Evidence(role="PARENT", key=f"KIP-{i}", title="t") for i in range(2, 6)]
+    assert is_boilerplate(a, b) is False
+
+
+def test_two_narrowly_quoted_entities_are_not_boilerplate():
+    from brain.resolve.decisions import is_boilerplate
+
+    a = with_parent("Problem|x", "x", "KIP-1")
+    b = with_parent("Problem|y", "y", "KIP-2")
+    assert is_boilerplate(a, b) is False
+    assert is_boilerplate(None, b) is False

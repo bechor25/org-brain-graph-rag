@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import random
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Sequence
 from difflib import SequenceMatcher
@@ -34,6 +35,16 @@ GOLD_NAME = "resolution_gold.jsonl"
 HARD_NEGATIVE_RATIO = 0.72
 #: Brief 08 decision 6 (b): 100 adjudicated pairs make the entity gold.
 ENTITY_GOLD_TARGET = 100
+#: Equal allocation across the two decided verdicts. Not the population ratio (203 `same`
+#: against 981 `different`): the gold exists to estimate precision *and* recall, and 17
+#: positives would measure recall to nothing better than a shrug. The consequence is that
+#: this file says nothing about prevalence, and `resolve eval` does not ask it to.
+ENTITY_GOLD_PER_VERDICT = 50
+#: Pairs marked for the user to check by hand — brief 08 decision 6 (b)'s "10 the user
+#: samples". They are the audit of the adjudicator, which is the one thing an
+#: adjudicator-derived gold cannot audit itself.
+ENTITY_SPOTCHECK = 10
+SPOTCHECK_NAME = "resolution_gold_entity_spotcheck.md"
 
 
 class GoldError(RuntimeError):
@@ -154,11 +165,23 @@ def person_gold(canonical_dir: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def entity_gold(batches_dir: Path, *, target: int = ENTITY_GOLD_TARGET) -> list[dict[str, Any]]:
-    """Adjudicated grey-band pairs, `unsure` excluded — brief 08 decision 6 (b).
+def entity_gold(
+    batches_dir: Path,
+    *,
+    target: int = ENTITY_GOLD_TARGET,
+    per_verdict: int = ENTITY_GOLD_PER_VERDICT,
+    seed: int = 7,
+) -> list[dict[str, Any]]:
+    """Adjudicated grey-band pairs, stratified by verdict — brief 08 decision 6 (b).
 
     Only what the adjudicator actually decided: a pair it could not judge is not a labelled
-    pair, and the planner's hand-sampled ten arrive as their own file later.
+    pair. Sampling is seeded, so the same batches always give the same hundred.
+
+    **This gold is derived from the adjudicator's own verdicts, so it cannot grade the
+    adjudicator.** Scoring tier 3 against it is circular by construction and comes out at
+    1.0; what it does measure honestly is tiers 1-2 — how much of what a reader called the
+    same thing the deterministic and embedding tiers had already found. The audit of the
+    adjudicator itself is the ten pairs written to `SPOTCHECK_NAME` for a human.
     """
     from brain.resolve.build import SCHEMA_PATH, TASK
     from brain.resolve.decisions import discover, parse_batch
@@ -193,7 +216,64 @@ def entity_gold(batches_dir: Path, *, target: int = ENTITY_GOLD_TARGET) -> list[
                 }
             )
     rows.sort(key=lambda r: (r["a"], r["b"]))
-    return rows[:target]
+    by_label: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        by_label[row["label"]].append(row)
+    rng = random.Random(seed)
+    picked: list[dict[str, Any]] = []
+    for label in sorted(by_label):
+        pool = by_label[label]
+        picked.extend(rng.sample(pool, min(per_verdict, len(pool))))
+    # If one stratum was short, top up from the other rather than return fewer than asked.
+    if len(picked) < target:
+        chosen = {(r["a"], r["b"]) for r in picked}
+        spare = [r for r in rows if (r["a"], r["b"]) not in chosen]
+        picked.extend(rng.sample(spare, min(target - len(picked), len(spare))))
+    picked.sort(key=lambda r: (r["a"], r["b"]))
+    return picked[:target]
+
+
+def write_spotcheck(
+    path: Path, rows: Sequence[dict[str, Any]], *, n: int = ENTITY_SPOTCHECK, seed: int = 7
+) -> int:
+    """Mark `n` gold pairs for a human to check, and write them somewhere readable.
+
+    Half from each verdict, so the reader sees the adjudicator agreeing and disagreeing.
+    Markdown rather than JSON because the only consumer is a person.
+    """
+    by_label: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        by_label[row["label"]].append(row)
+    rng = random.Random(seed)
+    picked: list[dict[str, Any]] = []
+    for label in sorted(by_label):
+        pool = by_label[label]
+        picked.extend(rng.sample(pool, min(n // max(len(by_label), 1), len(pool))))
+    picked.sort(key=lambda r: (r["label"], r["a"]))
+
+    lines = [
+        "# Entity gold — 10 pairs to check by hand",
+        "",
+        "The other 90 rows of `data/eval/resolution_gold.jsonl` are the adjudicator's own",
+        "verdicts, so they cannot grade the adjudicator. These ten are the audit that can:",
+        "for each pair, decide yourself whether the two are one thing, and compare.",
+        "",
+        "`same` means the agent merged them. `different` means it left them apart.",
+        "",
+    ]
+    for i, row in enumerate(picked, 1):
+        lines += [
+            f"## {i}. verdict: **{row['label']}**  (cosine {row.get('similarity')})",
+            "",
+            f"- **A** `{row['a']}` — {row.get('a_display')}",
+            f"- **B** `{row['b']}` — {row.get('b_display')}",
+            f"- agent's reason: {row.get('reason')}",
+            "- your verdict: `same` / `different` / `unsure` -> ______",
+            "",
+        ]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return len(picked)
 
 
 def write_gold(path: Path, rows: Iterable[dict[str, Any]]) -> int:
@@ -237,6 +317,14 @@ def run_gold(
             "same": sum(1 for r in produced if r["label"] == "same"),
             "different": sum(1 for r in produced if r["label"] == "different"),
         }
+        if kind == "entity" and produced:
+            marked = write_spotcheck(eval_dir / SPOTCHECK_NAME, produced)
+            per_kind[kind]["spotcheck"] = {
+                "path": str(eval_dir / SPOTCHECK_NAME),
+                "pairs": marked,
+                "note": "the entity gold is the adjudicator's own verdicts, so it cannot "
+                "grade the adjudicator; these are what a human checks instead",
+            }
     # Kinds this run did not build keep whatever a previous run wrote for them.
     path = eval_dir / GOLD_NAME
     kept = [r for r in read_gold(path) if r["kind"] not in set(kinds)]

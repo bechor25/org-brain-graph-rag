@@ -35,6 +35,11 @@ RETRY_FIELD = "_resolve_retry"
 STATUS_NAME = "status.json"
 MAX_ERRORS = 50
 VERDICTS: tuple[str, ...] = ("same", "different", "unsure")
+#: Distinct parent documents an entity has to appear under before "the same words appear
+#: in both" stops being evidence of identity. Boilerplate — "THIS TICKET CANNOT BE WORKED
+#: ON UNTIL…", a licence header, a template sentence — is extracted once per page it is
+#: pasted into, and two copies of it are two occurrences of a phrase, not one thing.
+BOILERPLATE_PARENTS = 3
 
 
 class DecisionsError(RuntimeError):
@@ -178,6 +183,24 @@ def read_shard_status(root: Path) -> dict[str, dict[str, Any]]:
     return out
 
 
+def is_boilerplate(a: Candidate | None, b: Candidate | None) -> bool:
+    """Should this `same` verdict be refused as a repeated phrase rather than one thing?
+
+    Two conditions, both required. The sides share no document or work item — so nothing
+    but the wording connects them — *and* at least one of them is quoted under three or
+    more distinct parents, which is what a phrase pasted into many pages looks like and
+    what a real, specific entity does not. An entity that genuinely spans three KIPs will
+    normally share one of them with its duplicate, and that shared parent exempts it.
+
+    Reported, never silent: every refused pair is named in `skipped_boilerplate`.
+    """
+    if a is None or b is None:
+        return False
+    if a.parents & b.parents:
+        return False
+    return max(len(a.parents), len(b.parents)) >= BOILERPLATE_PARENTS
+
+
 def apply_decisions(
     ctx: GraphContext,
     *,
@@ -200,6 +223,7 @@ def apply_decisions(
 
     verdicts: dict[str, int] = dict.fromkeys(VERDICTS, 0)
     pairs = []
+    boilerplate: list[dict[str, Any]] = []
     failed: list[dict[str, Any]] = []
     accepted: list[str] = []
     stale: list[str] = []
@@ -226,6 +250,18 @@ def apply_decisions(
                 # agreed with a merge that happened first.
                 stale.append(decision.pair_id)
                 continue
+            if kind == "entity" and is_boilerplate(by_id.get(pair.a.id), by_id.get(pair.b.id)):
+                boilerplate.append(
+                    {
+                        "pair_id": decision.pair_id,
+                        "a": pair.a.id,
+                        "b": pair.b.id,
+                        "a_parents": sorted(by_id[pair.a.id].parents)[:6],
+                        "b_parents": sorted(by_id[pair.b.id].parents)[:6],
+                        "reason": decision.reason,
+                    }
+                )
+                continue
             pairs.append(
                 make_pair(
                     pair.a.id,
@@ -245,6 +281,14 @@ def apply_decisions(
         "batches_failed": failed,
         "verdicts": verdicts,
         "stale_pairs": len(stale),
+        "skipped_boilerplate": {
+            "count": len(boilerplate),
+            "min_parents": BOILERPLATE_PARENTS,
+            "pairs": boilerplate,
+            "note": "`same` verdicts refused: no shared parent, and one side is quoted "
+            "under three or more documents. A phrase pasted into many pages is many "
+            "occurrences of a phrase, not one entity.",
+        },
         "agent_status": read_shard_status(root),
         "notes": notes[:50],
     }
@@ -263,6 +307,7 @@ def apply_decisions(
     echo(
         f"{kind} tier 3: {len(accepted)}/{len(batches)} batches, "
         f"same={verdicts['same']} different={verdicts['different']} unsure={verdicts['unsure']}"
+        + (f", boilerplate refused={len(boilerplate)}" if boilerplate else "")
     )
     return stats
 

@@ -38,8 +38,13 @@ def canonical_displays(canonical_dir: Path, kind: str) -> dict[str, str]:
     canonical file still holds all of them, and their display forms are exactly what a
     human reviewing a merge needs to see.
     """
+    if kind != "person":
+        # Entities have no canonical file — they are extracted, not loaded. Their id *is*
+        # `kind|norm_name`, so the normalised name is recoverable even after the node is
+        # gone; it is not the surface form the extractor wrote, and it says so.
+        return {}
     path = canonical_dir / f"{kind}s.jsonl"
-    if kind != "person" or not path.is_file():
+    if not path.is_file():
         return {}
     out: dict[str, str] = {}
     for person in read_jsonl(path, Person):
@@ -68,11 +73,20 @@ def is_ungraded(group: Sequence[str], graded: set[tuple[str, str]]) -> bool:
     )
 
 
+def _from_id(node_id: str, kind: str) -> str:
+    """A readable name for a node that no longer exists. `Entity.id` carries its
+    normalised name; a person id carries only a key, and the canonical file has the rest."""
+    if kind != "person" and "|" in node_id:
+        return f"{node_id.split('|', 1)[1]} (normalised)"
+    return "(display unknown)"
+
+
 def render(
     group: Sequence[str],
     by_id: dict[str, Candidate],
     ledger: ResolutionLedger,
     displays: dict[str, str] | None = None,
+    kind: str = "person",
 ) -> str:
     lines: list[str] = []
     displays = displays or {}
@@ -81,10 +95,10 @@ def render(
     head = survivor.name if survivor else displays.get(canonical, "?")
     lines.append(f"{canonical}   ← {len(group) - 1} merged   [{head}]")
     for identity in group:
-        entry = ledger.section("person").get(identity) or {}
+        entry = ledger.section(kind).get(identity) or {}
         node = by_id.get(identity)
-        display = node.name if node else displays.get(identity, "(display unknown)")
-        source = identity.split(":", 1)[0]
+        display = node.name if node else displays.get(identity) or _from_id(identity, kind)
+        source = identity.split(":", 1)[0] if kind == "person" else identity.split("|", 1)[0]
         mark = (
             "survivor"
             if identity == canonical
@@ -128,7 +142,7 @@ def run_sample(
         f"(no pair in {eval_dir / GOLD_NAME}); showing {len(chosen)} (seed {seed})\n"
     )
     for group in chosen:
-        echo(render(group, by_id, ledger, displays))
+        echo(render(group, by_id, ledger, displays, kind))
         echo("")
     return {
         "groups": len(all_groups),
