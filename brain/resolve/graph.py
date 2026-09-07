@@ -545,6 +545,26 @@ def set_resolved(ctx: GraphContext, label: str, rows: Sequence[dict[str, Any]]) 
     return len(rows)
 
 
+def stamp_provenance(ctx: GraphContext, label: str, rows: Sequence[dict[str, Any]]) -> int:
+    """Write `resolution_batch_id` / `resolution_model` onto survivors that already exist.
+
+    Separate from `set_resolved` because it must not touch `resolved`, `resolved_at`,
+    `merged_from` or the alias lists: those describe a merge that happened, and this is a
+    later run recording *who decided it*, not re-deciding it. Returns the rows written, not
+    the nodes matched — a survivor a reset has since deleted is simply not there.
+    """
+    if not rows:
+        return 0
+    key = KEY_PROPS[label]
+    ctx.write_rows(
+        "UNWIND $rows AS row\n"
+        f"MATCH (n:{ctx.label(label)} {{`{key}`: row.id}})\n"
+        "SET n += row.props",
+        rows,
+    )
+    return len(rows)
+
+
 def delete_self_loops(ctx: GraphContext, label: str) -> int:
     """A `SAME_AS` between two nodes that are now one node. Staging, spent."""
     counters = ctx.write(

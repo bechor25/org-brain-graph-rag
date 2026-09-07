@@ -13,6 +13,7 @@ and then to `quarantine/`, and the report names it either way.
 
 from __future__ import annotations
 
+import itertools
 import json
 import shutil
 from collections.abc import Callable, Sequence
@@ -24,6 +25,7 @@ from pydantic import ValidationError
 
 from brain.common.jsonschema_mini import validate as schema_validate
 from brain.graph.context import GraphContext
+from brain.resolve import graph as resolve_graph
 from brain.resolve.build import TASK
 from brain.resolve.ledger import ResolutionLedger
 from brain.resolve.models import BatchInput, BatchOutput, Candidate, make_pair
@@ -229,6 +231,9 @@ def apply_decisions(
     boilerplate: list[dict[str, Any]] = []
     refused_pairs: list[tuple[str, str]] = []
     graded: dict[str, list[tuple[str, str]]] = {"different": [], "unsure": []}
+    #: Every `same`, stale or not, with the batch that said it — what `backfill_provenance`
+    #: needs to put a batch id back on a merge an earlier run already applied.
+    same_verdicts: list[tuple[str, str, str]] = []
     failed: list[dict[str, Any]] = []
     accepted: list[str] = []
     stale: list[str] = []
@@ -255,6 +260,7 @@ def apply_decisions(
                     refused_pairs.append((pair.a.id, pair.b.id))
                 graded[decision.verdict].append((pair.a.id, pair.b.id))
                 continue
+            same_verdicts.append((pair.a.id, pair.b.id, batch.batch_id))
             if pair.a.id not in by_id or pair.b.id not in by_id:
                 # An earlier tier already merged one side away. Not an error: the verdict
                 # agreed with a merge that happened first.
@@ -318,12 +324,67 @@ def apply_decisions(
         )
     )
     stats["closure_overrides"] = closure_overrides(ledger, kind, graded)
+    rows, ledger_rows = backfill_provenance(ledger, kind, same_verdicts)
+    stats["provenance"] = {
+        "model": MODEL,
+        "survivors": 0
+        if dry_run
+        else resolve_graph.stamp_provenance(ctx, resolve_graph.LABELS_BY_KIND[kind], rows),
+        "survivors_to_stamp": len(rows),
+        "ledger_rows_filled": ledger_rows,
+        "note": "`resolution_batch_id` / `resolution_model` on every survivor a tier-3 "
+        "verdict merged, this run's and earlier runs'. Under their own keys: an `Entity` "
+        "already spends `batch_id` and `model` on the extraction that made it.",
+    }
     echo(
         f"{kind} tier 3: {len(accepted)}/{len(batches)} batches, "
         f"same={verdicts['same']} different={verdicts['different']} unsure={verdicts['unsure']}"
         + (f", boilerplate refused={len(boilerplate)}" if boilerplate else "")
     )
     return stats
+
+
+def backfill_provenance(
+    ledger: ResolutionLedger, kind: str, same: Sequence[tuple[str, str, str]]
+) -> tuple[list[dict[str, Any]], int]:
+    """Survivor rows and ledger rows for tier-3 merges that were applied without a batch id.
+
+    A merge deletes the node it swallows and the `SAME_AS` edge that argued for it, so a
+    second `merge-decisions` run finds every pair stale and has nothing left to stamp. The
+    verdicts on disk still name the batch, and the ledger still says which identity went
+    into which survivor, so the two together can put the provenance back.
+
+    Only where a tier-3 row actually made the merge. A pair the adjudicator also called
+    `same` but tier 1 merged first is a tier-1 merge: writing `resolution_model` onto it
+    would say a language model decided something no language model decided.
+    """
+    section = ledger.section(kind)
+    batches: dict[str, set[str]] = {}
+    ledger_rows = 0
+    for a, b, batch_id in same:
+        canonical = ledger.canonical(kind, a)
+        if canonical != ledger.canonical(kind, b):
+            continue
+        decided = [s for s in (a, b) if int((section.get(s) or {}).get("tier") or 0) == 3]
+        if not decided:
+            continue
+        for side in decided:
+            if not section[side].get("batch_id"):
+                section[side] |= {"batch_id": batch_id, "model": MODEL}
+                ledger_rows += 1
+        batches.setdefault(canonical, set()).add(batch_id)
+    rows = [
+        {
+            "id": node,
+            "props": {
+                "resolution_batch_id": min(found),
+                "resolution_batch_ids": sorted(found),
+                "resolution_model": MODEL,
+            },
+        }
+        for node, found in sorted(batches.items())
+    ]
+    return rows, ledger_rows
 
 
 def closure_overrides(
@@ -337,8 +398,6 @@ def closure_overrides(
     reported because it is the number that says how much of the graph rests on closure
     rather than on a judgement.
     """
-    import itertools
-
     components: dict[str, set[str]] = {}
     for identity, entry in ledger.section(kind).items():
         components.setdefault(str(entry["canonical"]), set()).update(

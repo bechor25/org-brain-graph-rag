@@ -184,3 +184,74 @@ def test_discover_finds_outputs_in_shard_then_batch_order(tmp_path):
         "shard-01/002",
         "shard-02/001",
     ]
+
+
+# ------------------------------------------------- provenance for merges already applied
+
+
+def led(*rows):
+    """A ledger with `(identity, canonical, tier)` rows and no provenance on any of them —
+    the state the graph was left in before the adjudicator's batch id was recorded."""
+    from brain.resolve.ledger import ResolutionLedger
+
+    ledger = ResolutionLedger()
+    for identity, canonical, tier in rows:
+        ledger.record("person", [(identity, canonical, {"tier": tier, "rule": "r", "score": 1.0})])
+    ledger.available = True
+    return ledger
+
+
+def test_a_merge_already_applied_is_given_back_the_batch_that_decided_it():
+    """Re-running tier 3 finds every pair stale — both sides are one node now — so the
+    merge would keep no record of who decided it. The verdicts on disk still know."""
+    from brain.resolve.decisions import MODEL, backfill_provenance
+
+    ledger = led(("confluence:x", "jira:a", 3))
+    rows, ledger_rows = backfill_provenance(
+        ledger, "person", [("confluence:x", "jira:a", "shard-02/007")]
+    )
+
+    assert rows == [
+        {
+            "id": "jira:a",
+            "props": {
+                "resolution_batch_id": "shard-02/007",
+                "resolution_batch_ids": ["shard-02/007"],
+                "resolution_model": MODEL,
+            },
+        }
+    ]
+    assert ledger_rows == 1
+    assert ledger.persons["confluence:x"]["batch_id"] == "shard-02/007"
+    assert ledger.persons["confluence:x"]["model"] == MODEL
+
+
+def test_a_verdict_that_never_became_a_merge_stamps_nothing():
+    from brain.resolve.decisions import backfill_provenance
+
+    ledger = led(("confluence:x", "jira:a", 3))
+    assert backfill_provenance(ledger, "person", [("jira:a", "jira:b", "shard-02/007")]) == ([], 0)
+
+
+def test_a_pair_a_deterministic_tier_merged_first_is_not_credited_to_the_adjudicator():
+    """The adjudicator agreed, but tier 1 got there. `resolution_model` on that node would
+    say a language model merged it, and none did."""
+    from brain.resolve.decisions import backfill_provenance
+
+    ledger = led(("git:x", "jira:a", 1))
+    assert backfill_provenance(ledger, "person", [("git:x", "jira:a", "shard-02/007")]) == ([], 0)
+
+
+def test_the_backfill_does_not_rewrite_a_batch_id_that_is_already_there():
+    from brain.resolve.decisions import backfill_provenance
+
+    ledger = led(("confluence:x", "jira:a", 3))
+    ledger.persons["confluence:x"]["batch_id"] = "shard-01/001"
+    ledger.persons["confluence:x"]["model"] = "opus:entity-adjudicator"
+    rows, ledger_rows = backfill_provenance(
+        ledger, "person", [("confluence:x", "jira:a", "shard-02/007")]
+    )
+
+    assert ledger_rows == 0
+    assert ledger.persons["confluence:x"]["batch_id"] == "shard-01/001"
+    assert rows[0]["props"]["resolution_batch_ids"] == ["shard-02/007"]

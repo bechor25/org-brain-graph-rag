@@ -419,6 +419,34 @@ def test_a_second_merge_decisions_run_merges_nothing(ctx, split_corpus, workdir,
     assert len(persons(ctx)) == before
 
 
+def test_a_merge_made_before_the_provenance_existed_gets_it_back(ctx, split_corpus, workdir):
+    """The state the real graph was left in: tier 3 merged 282 people and recorded no batch
+    id, and the `SAME_AS` edges that argued for the merges were deleted with them. A rerun
+    finds every pair stale, so the only way back is the verdicts on disk plus the ledger."""
+    ctx.client.write(
+        f"MATCH (p:{ctx.label('Person')} {{id: 'jira:jrao'}}) "
+        "REMOVE p.resolution_batch_id, p.resolution_batch_ids, p.resolution_model"
+    )
+    ledger_path = split_corpus / LEDGER_NAME
+    raw = json.loads(ledger_path.read_text(encoding="utf-8"))
+    for row in raw["persons"].values():
+        row.pop("batch_id", None)
+        row.pop("model", None)
+    ledger_path.write_text(json.dumps(raw), encoding="utf-8")
+    assert persons(ctx)["jira:jrao"]["resolution_model"] is None
+
+    report = resolve(ctx, split_corpus, workdir, tiers=[3])
+    provenance = report["person"]["tier3"]["provenance"]
+
+    assert report["person"]["tier3"]["identities_merged"] == 0  # nothing re-merged
+    assert provenance["survivors"] == 1 and provenance["ledger_rows_filled"] == 1
+    node = persons(ctx)["jira:jrao"]
+    assert node["resolution_model"] == "opus:entity-adjudicator"
+    assert node["resolution_batch_id"]
+    row = ResolutionLedger.load(split_corpus).persons["confluence:rao.jun"]
+    assert row["model"] == "opus:entity-adjudicator" and row["batch_id"]
+
+
 def test_a_batch_that_breaks_the_contract_is_quarantined_after_two_retries(
     ctx, split_corpus, workdir
 ):

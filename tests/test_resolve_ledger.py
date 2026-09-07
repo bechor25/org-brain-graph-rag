@@ -79,3 +79,35 @@ def test_tier_of_a_survivor_is_the_weakest_evidence_that_built_it():
     ledger.record("person", [("ado:x", "jira:a", meta(tier=1))])
     ledger.record("person", [("git:y", "jira:a", meta(tier=3, rule="adjudicator_same"))])
     assert ledger.tier_of("person", "jira:a") == 3
+
+
+def test_a_row_an_agent_decided_names_the_batch_and_the_model():
+    """The ledger is where a merge survives a reload, so it is where `which batch decided
+    this` has to live too — the `SAME_AS` edge that said so is deleted by the merge."""
+    ledger = ResolutionLedger()
+    ledger.record(
+        "person",
+        [
+            (
+                "confluence:x",
+                "jira:a",
+                {
+                    **meta(tier=3, rule="adjudicator_same"),
+                    "batch_id": "shard-02/007",
+                    "model": "opus:entity-adjudicator",
+                },
+            )
+        ],
+    )
+    row = ledger.persons["confluence:x"]
+
+    assert row["batch_id"] == "shard-02/007"
+    assert row["model"] == "opus:entity-adjudicator"
+
+
+def test_a_row_code_decided_carries_no_model():
+    ledger = ResolutionLedger()
+    ledger.record("person", [("git:x", "jira:a", meta())])
+    row = ledger.persons["git:x"]
+
+    assert row["batch_id"] is None and row["model"] is None

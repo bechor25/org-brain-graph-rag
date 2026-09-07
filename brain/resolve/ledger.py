@@ -143,6 +143,12 @@ class ResolutionLedger:
                 "rule": meta.get("rule"),
                 "score": meta.get("score"),
                 "reason": meta.get("reason"),
+                # Conventions rule 3, kept here as well as on the node: the `SAME_AS` edge
+                # that recorded the decision is deleted by the merge that follows it, and
+                # the swallowed node goes with it. This row is the only thing left that can
+                # say which batch, and which model, decided that these two are one.
+                "batch_id": meta.get("batch_id"),
+                "model": meta.get("model"),
                 "resolved_at": stamp,
             }
         _compress(section)
