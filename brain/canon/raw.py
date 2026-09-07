@@ -41,8 +41,8 @@ PAGE_ITEMS = {"jira": "issues", "confluence": "results", "ado": "value", "xray":
 
 
 def source_names(registry: Registry | None = None) -> tuple[str, ...]:
-    """Every enabled source name, in `sources.yaml` order."""
-    return (registry or get_registry()).names()
+    """Every enabled source id, in `sources.yaml` order — the `data/raw/` directories."""
+    return (registry or get_registry()).ids()
 
 
 def dig(record: dict[str, Any], path: tuple[str, ...]) -> Any:

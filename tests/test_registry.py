@@ -67,7 +67,7 @@ sources:
 
 def test_the_repo_registry_loads_and_names_the_three_kafka_sources(registry):
     assert registry_path().name == "sources.yaml"
-    assert registry.names() == ("jira", "confluence", "git")
+    assert registry.ids() == ("jira", "confluence", "git")
     assert [s.type for s in registry.enabled()] == ["jira", "confluence", "git"]
 
 
@@ -184,7 +184,7 @@ def test_an_id_that_could_not_be_a_directory_is_refused(tmp_path):
 def test_two_sources_of_one_type_are_allowed_and_keep_their_own_ids(tmp_path):
     """The planner's call (step 11b): two Jiras are two ids, one type, one connector class."""
     registry = load_registry(write(tmp_path, TWO_JIRAS))
-    assert registry.names() == ("jira-eu", "jira-us")
+    assert registry.ids() == ("jira-eu", "jira-us")
     assert registry.same_type_ids() == {"jira": ["jira-eu", "jira-us"]}
     assert registry.issue_project_allowlist() == {"EU", "US"}
 
@@ -193,7 +193,7 @@ def test_two_same_type_sources_write_to_separate_raw_directories(tmp_path):
     registry = load_registry(write(tmp_path, TWO_JIRAS))
     dirs = {
         name: build_connector(registry.source(name), tmp_path / "raw").source_dir()
-        for name in registry.names()
+        for name in registry.ids()
     }
     assert dirs["jira-eu"] != dirs["jira-us"]
     assert dirs["jira-eu"] == tmp_path / "raw" / "jira-eu"
@@ -323,7 +323,7 @@ def test_a_non_integer_option_is_an_error_not_a_crash_at_page_500(tmp_path):
 
 
 def test_connectors_can_be_built_for_every_enabled_source(tmp_path, registry):
-    for name in registry.names():
+    for name in registry.ids():
         connector = build_connector(registry.source(name), tmp_path)
         assert connector.name == name
         assert connector.query_text(None)

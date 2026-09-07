@@ -344,7 +344,7 @@ class Registry:
     def enabled(self) -> tuple[SourceConfig, ...]:
         return tuple(s for s in self.sources if s.enabled)
 
-    def names(self, *, only_enabled: bool = True) -> tuple[str, ...]:
+    def ids(self, *, only_enabled: bool = True) -> tuple[str, ...]:
         return tuple(s.id for s in (self.enabled() if only_enabled else self.sources))
 
     def resolve(self, selector: str) -> list[str]:
@@ -354,7 +354,7 @@ class Registry:
         tried once before it joins `--source all`.
         """
         if selector == "all":
-            names = list(self.names())
+            names = list(self.ids())
             if not names:
                 raise RegistryError(f"{self.path} has no enabled source")
             return names
