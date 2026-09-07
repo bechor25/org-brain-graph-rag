@@ -117,6 +117,18 @@ def synthetic_chunk_ids(ctx: GraphContext, ids: Sequence[str]) -> set[str]:
     return {r["id"] for r in rows}
 
 
+#: Is *this* chunk synthetic — derived from its parents, not read off `Chunk.synthetic`.
+#:
+#: The stored flag would be simpler and would make the answer depend on whether the chunk
+#: pass had already run: against a graph whose chunks are still null this would report
+#: "no entity changes", which is exactly the false all-clear the backfill exists to fix.
+#: Deriving both sides from the same source of truth makes the dry run exact and the two
+#: stamping passes order-independent.
+_CHUNK_IS_SYNTHETIC = (
+    "(size([(p)-[:HAS_CHUNK]->(c) | 1]) > 0 AND "
+    "all(s IN [(p)-[:HAS_CHUNK]->(c) | coalesce(p.synthetic, false)] WHERE s))"
+)
+
 #: `Entity.synthetic`, derived from the evidence chunks the entity itself names — the
 #: same rule `ExtractPlan.entity_rows` applies when merge writes the node, expressed
 #: against the graph. An entity with no surviving evidence derives `false`: conventions
@@ -124,9 +136,8 @@ def synthetic_chunk_ids(ctx: GraphContext, ids: Sequence[str]) -> set[str]:
 #: than deleting it.
 _DERIVE_ENTITY_SYNTHETIC = (
     "OPTIONAL MATCH (c:{chunk}) WHERE c.id IN coalesce(e.evidence_chunk_ids, [])\n"
-    "WITH e, collect(c) AS chunks\n"
-    "WITH e, (size(chunks) > 0 AND all(c IN chunks "
-    "WHERE coalesce(c.synthetic, false))) AS syn\n"
+    "WITH e, collect(" + _CHUNK_IS_SYNTHETIC + ") AS flags\n"
+    "WITH e, (size(flags) > 0 AND all(f IN flags WHERE f)) AS syn\n"
 )
 
 #: Nodes per stamping transaction. The same budget `brain reset` deletes with.

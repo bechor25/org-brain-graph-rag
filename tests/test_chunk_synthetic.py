@@ -170,7 +170,6 @@ def test_a_changed_parent_is_corrected_not_only_the_nulls(graph):
     """`--stamp-synthetic` re-derives; it does not only fill blanks. A chunk whose parent
     switched sides carries a flag that is wrong, and wrong is worse than missing."""
     stamp_synthetic(ctx(graph), echo=lambda _m: None)
-    graph.prop("Chunk", "syn-1", "synthetic")
     for node in graph.nodes:
         if node["key"] == "ADO-7":
             node["props"]["synthetic"] = False
@@ -191,3 +190,27 @@ def test_plan_reads_and_never_writes(graph):
     before = [dict(n["props"]) for n in graph.nodes]
     plan(ctx(graph))
     assert [dict(n["props"]) for n in graph.nodes] == before
+
+
+def test_dry_run_without_the_backfill_flag_is_rejected_before_anything_opens():
+    """`brain chunk --dry-run` alone would read as "chunk nothing", which it is not."""
+    from typer.testing import CliRunner
+
+    from brain.cli import app
+
+    result = CliRunner().invoke(app, ["chunk", "--dry-run"])
+    assert result.exit_code != 0
+    assert "--dry-run only applies to --stamp-synthetic" in result.output
+
+
+def test_a_dry_run_predicts_the_entity_effect_of_stamping_the_chunks(graph):
+    """The entity rule derives each chunk's flag rather than reading the stored one.
+
+    Reading it would make the prediction depend on the pass that has not run yet: against
+    a graph whose chunks are all null every entity looks correct, which is the exact false
+    all-clear this backfill exists to remove.
+    """
+    predicted = stamp_synthetic(ctx(graph), apply=False, echo=lambda _m: None)
+    applied = stamp_synthetic(ctx(graph), echo=lambda _m: None)
+    assert predicted["before"]["entities"] == applied["before"]["entities"]
+    assert predicted["before"]["entities"]["wrong"] == applied["stamped"]["entities"] == 1
