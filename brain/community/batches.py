@@ -239,7 +239,9 @@ def collect(
     to_copy: list[dict[str, Any]] = []
     wanted = asked
     if not resummarize:
-        to_copy, wanted = split_copyable(asked, community_graph.read_reports(ctx))
+        to_copy, wanted = split_copyable(
+            asked, community_graph.reports_by_member(community_graph.read_reports(ctx))
+        )
 
     ids = [r["community_id"] for r in wanted]
     members = community_graph.read_members(ctx, ids, top_n=top_members)

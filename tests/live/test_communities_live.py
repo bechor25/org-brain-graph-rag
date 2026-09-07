@@ -532,6 +532,47 @@ def test_a_rebuild_keeps_the_reports_of_communities_that_did_not_change(merged, 
     assert all(c["embedded"] for c in communities(ctx).values() if c["summary"])
 
 
+def test_a_rebuild_gives_every_community_back_its_own_report_not_a_neighbours(merged, ctx, workdir):
+    """The provenance half of the carry, and the one a summary-only check cannot see.
+
+    Two communities that hold the same members were summarised separately; a carry keyed on
+    the member set alone hands both of them one of the two texts, stamped with a batch id
+    that answered about the other. Every field the report states is compared here, not just
+    the summary.
+    """
+
+    def snapshot() -> dict[str, dict]:
+        return {
+            r.pop("id"): r
+            for r in ctx.read(
+                f"MATCH (c:{ctx.label('Community')}) WHERE c.summary IS NOT NULL\n"
+                "RETURN c.id AS id, c.title AS title, c.summary AS summary, c.rank AS rank, "
+                "c.findings AS findings, c.batch_id AS batch_id, c.model AS model, "
+                "c.extracted_at AS extracted_at, c.copied_from AS copied_from"
+            )
+        }
+
+    before = snapshot()
+    # `cross_level_duplicates` covers every *summarisable* community, and a community the
+    # corpus gives no evidence for is summarisable and unsummarised; only the pairs where
+    # both halves were actually written can say anything about the carry.
+    pairs = [
+        p["ids"]
+        for p in merged["cross_level_duplicates"]["pairs"]
+        if all(i in before for i in p["ids"])
+    ]
+    if not pairs:
+        pytest.skip("no member set in the mini corpus carries a report at both levels")
+    duplicated = {i for ids in pairs for i in ids}
+
+    build(ctx, workdir)
+
+    after = snapshot()
+    assert after == before
+    # every one of them still names the batch that answered about it
+    assert all(after[i]["batch_id"] == before[i]["batch_id"] for i in duplicated)
+
+
 def test_after_a_rebuild_there_is_nothing_left_to_summarise(merged, ctx, workdir):
     build(ctx, workdir)
     manifest, code = run_batches(

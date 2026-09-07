@@ -13,14 +13,17 @@ carries its evidence, its batch, its model and when" is either true or not.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from brain.community.graph import MODEL, PROVENANCE_PROPS, decode_findings, encode_findings
 from brain.community.merge import (
+    batch_ledger,
     embed_hash,
     embed_text,
     findings_without_evidence,
     node_rows,
     report_is_current,
+    stamp_extracted_at,
 )
 from brain.community.models import Report
 from tests.community_helpers import (
@@ -265,3 +268,49 @@ def test_a_reordered_findings_list_is_a_real_change_not_a_false_alarm(tmp_path):
     props = props_of(tmp_path)
     stored = {**props, "findings": list(reversed(props["findings"]))}
     assert report_is_current(stored, props) is (len(props["findings"]) == 1)
+
+
+# ------------------------------------------------------- when the agent actually wrote it
+
+
+def batch_at(batch_id: str, sha: str, when: str):
+    from brain.community import merge as merge_mod
+
+    return merge_mod.Batch(
+        batch_id=batch_id,
+        shard=batch_id.split("/")[0],
+        index=int(batch_id.split("/")[1]),
+        path=Path(f"{batch_id}.out.json"),
+        sha256=sha,
+        extracted_at=when,
+    )
+
+
+def test_unchanged_bytes_keep_the_extraction_time_the_ledger_recorded():
+    """A touch, a clone or a restore from backup must not restamp 186 provenances."""
+    batch = batch_at("shard-01/001", "abc", "2026-09-08T09:00:00+00:00")  # today's mtime
+    seen = {"shard-01/001": {"sha256": "abc", "extracted_at": "2026-09-07T14:00:00+00:00"}}
+
+    assert stamp_extracted_at([batch], seen) == 1
+    assert batch.extracted_at == "2026-09-07T14:00:00+00:00"
+
+
+def test_a_rewritten_batch_gets_the_new_time():
+    batch = batch_at("shard-01/001", "def", "2026-09-08T09:00:00+00:00")
+    seen = {"shard-01/001": {"sha256": "abc", "extracted_at": "2026-09-07T14:00:00+00:00"}}
+
+    assert stamp_extracted_at([batch], seen) == 0
+    assert batch.extracted_at == "2026-09-08T09:00:00+00:00"
+
+
+def test_a_batch_nobody_has_seen_before_keeps_its_file_time():
+    batch = batch_at("shard-02/047", "xyz", "2026-09-08T09:00:00+00:00")
+    assert stamp_extracted_at([batch], {}) == 0
+    assert batch.extracted_at == "2026-09-08T09:00:00+00:00"
+
+
+def test_the_ledger_entry_records_what_was_stamped():
+    batch = batch_at("shard-01/001", "abc", "2026-09-07T14:00:00+00:00")
+    assert batch_ledger([batch]) == {
+        "shard-01/001": {"sha256": "abc", "extracted_at": "2026-09-07T14:00:00+00:00"}
+    }

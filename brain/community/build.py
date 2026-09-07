@@ -96,23 +96,46 @@ def membership_rows(
     return grouped
 
 
+#: Read off a stored report row rather than written back onto a node.
+NOT_A_PROPERTY = frozenset({"embedding", "embed_hash", "previous_id", "member_hash", "level"})
+
+
 def carried_rows(
-    communities: list[Community], reports: dict[str, dict[str, Any]]
+    communities: list[Community],
+    own: dict[tuple[str, int], dict[str, Any]],
+    other: dict[str, dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    """Reports whose community still exists as the same set of members, re-pointed at it."""
+    """Reports whose community still exists as the same set of members, re-pointed at it.
+
+    A community gets back *its own* report: the one written for this member set at this
+    level. Only if it has none does it borrow another level's report for the same members,
+    and then `copied_from` says so — the same rule `brain communities batches` applies when
+    it copies a report instead of paying an agent to write the text twice.
+
+    The distinction is the whole point. 22 member sets on the live graph carry a report at
+    both levels, and a carry keyed on the member set alone gave all 44 communities one of
+    the two texts, stamped with the batch id, model and extraction time of a batch that had
+    answered about the other one. Nothing failed; the provenance simply stopped being true.
+    """
     rows: list[dict[str, Any]] = []
     carried: list[str] = []
     for community in communities:
-        stored = reports.get(community.member_hash)
-        if stored is None or not community.summarized:
+        if not community.summarized:
             continue
-        props = {
-            k: v for k, v in stored.items() if k not in {"embedding", "embed_hash", "previous_id"}
-        }
+        source: str | None = None
+        stored = own.get((community.member_hash, community.level))
+        if stored is None:
+            stored = other.get(community.member_hash)
+            source = str((stored or {}).get("previous_id") or "")
+            if stored is None or source == community.id:
+                continue
+        props = {k: v for k, v in stored.items() if k not in NOT_A_PROPERTY and v is not None}
+        if source:
+            props[community_graph.COPIED_FROM] = source
         rows.append(
             {
                 "id": community.id,
-                "props": {k: v for k, v in props.items() if v is not None},
+                "props": props,
                 "embedding": stored.get("embedding"),
                 "embed_hash": stored.get("embed_hash"),
             }
@@ -210,9 +233,16 @@ def run_build(
             membership_rows(communities, degrees),
             built_at=built_at,
         )
-        carry, carried = carried_rows(communities, previous)
+        carry, carried = carried_rows(
+            communities,
+            community_graph.reports_by_member_level(previous),
+            community_graph.reports_by_member(previous),
+        )
         written["reports_carried_over"] = community_graph.carry_reports(ctx, carry)
         written["reports_dropped"] = len(previous) - len(carry)
+        written["reports_copied_from_another_level"] = sum(
+            1 for r in carry if community_graph.COPIED_FROM in r["props"]
+        )
         written["applied"] = True
 
     report = build_report(

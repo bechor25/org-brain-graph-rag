@@ -58,6 +58,9 @@ REPORT_PROPS: tuple[str, ...] = (
 #: What `report_is_current` compares. `reported_at` is when merge last ran, not what it
 #: said, so including it would make every re-merge look like a change.
 COMPARED_PROPS: tuple[str, ...] = tuple(p for p in REPORT_PROPS if p != "reported_at")
+#: Wiped when a rebuild writes the partition, restored by `carry_reports`. A report belongs
+#: to a set of members, so it may not survive on an id whose members changed.
+CLEARED_ON_REBUILD: tuple[str, ...] = (*REPORT_PROPS, EMBEDDING_PROP, EMBED_HASH_PROP)
 
 #: Where each projected label keeps its key, its display name and its description.
 MEMBER_LABELS: tuple[str, ...] = ("Entity", "WorkItem", "Document", "Component")
@@ -247,22 +250,51 @@ def index_status(ctx: GraphContext) -> dict[str, Any]:
 # --------------------------------------------------------------------------------- reads
 
 
-def read_reports(ctx: GraphContext) -> dict[str, dict[str, Any]]:
-    """`{member_hash: report properties + embedding}` for every summarised community.
+def read_reports(ctx: GraphContext) -> list[dict[str, Any]]:
+    """Every summarised community's report, with the member set and level it was written for.
 
-    Read before the partition is replaced, written back after — the whole of "a community
-    that did not change is not summarised again".
+    Read before the partition is replaced and written back after — the whole of "a
+    community that did not change is not summarised again".
+
+    A list, and not the map keyed on `member_hash` this used to return. One member set can
+    carry two reports: 22 do on the live graph, where a coarse community holds exactly the
+    members of a fine one and each was summarised on its own. A map keyed on the hash alone
+    keeps one of them and drops the other silently, and the next rebuild then hands the
+    survivor's text, batch id and extraction time to both — a report attributed to a batch
+    that never wrote it, with nothing failing to say so.
     """
     props = ", ".join(f"c.`{p}` AS `{p}`" for p in REPORT_PROPS)
-    rows = ctx.read(
+    return ctx.read(
         f"MATCH (c:{ctx.label(LABEL)}) WHERE c.`summary` IS NOT NULL\n"
-        f"RETURN c.`member_hash` AS member_hash, c.`id` AS previous_id, {props}, "
-        f"c.`{EMBEDDING_PROP}` AS embedding, c.`{EMBED_HASH_PROP}` AS embed_hash\n"
+        "RETURN c.`member_hash` AS member_hash, c.`level` AS level, c.`id` AS previous_id, "
+        f"{props}, c.`{EMBEDDING_PROP}` AS embedding, c.`{EMBED_HASH_PROP}` AS embed_hash\n"
         "ORDER BY member_hash, previous_id"
     )
-    out: dict[str, dict[str, Any]] = {}
+
+
+def reports_by_member_level(
+    rows: Sequence[dict[str, Any]],
+) -> dict[tuple[str, int], dict[str, Any]]:
+    """`(member_hash, level)` -> the report written for exactly that community."""
+    out: dict[tuple[str, int], dict[str, Any]] = {}
     for row in rows:
-        member_hash = row.pop("member_hash")
+        member_hash, level = row.get("member_hash"), row.get("level")
+        if member_hash and level is not None:
+            out.setdefault((member_hash, int(level)), row)
+    return out
+
+
+def reports_by_member(rows: Sequence[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """`member_hash` -> one report about that member set, whatever level wrote it.
+
+    For the copy rule only, and deliberately lossy: when two levels hold the same members
+    it keeps the lowest id. Which of two equally valid reports gets copied is arbitrary —
+    but it must be the same one on every run, so the ordering is the query's, not the
+    dictionary's.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    for row in sorted(rows, key=lambda r: str(r.get("previous_id") or "")):
+        member_hash = row.get("member_hash")
         if member_hash:
             out.setdefault(member_hash, row)
     return out
@@ -470,8 +502,16 @@ def replace_communities(
     belonging to a community it left: `MERGE` alone only ever adds.
     """
     label = ctx.label(LABEL)
+    # A `MERGE` onto an id this run reused would leave the previous run's report sitting on
+    # a community that no longer holds those members — invisible, because `summarized` goes
+    # back to false while `summary` keeps a text about something else, and `collect` skips
+    # any community that has one. Every report property is removed here and put back by
+    # `carry_reports` a moment later, for exactly the communities that earned it.
+    cleared = ", ".join(f"c.`{p}`" for p in CLEARED_ON_REBUILD)
     ctx.write_rows(
-        f"UNWIND $rows AS row\nMERGE (c:{label} {{`id`: row.id}})\nSET c += row.props", rows
+        f"UNWIND $rows AS row\nMERGE (c:{label} {{`id`: row.id}})\n"
+        f"SET c += row.props\nREMOVE {cleared}",
+        rows,
     )
     ids = [r["id"] for r in rows]
     deleted = ctx.write(f"MATCH (c:{label}) WHERE NOT c.id IN $ids DETACH DELETE c", ids=ids).get(

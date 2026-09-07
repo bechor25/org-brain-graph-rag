@@ -117,6 +117,33 @@ def discover(root: Path) -> list[Batch]:
     return out
 
 
+def stamp_extracted_at(batches: Sequence[Batch], seen: dict[str, Any]) -> int:
+    """Keep the recorded extraction time for every batch whose bytes have not changed.
+
+    `extracted_at` is provenance: it says when the model wrote this answer. A file's mtime
+    is a proxy for that, and a proxy that a `git clone`, a `touch`, a restore from backup
+    or a copy between machines resets — which would restamp 186 community reports with a
+    moment no agent ever wrote anything at. The ledger records when each batch's *content*
+    was first seen, keyed by its sha256, and that is what the node carries until the
+    content actually changes. Returns how many times the recorded value was reused.
+    """
+    reused = 0
+    for batch in batches:
+        record = seen.get(batch.batch_id) or {}
+        if record.get("sha256") == batch.sha256 and record.get("extracted_at"):
+            batch.extracted_at = str(record["extracted_at"])
+            reused += 1
+    return reused
+
+
+def batch_ledger(batches: Sequence[Batch]) -> dict[str, dict[str, str]]:
+    """What `stamp_extracted_at` reads next time: content hash -> when it was first seen."""
+    return {
+        b.batch_id: {"sha256": b.sha256, "extracted_at": b.extracted_at}
+        for b in sorted(batches, key=lambda b: b.batch_id)
+    }
+
+
 def _mtime_iso(path: Path) -> str:
     from datetime import UTC, datetime
 
@@ -411,6 +438,11 @@ def run_merge(
     batches = discover(root)
     if not batches:
         raise MergeError(f"no NNN.out.json under {root}; the summarizers have written nothing")
+    ledger_path = root / LEDGER_NAME
+    ledger = _read_json(ledger_path) or {}
+    # Before anything reads `extracted_at`: a batch whose bytes are unchanged keeps the
+    # time the ledger recorded, not whatever the filesystem now says about the file.
+    reused_times = stamp_extracted_at(batches, dict(ledger.get("batches") or {}))
     for batch in batches:
         parse_batch(batch, schema)
 
@@ -478,8 +510,6 @@ def run_merge(
             "its evidence, its batch, its model and when. This is a bug in the merge."
         )
 
-    ledger_path = root / LEDGER_NAME
-    ledger = _read_json(ledger_path) or {}
     ledger_failed: dict[str, Any] = dict(ledger.get("failed") or {})
     new_failed = {b.batch_id: handle_failure(b, ledger_failed) for b in invalid}
     for batch in valid:
@@ -509,6 +539,9 @@ def run_merge(
             ),
             "reported": dict(sorted(reported.items())),
             "failed": dict(sorted(new_failed.items())),
+            # When each batch's content was first seen, so `extracted_at` survives a
+            # `touch`, a clone or a restore that moves the file's mtime.
+            "batches": batch_ledger(batches),
         },
     )
 
@@ -533,6 +566,7 @@ def run_merge(
         census=community_graph.census(ctx),
         top=community_graph.top_ranked(ctx, 3),
         reported_failures=agent_failures(status),
+        reused_times=reused_times,
         counters=dict(ctx.counters),
         merged_at=merged_at,
         prefix=ctx.prefix,
@@ -585,6 +619,7 @@ def build_report(
     census: dict[str, Any],
     top: Sequence[dict[str, Any]],
     reported_failures: Sequence[dict[str, Any]],
+    reused_times: int,
     counters: dict[str, int],
     merged_at: str,
     prefix: str,
@@ -613,6 +648,8 @@ def build_report(
             "invalid": len(invalid),
             "envelope_valid_rate": round(len(valid) / len(batches), 4) if batches else 0.0,
             "reported_failed": len(reported_failures),
+            # `extracted_at` taken from the ledger rather than from the file's mtime
+            "extraction_times_reused": reused_times,
         },
         "reports": {
             "seen": reports_seen,
