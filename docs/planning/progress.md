@@ -40,6 +40,7 @@
 - Plan 1 שלב 06: `docs/lessons/05-chunk.md`
 
 ## ממצאים (findings)
+- (2026-09-06 21:11) שינה של המק + מכסת session של Opus הפילו 4 סוכנים באמצע; status.json לכל shard אפשר להמשיך מהנקודה. מעכשיו `caffeinate -dims` רץ בזמן batches.
 - **(synth) כלי Read של הסוכנים חותך קובץ ~49KB בשורה אחת** — `.in.json` של 80–98KB בשורה אחת נקרא חלקית (הסוכן ראה 21–27 מ-40 פריטים, לא ראה `documents/persons`). חובה לכל batch builder עתידי (extract!): JSON מודפס-יפה רב-שורות (Read עם offset/limit עובד לפי שורות) ו/או batches ≤40KB. shard-02 פיצה מ-`persons.jsonl` ומיצג יחסים לפי 40.
 - (synth) blocker בסקירה: ה-spec אמר "מונה גלובלי" בעוד ה-build חילק בלוקים לכל shard — תוקן ב-`98d98c1` והודעה נשלחה ל-3 המחוללים תוך כדי ריצה. לקח: כשסוטים מחוזה מחייב, תיקון החוזה הוא חלק מהסטייה.
 - סוכני `.claude/agents/` נטענים רק בתחילת סשן — בסשן הזה dispatch נעשה דרך general-purpose עם ההגדרה מודבקת; מסשן חדש הם זמינים ישירות.
