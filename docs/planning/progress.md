@@ -94,6 +94,14 @@
 - 22 דוחות coarse כפולים ל-fine נשארים כפי שהם; S5 (Plan 2) יאחד לפי `member_hash` בזמן אחזור. הרמה הגסה מרוויחה מעט על הקורפוס הזה — לשקול מחדש אחרי הערכה.
 - INTRODUCES_RISK (402) מחוץ לפרויקציה ב-v1; Technology/Problem/Feature ~30% ב-misc — מגבלה ידועה של Global search.
 
+## סקירת סגירת Plan 1 (2026-09-07, brain-reviewer)
+- אומת live: 0 קשתות LLM בלי provenance (14,762), 0 קשתות מקבילות זהות בכל הגרף, 186/186 קהילות עם provenance ו-0 findings בלי ראיה, `Chunk.synthetic` null = 0, כל ה-kinds/types בסט הסגור, אין כתיבה ל-DB מחוץ ל-`GraphClient`.
+- **08b resolve: accept** (follow-ups: `tier1.last_applied` נעלם אחרי rerun; scope של dedupe בדוח; residue של live tests ב-DB).
+- **09 communities: fix-required** — `carried_rows` לפי `member_hash` בלבד → rebuild היה דורס 22 דוחות coarse עם ה-fine ומאבד `copied_from`. תיקון: מפתח `(member_hash, level)`.
+- **10 index: fix-required** — תוצאת smoke ישנה (15:05Z) פורסמה מחדש ב-18:05Z בלי בדיקת רעננות → sha + STALE; `IndexMeta.chunk_count` עדיין 13,846 (הכרעה 5 לא מומשה); `person_embedding` לא managed; `Area` מחוץ לסכמה מודפס כשורה רגילה.
+- **11b modularity: fix-required (דוח בלבד)** — הקוד אומת, אבל `modularity.json` לא נושא ראיות ל-3 ה-blockers, ו-`matches_baseline` השווה digests של קבצים מלפני הרפקטור (הריצה החוזרת לתיקייה זמנית לא נרשמה); docstring של test_modularity מבטיח שמירה שלא קיימת.
+- **לקחים של הסוקר (נכנסים למוסכמות):** (1) מדידה שנגררת קדימה היא שקר עם חותמת זמן — לגרור רק עם sha/run id או לסרב; (2) "idempotent" שהוכח ע"י rerun שקרא 0 — ה-rerun מחק את הרשומה של הריצה שעבדה (פעמיים, בשני דוחות) → ראיית idempotency נכתבת למקום שה-rerun לא בבעלותו; (3) digest של קובץ committed אינו golden test אם שום קוד לא מייצר אותו.
+
 ## ממצא תהליך (2026-09-07)
 - 5 סוכנים במקביל על Neo4j+Ollama אחד: live suites מתנגשות (fixtures נכשלים), `db.awaitIndexes` database-wide חוסם על אינדקסים של namespace אחר. כלל: `make smoke` סופי רץ פעם אחת, בשקט, ע"י המתכנן. תקלת API (20:40–20:50) עצרה את כולם — ההמשך מ-git + status.json עבד.
 

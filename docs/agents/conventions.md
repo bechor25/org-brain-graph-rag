@@ -48,3 +48,10 @@ the current step brief is in `docs/planning/steps/`.
 - Idempotent steps: rerunning a step must not duplicate data (`MERGE`, hashes, checkpoints).
 - Never "fix" a failing acceptance criterion by weakening the test; report it instead.
 - Parallel agents share one working tree: stage only your own paths (`git add <paths>`), never `git add -A`, never `git stash`, never `ruff format .` outside your paths, and retry on `index.lock`. If a file you must edit carries another agent's uncommitted hunk, keep it and say so in your commit message.
+
+## לקחים מסקירת סגירת Plan 1 (2026-09-07)
+- **מדידה שנגררת קדימה בדוח** (`previous.get(...)`) חייבת לשאת את ה-sha ואת הזמן שבהם נמדדה; אם ה-HEAD השתנה — לסמן `STALE`, לא לפרסם מחדש.
+- **ראיית idempotency** (ריצה שנייה = 0) נכתבת למקום שהריצה השנייה לא דורסת (`runs[]`, `last_applied`), אחרת ה-rerun מוחק את הרשומה של הריצה שעבדה.
+- **golden test** = קוד שמייצר את הפלט מקלט ומשווה; digest של קובץ committed שאיש לא מייצר מחדש אינו golden test ואסור לתאר אותו ככזה.
+- **פעולות database-wide** (`db.awaitIndexes`, `SHOW INDEXES` בלי סינון) אסורות בקוד צעד; ממתינים/בודקים לפי שמות בבעלות הצעד.
+- **`make smoke` הסופי** רץ פעם אחת, כשאף סוכן אחר לא נוגע ב-DB, ע"י המתכנן; תוצאה שנמדדה תחת עומס מקבילי מדווחת כ"contended", לא כ-FAIL.
