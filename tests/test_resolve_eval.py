@@ -96,3 +96,32 @@ def test_run_eval_writes_a_section_per_tier(tmp_path):
     assert person["through_tier_2"]["tp"] == 3
     assert section["eval"]["target"] == TARGET
     assert (reports / "resolve.json").is_file()
+
+
+def test_the_entity_score_declares_itself_circular_and_the_person_score_does_not(tmp_path):
+    """The entity gold is the adjudicator's own verdicts, so grading tier 3 against it asks
+    the adjudicator whether it agrees with itself. The number is still worth having — it
+    proves the merge code applied what the reader decided — but a report that prints
+    P=1.0 without saying so is telling the planner something it did not measure."""
+    canonical, eval_dir, reports = (tmp_path / n for n in ("canonical", "eval", "reports"))
+    for d in (canonical, eval_dir, reports):
+        d.mkdir()
+    write_gold(
+        eval_dir / GOLD_NAME,
+        [*gold_rows(), {"kind": "entity", "a": "Feature|a", "b": "Feature|b", "label": "same"}],
+    )
+    ledger_with(("ado:a", "jira:x", 1)).write(canonical)
+
+    section, _ = run_eval(
+        canonical_dir=canonical,
+        eval_dir=eval_dir,
+        reports_dir=reports,
+        kinds=["person", "entity"],
+        echo=lambda _m: None,
+    )
+
+    entity = section["eval"]["entity"]
+    assert entity["circular"] is True
+    assert "adjudicator" in entity["circular_note"]
+    assert section["eval"]["person"]["circular"] is False
+    assert "identity map" in section["eval"]["person"]["circular_note"]

@@ -311,3 +311,22 @@ def test_embed_text_is_the_name_plus_capped_evidence():
     assert text.splitlines()[0] == "Jun Rao"
     assert len(text.splitlines()) == 6
     assert entity("Feature|x", "X", description="a thing").embed_text() == "X — a thing"
+
+
+def test_every_rule_a_tier_one_merge_can_carry_is_in_the_declared_set():
+    """The list is the closed set of tier-1 rules. It was wrong once — `username_stem` was
+    written, shipped, and left out of it, and nobody noticed the rule had never run on the
+    real graph until the report was read pair by pair."""
+    import re
+    from pathlib import Path
+
+    from brain.resolve.tiers import ENTITY_RULES, PERSON_RULES
+
+    source = Path("brain/resolve/tiers.py").read_text(encoding="utf-8")
+    emitted = set(re.findall(r'rule="([a-z_]+)"', source))
+    declared = set(PERSON_RULES) | set(ENTITY_RULES) | {"embedding_auto", "embedding_grey"}
+
+    assert emitted - declared == set(), (
+        f"a tier emits a rule nothing declares: {emitted - declared}"
+    )
+    assert declared - emitted - {"embedding_auto", "embedding_grey"} == set()

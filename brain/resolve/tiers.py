@@ -45,15 +45,20 @@ MIN_STEM = 4
 #: `KIP-848: The Next Generation…` -> `The Next Generation…`
 _KIP_PREFIX = re.compile(r"^\s*KIP-\d+\s*[:.\-]?\s*", re.IGNORECASE)
 
-#: Tier-1 rule names, in the order the report lists them.
+#: Every tier-1 rule that can merge, strongest first. Checked against what the tier really
+#: emits (`tests/test_resolve_tiers.py`), because a rule missing from this list once meant
+#: `username_stem` shipped and nobody noticed it had never run.
 PERSON_RULES: tuple[str, ...] = (
     "email",
     "jira_git_name",
-    "display_and_activity",
-    "alias_candidates",
     "confluence_userkey",
+    "username_stem",
+    "alias_candidates",
+    "display_and_activity",
 )
-ENTITY_RULES: tuple[str, ...] = ("norm_name", "kip_title_alias")
+#: `kip_title_alias` is not here: a KIP-named Feature gets a `SAME_AS` to the Document and
+#: is never merged into anything (brief 08 decision 2), so it is a link, not a rule.
+ENTITY_RULES: tuple[str, ...] = ("norm_name",)
 #: Kinds a KIP title may name. A `Decision` or a `Problem` called after a KIP is a
 #: coincidence of phrasing; a `Feature` or a `Technology` is the thing the KIP proposes.
 KIP_ALIAS_KINDS: frozenset[str] = frozenset({"Feature", "Technology"})

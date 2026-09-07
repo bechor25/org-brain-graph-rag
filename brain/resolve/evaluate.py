@@ -30,6 +30,33 @@ TIERS: tuple[int, ...] = (1, 2, 3)
 #: The course target the brief holds resolution to, after tier 3.
 TARGET = 0.85
 
+#: Whether a kind's gold was made independently of the thing it grades, and why. Printed
+#: in the report beside every number it qualifies: a score whose provenance a reader has
+#: to reconstruct is a score a reader will quote without the caveat.
+CIRCULAR: dict[str, tuple[bool, str]] = {
+    # The ground-truth file is deliberately not named in any string this module could
+    # open: `tests/test_resolve_truth_isolation.py` fails the build if it is, and the rule
+    # is what makes these numbers worth reading. `brain resolve gold` is the only module
+    # allowed to open it.
+    "person": (
+        False,
+        "The person gold is the synthetic generator's identity map — written before the "
+        "pipeline existed, read only by `brain resolve gold`, and named in no other "
+        "module by the enforced isolation rule. Nothing that resolves people ever saw it, "
+        "so P/R here measure resolution against an answer from outside the pipeline.",
+    ),
+    "entity": (
+        True,
+        "The entity gold IS the adjudicator's own verdicts — brief 08 decision 6 (b): 100 "
+        "pairs it graded. So `through_tier_3` asks the adjudicator whether it agrees with "
+        "itself, and near-perfect numbers are the expected result, not a finding. What it "
+        "does measure is real but narrower: that the merge code applied exactly the "
+        "verdicts the reader gave it, and that no earlier tier contradicted them. The "
+        "adjudicator itself is audited outside this file, by the planner's hand spot-check "
+        "of `data/eval/resolution_gold_entity_spotcheck.md`.",
+    ),
+}
+
 
 class _Union:
     def __init__(self) -> None:
@@ -143,13 +170,18 @@ def run_eval(
         per_tier = {
             f"through_tier_{t}": score(rows, predicted(ledger, kind, max_tier=t)) for t in TIERS
         }
+        circular, why = CIRCULAR[kind]
         results[kind] = {
             "gold_path": str(gold_path),
             "gold_pairs": len(rows),
             "positives": sum(1 for r in rows if r["label"] == "same"),
             "negatives": sum(1 for r in rows if r["label"] == "different"),
+            "circular": circular,
+            "circular_note": why,
             **per_tier,
         }
+        if circular:
+            echo(f"[WARN] {kind}: {why.splitlines()[0]}")
         for name, stats in per_tier.items():
             echo(
                 f"{kind} {name}: P={stats['precision']} R={stats['recall']} F1={stats['f1']} "
