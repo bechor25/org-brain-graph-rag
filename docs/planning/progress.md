@@ -23,7 +23,7 @@
 | 1 | 05 load | ✅ + סינתטי | cc2ad87…47abc94 | 35,410 צמתים / 109,623 קשתות; 2,385 סינתטיים עם provenance; TESTS 660 / HAS_RUN 609 / IN_PLAN 78; rerun 0/0 | 32,855 צמתים / 95,695 קשתות ב-3.6s; ריצה שנייה 0/0; LINKS_TO 298 זוגות; dangling issue refs 8,217 (גבול הפרוסה); StatusChange 7,607 (18.9k רעש הוסר); 725 מרווחי assignee בלי Person → canon ימנטס מ-changelog |
 | 1 | 06 chunk+embed | ✅ (re-review; 651 בדיקות) | d1146be…636a83a | 12,915 chunks חיים (section 1,713 / desc 3,423 / comment 3,629 / commit 4,150) + 931 orphaned; embedding 416s+142s @ 6.5k tok/s; 3.49 chars/token; fences מוזחים 12→0; rerun 0/0; guard ברשת ב-conftest תפס בדיקות harvest שפנו לאינטרנט |
 | 1 | 07 extract Phase A | ✅ (a1e6b55) merge: 195/195 valid, 42/14,930 רשומות נדחו (0.28%); 9,237 ישויות (Decision 3,837 / Problem 2,277 / Feature 1,118 / Tech 739 / Alt 670 / Risk 596), 5,492 יחסים, 9,390 MENTIONS, 0 בלי provenance; 81% Decisions weak (Feature נושא את הסיבות); 98.6% ישויות עם chunk ראייתי אחד ("restatement per chunk", לא איחוד) → resolve; **סקירה: accept**, מדגם 50: 46 נתמכים / 4 חלקיים / 0 לא (92%), kind נכון 45/50 | | 2,743 chunks (1,713 KIP sections + 1,030 descriptions) → 195 batches ≤40KB רב-שורתיים, ~24/סוכן, ~187k tokens קלט לסוכן; schema+examples אושרו ע"י המתכנן |
-| 1 | 08 resolve | 🟡 Persons: tiers 1–2 עם guard (185915b) — P=0.990 R=0.168; שיפוט ✅ 52/52: same 338 / different 744 / unsure 106; merge-decisions + eval רצים; resolve ישויות (ANN) רץ | 79f75cc…185915b | 2,187→1,425 Persons (762 מיזוגים: 275 דטרמיניסטי, 487 embedding); P=0.847 R=0.263 לפני tier 3; תחום אפור 2,354 זוגות → מצמצמים ב-blocking + guard של ≥2 tokens בשם (P→0.955); embedding עם "מה עבד עליו" **הפך** את הסיגנל (true pairs 0.76→0.63) → display בלבד |
+| 1 | 08 resolve | 🟡 **אנשים ✅**: 2,187→1,229 (958 מיזוגים: 268/408/282 לפי tier; 50% מהזוגות רק דרך closure) — **P=0.979 R=0.744 F1=0.846** (תקרת הband 0.851; ל-0.85 דרוש band לא-חסום, +78 batches — נדחה כאופציה). ישויות: tier 1 = 7 קישורי KIP, tier 2 = 4 auto (gate מילים-זהות אחרי dry-run שהראה 244 מיזוגי-שרשרת שגויים); **4 שופטי-ישויות רצים** על 1,200 זוגות / 68 batches | 79f75cc…21ac7e1 | 2,187→1,425 Persons (762 מיזוגים: 275 דטרמיניסטי, 487 embedding); P=0.847 R=0.263 לפני tier 3; תחום אפור 2,354 זוגות → מצמצמים ב-blocking + guard של ≥2 tokens בשם (P→0.955); embedding עם "מה עבד עליו" **הפך** את הסיגנל (true pairs 0.76→0.63) → display בלבד |
 | 1 | 09 communities | ⬜ | | |
 | 1 | 10 index + gate | ⬜ | | |
 | 1 | 11 modularity (registry, auth env, reset, guide) | ⬜ | | ADR-0005; אחרי chunk |
@@ -68,6 +68,8 @@
 - `IN_SPACE` Document→Space (Space היה orphan).
 
 ## הכרעות מתכנן — resolve
+- recall אנשים 0.744 < 0.85: מקבל ומתעד. הדרך ל-0.85 היא band רחב יותר (3,133 זוגות, ~78 batches נוספים) — לא שופט טוב יותר. אופציונלי אחרי Plan 3 אם שאלות-אנשים נפגעות.
+- auto-merge ישויות = מילים זהות (מלבד articles); "token משותף" לבד יצר שרשראות (8 metrics → צומת אחד).
 - Floor 0.80 + blocking (1,188 זוגות) — השורה היחידה שמשאירה תקרת recall ≥0.85; כל אופציה ≤600 זוגות מגבילה ל-≤0.78. דיוק ב-auto-tier שווה יותר מ-recall (ל-recall יש הזדמנות שנייה ב-tier 3, לדיוק אין).
 - embedding ל-Person = display בלבד (לא + פריטים): הקשר של "מה עבד עליו" מודד עבודה משותפת, לא זהות משותפת.
 
