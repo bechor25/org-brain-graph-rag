@@ -47,6 +47,32 @@ make smoke    # doctor + בדיקות live מול Neo4j ו-Ollama
 
 `brain --help` מסביר כל שלב; שלבים שטרם מומשו יוצאים עם קוד 2 ואומרים באיזו תכנית הם מגיעים.
 
+## חיבור מערכת חדשה
+
+כל המקורות יושבים ב-`sources.yaml` בשורש — כתובת, שאילתה (JQL/CQL/WIQL/חלון commits), `project_keys` ושם משתנה הסביבה של הטוקן. **אין כתובת, שאילתה או מפתח פרויקט בקוד.**
+
+```bash
+uv run brain harvest --source <name>   # רק המקור החדש
+uv run brain canon && uv run brain load
+```
+
+מערכת חדשה = שלושה קבצים (connector, mapper, בדיקת golden) ורשומה אחת ב-`sources.yaml`. הגבול הוא המודל הקנוני: שום שלב אחרי `brain canon` לא יודע מאיפה הדאטה הגיע.
+
+טוקנים רק במשתני סביבה (`.env`, ראו `.env.example`); לא מוגדר = אנונימי, וזה מצב העבודה הרגיל מול ה-endpoints הציבוריים של ASF. טוקן אף פעם לא נכתב ללוג, לדוח או ל-checkpoint.
+
+**המדריך המלא — כולל שלדים עובדים ל-Azure DevOps ול-Xray:** [`docs/guides/adding-a-connector.md`](docs/guides/adding-a-connector.md).
+
+## איפוס
+
+```bash
+uv run brain reset --synthetic --yes   # רק השכבה הסינתטית; הקורפוס האמיתי נשאר טעון
+uv run brain reset --graph --yes       # כל הצמתים; constraints ו-indexes נשארים
+uv run brain reset --data --yes        # data/raw|canonical|batches|reports|eval
+uv run brain reset --all --yes         # graph + data
+```
+
+בלי `--yes` שום דבר לא נמחק — הפקודה מדפיסה מניפסט של מה שהייתה מוחקת ויוצאת עם קוד 1. `data/fixtures/` אף פעם לא נמחק. אחרי `--all --yes`: `brain doctor` נשאר 7/7 וכל ספירה בגרף היא 0. פירוט ב-[מדריך](docs/guides/adding-a-connector.md#9-brain-reset--למחוק-את-דאטה-הבדיקות).
+
 ## עקרונות שלא מתפשרים עליהם
 
 1. **סוכן = ה-LLM.** כל שלב שדורש מודל שפה רץ כ-batch לסוכן Opus שכותב JSON. רק קוד דטרמיניסטי כותב ל-Neo4j. סוכני-LLM מקבלים רק `Read, Write, Glob` — פיזית אין להם shell.
