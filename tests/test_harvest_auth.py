@@ -200,3 +200,96 @@ def test_an_arbitrary_exception_from_fetch_is_redacted_too(tmp_path, monkeypatch
     result = GitConnector(tmp_path, source=source("git"), runner=runner).run()
     details = " ".join(e["detail"] for e in result.errors)
     assert TOKEN not in details and "***" in details
+
+
+# --------------------------------------------------------------------------- the report
+
+
+def test_no_exception_from_subprocess_leaves_git_unredacted(tmp_path, monkeypatch):
+    """`TimeoutExpired` is the one that was found; the guarantee is about all of them."""
+    import subprocess
+
+    monkeypatch.setenv("GIT_TOKEN", TOKEN)
+
+    def runner(args, cwd=None, timeout=900.0, secrets=()):
+        from brain.harvest.git import _run
+
+        def boom(*_a, **_kw):
+            raise OSError(f"cannot exec: {' '.join(args)}")
+
+        monkeypatch.setattr(subprocess, "run", boom)
+        return _run(args, cwd, timeout, secrets)
+
+    result = GitConnector(tmp_path, source=source("git"), runner=runner).run()
+    details = " ".join(e["detail"] for e in result.errors)
+    assert TOKEN not in details and "***" in details
+
+
+def test_the_clone_does_not_leave_the_token_in_git_config(tmp_path, monkeypatch):
+    """`git clone <url-with-token>` writes that URL into `.git/config` and keeps it."""
+    monkeypatch.setenv("GIT_TOKEN", TOKEN)
+    calls: list[list[str]] = []
+
+    def runner(args, cwd=None, timeout=900.0, secrets=()):
+        calls.append(list(args))
+        if args[:2] == ["git", "clone"]:
+            (tmp_path / "git" / "kafka" / ".git").mkdir(parents=True)
+        return ""
+
+    connector = GitConnector(tmp_path, source=source("git"), runner=runner)
+    assert connector.ensure_clone() is True
+
+    assert any(TOKEN in arg for arg in calls[0]), "the clone must still authenticate"
+    assert calls[1] == ["git", "remote", "set-url", "origin", connector.clone_url]
+    assert all(TOKEN not in arg for arg in calls[1])
+
+
+def test_a_leaking_connector_still_writes_a_clean_harvest_report(tmp_path, monkeypatch):
+    """End to end: the token is in the exception text, and not in `harvest.json` on disk.
+
+    The connector here is deliberately hostile — it raises a bare `RuntimeError` quoting
+    its own credential, the way a third-party library would. Nothing between it and the
+    file knows about that string except the redaction at the report boundary.
+    """
+    import json
+
+    from brain.harvest.runner import run_harvest
+
+    monkeypatch.setenv("GIT_TOKEN", TOKEN)
+    raw_dir = tmp_path / "raw"
+    reports = tmp_path / "reports"
+    reports.mkdir()
+
+    def runner(*_a, **_kw):
+        raise RuntimeError(f"remote https://x-access-token:{TOKEN}@github.com/apache/kafka")
+
+    printed: list[str] = []
+    report, code = run_harvest(
+        ["git"],
+        raw_dir=raw_dir,
+        reports_dir=reports,
+        factories={"git": lambda d: GitConnector(d, source=source("git"), runner=runner)},
+        echo=printed.append,
+    )
+
+    written = (reports / "harvest.json").read_text(encoding="utf-8")
+    assert TOKEN not in written
+    assert "***" in written
+    assert TOKEN not in json.dumps(report)
+    assert TOKEN not in "\n".join(printed)
+    assert code == 1, "a fatal error must still be a failure, not a quietly clean report"
+
+
+def test_a_failing_stats_pass_cannot_leak_either(tmp_path, monkeypatch):
+    """`stats()` runs after the fetch and its failure is recorded, never raised."""
+    monkeypatch.setenv("GIT_TOKEN", TOKEN)
+
+    class Leaky(GitConnector):
+        def stats(self, since=None):
+            raise RuntimeError(f"reading {self.auth_clone_url}")
+
+    result = Leaky(tmp_path, source=source("git"), runner=lambda *a, **k: "").run()
+    stats_errors = [e for e in result.errors if e["kind"] == "stats"]
+    assert stats_errors, "the stats failure must be recorded, not swallowed"
+    assert TOKEN not in stats_errors[0]["detail"]
+    assert "***" in stats_errors[0]["detail"]

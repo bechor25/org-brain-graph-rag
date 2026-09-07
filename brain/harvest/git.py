@@ -80,11 +80,17 @@ def _run(
     timeout: float = 900.0,
     secrets: tuple[str, ...] = (),
 ) -> str:
-    """Run git and return stdout. `secrets` are scrubbed from the failure message.
+    """Run git and return stdout. `secrets` are scrubbed from every failure message.
 
-    A token-bearing clone URL is an argument to `git clone`, and git echoes the remote
-    back in most of its errors — so the one string this function raises is the one place
-    a credential could reach `data/reports/harvest.json`.
+    A token-bearing clone URL is an argument to `git clone`, and `argv` is what the
+    standard library prints in most of its own exceptions — `TimeoutExpired.__str__` spells
+    out the whole command — so this function raises the only string that can carry a
+    credential out of git and into `data/reports/harvest.json`.
+
+    Hence the bare `except`: the point is not to name the exceptions that quote `argv`
+    (`TimeoutExpired` does, `FileNotFoundError` does not), it is that *nothing* leaves here
+    unredacted. A new failure mode in a future Python must not be a new leak, and
+    `from None` drops the original from the traceback for the same reason.
     """
     try:
         proc = subprocess.run(  # noqa: S603 - fixed argv, no shell
@@ -96,11 +102,12 @@ def _run(
             check=False,
         )
     except subprocess.TimeoutExpired:
-        # `TimeoutExpired.__str__` prints the whole command, which for a clone is the
-        # remote *with the token in it*. It has to be caught and rewritten here — letting
-        # it propagate would put the credential in the report as a `fatal` detail.
         raise HarvestError(
             redact(f"{' '.join(args)} timed out after {timeout}s", *secrets)
+        ) from None
+    except Exception as exc:  # noqa: BLE001 - see the docstring: redact, never re-raise raw
+        raise HarvestError(
+            redact(f"{' '.join(args)} failed: {type(exc).__name__}: {exc}", *secrets)
         ) from None
     if proc.returncode != 0:
         detail = f"{' '.join(args)} failed ({proc.returncode}): {proc.stderr[:400]}"
@@ -196,7 +203,15 @@ class GitConnector(BaseConnector):
     # -- clone -------------------------------------------------------------
 
     def ensure_clone(self) -> bool:
-        """Clone on first use; afterwards the local repo is the source of truth."""
+        """Clone on first use; afterwards the local repo is the source of truth.
+
+        The remote is rewritten to the public URL immediately after the clone. `git clone`
+        stores whatever URL it was given in `.git/config`, so a token-bearing clone leaves
+        the credential on disk in `data/raw/<id>/<clone_dir>/.git/config` — plaintext, and
+        for as long as the corpus lives. Nothing here ever fetches again (every later call
+        is `git log` against the local objects), so dropping the credential costs nothing
+        and ADR-0005 §4 says the token lives in the environment and nowhere else.
+        """
         if (self.clone_dir / ".git").exists():
             return False
         self.clone_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -212,6 +227,8 @@ class GitConnector(BaseConnector):
             ],
             None,
         )
+        if self.credentials.present:
+            self._run(["git", "remote", "set-url", "origin", self.clone_url], self.clone_dir)
         return True
 
     def probe(self) -> ProbeResult:
