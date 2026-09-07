@@ -10,13 +10,15 @@ import respx
 
 from brain.harvest.base import HttpFetcher
 from brain.harvest.confluence import (
-    BASE_URL,
     ConfluenceConnector,
     analyze,
     build_cql,
     next_start,
 )
+from tests.harvest_helpers import source  # noqa: E402
 
+CONFLUENCE = source("confluence")
+BASE_URL = CONFLUENCE.base_url
 SEARCH = f"{BASE_URL}/rest/api/content/search"
 
 
@@ -61,18 +63,20 @@ def paged_transport(total: int, limit: int, seen: list[dict] | None = None):
 
 def connector(tmp_path, limit: int = 25) -> ConfluenceConnector:
     http = HttpFetcher(BASE_URL, min_interval=0.0, sleep=lambda s: None)
-    return ConfluenceConnector(tmp_path, http=http, limit=limit)
+    return ConfluenceConnector(
+        tmp_path, source=source("confluence", options={"limit": limit}), http=http
+    )
 
 
 # --------------------------------------------------------------------------- CQL
 
 
 def test_cql_targets_kip_pages_in_the_kafka_space():
-    assert build_cql(None) == 'space=KAFKA and type=page and title ~ "KIP-"'
+    assert build_cql(CONFLUENCE) == 'space=KAFKA and type=page and title ~ "KIP-"'
 
 
 def test_since_narrows_by_lastmodified():
-    assert build_cql(date(2025, 6, 1)).endswith('and lastmodified >= "2025-06-01"')
+    assert build_cql(CONFLUENCE, date(2025, 6, 1)).endswith('and lastmodified >= "2025-06-01"')
 
 
 # --------------------------------------------------------------------------- next link

@@ -16,6 +16,9 @@ from __future__ import annotations
 
 import re
 from collections.abc import Collection, Iterable
+from dataclasses import dataclass
+from functools import lru_cache
+from typing import Any
 from urllib.parse import unquote
 
 from brain.canon.models import Ref
@@ -33,25 +36,44 @@ _HOST_CONTEXT = re.compile(r"[.:/@-][A-Za-z0-9]")
 #: Jira's own mention syntax, as it appears in descriptions and comments: `[~jrao]`.
 _JIRA_USER = re.compile(r"\[~([A-Za-z0-9_.-]+)\]")
 
-#: Key prefixes the synthetic Xray/ADO layer mints (Plan 1 Task 3, `synthetic_spec.md`):
-#: `XT` Test, `XE` TestExecution, `XP` TestPlan, `XS` TestSet, `ADO` work item. They are on
-#: the allowlist permanently, not only while `brain synth` runs: `brain canon` carries the
-#: synthetic records over on every rerun and re-derives nothing, but a *real* record whose
-#: text names `XT-12` — a KIP quoting a test key, once the layer exists — must keep the ref.
-#: Zero `XT/XE/XP/XS/ADO-<n>` matches exist in the real corpus (measured over every work
-#: item, document and commit), so widening the allowlist costs no false positives.
-SYNTHETIC_KEY_PREFIXES: frozenset[str] = frozenset({"XT", "XE", "XP", "XS", "ADO"})
-
-#: Project keys an `ABC-123` text match may become an issue ref for. The regex cannot
-#: tell `KAFKA-15123` from `UTF-8` or `SHA-256`; only a key the harvest actually saw can.
-ISSUE_PROJECT_ALLOWLIST: frozenset[str] = frozenset({"KAFKA"}) | SYNTHETIC_KEY_PREFIXES
-
-#: `KAFKA-1` is the placeholder key in the KIP page template — it is on ~2% of KIP pages
-#: and means "put your Jira key here", never the real issue KAFKA-1.
-ISSUE_KEY_BLACKLIST: frozenset[str] = frozenset({"KAFKA-1"})
-
 NOT_ALLOWED = "not_in_allowlist"
 BLACKLISTED = "blacklisted"
+
+
+@dataclass(frozen=True)
+class RefPolicy:
+    """Which issue keys may exist, and which may not — both read from `sources.yaml`.
+
+    `allowlist`: project keys an `ABC-123` text match may become an issue ref for. The
+    regex cannot tell `KAFKA-15123` from `UTF-8` or `SHA-256`; only a key some configured
+    source owns can. It is the union of every enabled source's `project_keys` and the
+    synthetic prefixes (`XT|XE|XP|XS|ADO`), which stay allowed permanently and not only
+    while `brain synth` runs: canon carries synthetic records over on every rerun, and a
+    *real* KIP quoting `XT-12` must keep the ref. Zero `XT/XE/XP/XS/ADO-<n>` matches exist
+    in the real corpus, so widening costs no false positives.
+
+    `blacklist`: keys that match the shape and still are not references. `KAFKA-1` is the
+    placeholder in the KIP page template — on ~2% of KIP pages, and never the real issue.
+    """
+
+    allowlist: frozenset[str]
+    blacklist: frozenset[str]
+
+    @classmethod
+    def from_registry(cls, registry: Any = None) -> RefPolicy:
+        from brain.harvest.registry import get_registry
+
+        reg = registry or get_registry()
+        return cls(
+            allowlist=reg.issue_project_allowlist(),
+            blacklist=frozenset(k.upper() for k in reg.issue_key_blacklist),
+        )
+
+
+@lru_cache(maxsize=1)
+def default_policy() -> RefPolicy:
+    """The registry's policy, read once. `harvest.registry.reset_caches()` clears it."""
+    return RefPolicy.from_registry()
 
 
 _URL_ISSUE = re.compile(r"/browse/([A-Za-z][A-Za-z0-9]{1,9})-(\d+)")
@@ -80,15 +102,16 @@ def _classify_url(url: str, allowlist: Collection[str]) -> Ref:
     return Ref(kind="url", key=url.rstrip(".,;"))
 
 
-def extract_refs(text: str, *, allowlist: Collection[str] = ISSUE_PROJECT_ALLOWLIST) -> list[Ref]:
+def extract_refs(text: str, *, allowlist: Collection[str] | None = None) -> list[Ref]:
     """Every cross-reference in `text`, in first-appearance order, deduplicated.
 
     `allowlist` only decides *case normalization* here; dropping the rest is
     :func:`filter_refs`, so a caller can still see what the regexes thought was a key.
+    Defaults to the registry's allowlist (`sources.yaml`).
     """
     if not text:
         return []
-    allowed = {p.upper() for p in allowlist}
+    allowed = {p.upper() for p in (default_policy().allowlist if allowlist is None else allowlist)}
     found: list[tuple[int, Ref]] = []
 
     urls = list(_URL.finditer(text))
@@ -136,8 +159,8 @@ def project_of(key: str) -> str:
 def filter_refs(
     refs: Iterable[Ref],
     *,
-    allowlist: Collection[str] = ISSUE_PROJECT_ALLOWLIST,
-    blacklist: Collection[str] = ISSUE_KEY_BLACKLIST,
+    allowlist: Collection[str] | None = None,
+    blacklist: Collection[str] | None = None,
 ) -> tuple[list[Ref], list[tuple[str, str]]]:
     """Keep the issue refs that can be real; return the rest with the reason they went.
 
@@ -145,8 +168,9 @@ def filter_refs(
     its own evidence. The removed list is what the report turns into "what the regex
     thought was an issue key": `UTF-8`, `SHA-256`, `HTTP-2`, `AES-256`…
     """
-    allowed = {p.upper() for p in allowlist}
-    denied = {k.upper() for k in blacklist}
+    policy = default_policy()
+    allowed = {p.upper() for p in (policy.allowlist if allowlist is None else allowlist)}
+    denied = {k.upper() for k in (policy.blacklist if blacklist is None else blacklist)}
     kept: list[Ref] = []
     removed: list[tuple[str, str]] = []
     for ref in refs:

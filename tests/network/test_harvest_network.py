@@ -16,6 +16,7 @@ import pytest
 from brain.harvest.confluence import ConfluenceConnector
 from brain.harvest.git import GitConnector
 from brain.harvest.jira import JiraConnector
+from tests.harvest_helpers import source
 
 pytestmark = pytest.mark.network
 
@@ -27,7 +28,7 @@ def test_jira_probe_sees_the_whole_slice():
 
 
 def test_jira_page_carries_changelog_and_comments(tmp_path):
-    connector = JiraConnector(tmp_path, page_size=10)
+    connector = JiraConnector(tmp_path, source=source("jira", options={"page_size": 10}))
     checkpoint = connector.checkpoint(None)
     page = next(connector.fetch(None, checkpoint))
     connector.http.close()
@@ -45,7 +46,7 @@ def test_confluence_probe_sees_the_kip_pages():
 
 
 def test_confluence_page_carries_body_storage_and_a_next_link(tmp_path):
-    connector = ConfluenceConnector(tmp_path, limit=5)
+    connector = ConfluenceConnector(tmp_path, source=source("confluence", options={"limit": 5}))
     checkpoint = connector.checkpoint(None)
     page = next(connector.fetch(None, checkpoint))
     connector.http.close()

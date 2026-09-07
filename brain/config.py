@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     embed_dim: int = 1024
 
     data_dir: Path = Path("data")
+    #: The source registry (ADR-0005). Relative paths resolve against the working
+    #: directory, then the repo root — see `brain.harvest.registry.registry_path`.
+    sources_file: Path = Path("sources.yaml")
 
     @property
     def raw_dir(self) -> Path:

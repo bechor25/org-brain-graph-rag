@@ -28,10 +28,13 @@ from brain.canon.mappers.confluence import map_pages
 from brain.canon.mappers.git import map_commits
 from brain.canon.mappers.jira import map_issues
 from brain.canon.models import Change, Container, Document, Person, WorkItem
-from brain.canon.raw import SOURCES, load_source
+from brain.canon.raw import load_source
 from brain.canon.report import build_report, summarize, write_report
+from brain.harvest.registry import Registry, RegistryError, get_registry
 
-#: source -> its mapper. Adding an org system is a new entry here, never a new schema.
+#: source **type** -> its mapper. Adding an org system is a new entry here plus an entry
+#: in `sources.yaml`, never a new schema. Keyed by type, so a second Jira instance is a
+#: registry line and no code at all.
 MAPPERS: dict[str, Callable[[Any], Bundle]] = {
     "jira": map_issues,
     "confluence": map_pages,
@@ -47,19 +50,46 @@ FILES: dict[str, type[BaseModel]] = {
     "containers": Container,
 }
 
-#: `Change` has no `source` field (spec §2.2) and only the git mapper produces one, so
-#: ownership is by convention. Synthetic PRs from Task 3 are protected by `synthetic`.
-CHANGE_OWNER = "git"
+#: `Change` has no `source` field (spec §2.2) and only a git mapper produces one, so
+#: ownership is by convention: the git source in `sources.yaml`. Synthetic PRs from Task 3
+#: are protected by `synthetic`.
+CHANGE_OWNER_TYPE = "git"
+
+
+def change_owner(registry: Registry | None = None) -> str:
+    """The registry name of the source that owns `changes.jsonl`.
+
+    One git source is the POC's shape. With more than one, ownership by convention stops
+    working and `Change` needs the `source` field the spec left off — so this refuses
+    rather than picking one and silently deleting the other's commits on a partial run.
+    """
+    reg = registry or get_registry()
+    git = [s.name for s in reg.enabled() if s.type == CHANGE_OWNER_TYPE]
+    if len(git) > 1:
+        raise RegistryError(
+            f"{reg.path} enables {len(git)} git sources ({', '.join(git)}). `Change` has no "
+            "`source` field, so `brain canon --source <one of them>` could not tell which "
+            "commits to keep. Add `source` to `Change` first (spec §2.2)."
+        )
+    return git[0] if git else CHANGE_OWNER_TYPE
+
 
 _DIGITS = re.compile(r"(\d+)")
 
 
-def resolve_sources(source: str) -> list[str]:
-    if source == "all":
-        return list(SOURCES)
-    if source not in MAPPERS:
-        raise ValueError(f"unknown source {source!r}; expected one of jira|confluence|git|all")
-    return [source]
+def resolve_sources(source: str, registry: Registry | None = None) -> list[str]:
+    """`--source` → the source names to map, through the registry (`sources.yaml`)."""
+    reg = registry or get_registry()
+    names = reg.resolve(source)
+    unmapped = [n for n in names if reg.source(n).type not in MAPPERS]
+    if unmapped:
+        raise RegistryError(
+            f"no mapper for {', '.join(unmapped)} (type "
+            f"{', '.join(sorted({reg.source(n).type for n in unmapped}))}). "
+            f"Implemented: {', '.join(sorted(MAPPERS))}. "
+            "docs/guides/adding-a-connector.md has the skeleton."
+        )
+    return names
 
 
 def natural_key(text: str) -> tuple[object, ...]:
@@ -67,10 +97,27 @@ def natural_key(text: str) -> tuple[object, ...]:
     return tuple(int(p) if p.isdigit() else p for p in _DIGITS.split(text))
 
 
-def owner_of(record: BaseModel) -> str:
+def owner_of(record: BaseModel, sources: Sequence[str] = ()) -> str:
+    """Which run is responsible for a record: its source, or — for a `Change` — the git one.
+
+    A canonical `source` is a *type* (`jira`, `git`) while `--source` names a registry
+    *entry*. They are the same string in this POC and in every single-instance setup; when
+    they differ, the registry decides.
+    """
     if isinstance(record, Person):
-        return record.identities[0].source
-    return str(getattr(record, "source", CHANGE_OWNER))
+        owner = record.identities[0].source
+    else:
+        owner = str(getattr(record, "source", "") or "") or change_owner()
+    if owner in sources:
+        return owner
+    # `source` is a type; map it back to the registry entry this run is about.
+    for name in sources:
+        try:
+            if get_registry().source(name).type == owner:
+                return name
+        except RegistryError:
+            continue
+    return owner
 
 
 def sort_key(record: BaseModel) -> tuple[object, ...]:
@@ -117,7 +164,7 @@ def carried_over(
     for record in existing:
         if record.id in fresh:
             continue
-        if record.synthetic or owner_of(record) not in sources:
+        if record.synthetic or owner_of(record, sources) not in sources:
             keep.append(record)
             synthetic += 1 if record.synthetic else 0
     return keep, {"total": len(keep), "synthetic": synthetic}
@@ -148,10 +195,12 @@ def run_canon(
     slices: dict[str, dict[str, Any]] = {}
     durations: dict[str, float] = {}
 
+    registry = get_registry()
     for name in sources:
         began = time.perf_counter()
-        raw = load_source(raw_dir, name)
-        bundle = MAPPERS[name](raw.records)
+        config = registry.source(name)
+        raw = load_source(raw_dir, name, source_type=config.type)
+        bundle = MAPPERS[config.type](raw.records)
         bundles[name] = bundle
         slices[name] = raw.stats()
         durations[name] = round(time.perf_counter() - began, 2)

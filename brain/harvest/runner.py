@@ -17,21 +17,34 @@ from brain.harvest.base import HarvestResult
 from brain.harvest.confluence import ConfluenceConnector
 from brain.harvest.git import GitConnector
 from brain.harvest.jira import JiraConnector
-from brain.harvest.report import SOURCES, build_report, summarize, write_report
+from brain.harvest.registry import Registry, RegistryError, SourceConfig, get_registry
+from brain.harvest.report import build_report, summarize, write_report
 
-CONNECTORS: dict[str, Callable[[Path], Any]] = {
+#: source **type** -> the connector class that implements it. A type with a registry
+#: entry but no class here is the honest state of a half-added system: the guide's ADO and
+#: Xray skeletons live in the docs until someone writes the class, and `brain harvest`
+#: says exactly that instead of pretending the source does not exist.
+CONNECTORS: dict[str, type] = {
     "jira": JiraConnector,
     "confluence": ConfluenceConnector,
     "git": GitConnector,
 }
 
 
-def resolve_sources(source: str) -> list[str]:
-    if source == "all":
-        return list(SOURCES)
-    if source not in CONNECTORS:
-        raise ValueError(f"unknown source {source!r}; expected one of jira|confluence|git|all")
-    return [source]
+def resolve_sources(source: str, registry: Registry | None = None) -> list[str]:
+    """`--source` → the source names to run, through the registry (`sources.yaml`)."""
+    return (registry or get_registry()).resolve(source)
+
+
+def build_connector(config: SourceConfig, raw_dir: Path) -> Any:
+    cls = CONNECTORS.get(config.type)
+    if cls is None:
+        raise RegistryError(
+            f"source {config.name!r} has type {config.type!r}, which has no connector yet. "
+            f"Implemented: {', '.join(sorted(CONNECTORS))}. "
+            "docs/guides/adding-a-connector.md has the skeleton."
+        )
+    return cls(raw_dir, source=config)
 
 
 def load_existing(path: Path) -> dict[str, Any] | None:
@@ -56,12 +69,17 @@ def run_harvest(
 
     Returns the merged report and the process exit code (1 if anything was fatal).
     """
-    factories = factories or CONNECTORS
+    registry = get_registry()
     started = time.perf_counter()
     results: dict[str, HarvestResult] = {}
 
     for name in sources:
-        connector = factories[name](raw_dir)
+        factory = (factories or {}).get(name)
+        connector = factory(raw_dir) if factory else build_connector(registry.source(name), raw_dir)
+        credentials = getattr(connector, "credentials", None)
+        if credentials is not None and credentials.present:
+            # The variable name, never the value (ADR-0005 §4).
+            echo(f"[{name}] auth: {credentials.describe()}")
         echo(f"[{name}] {connector.query_text(since)}")
         result = connector.run(since)
         results[name] = result

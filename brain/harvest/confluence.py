@@ -13,13 +13,14 @@ from __future__ import annotations
 
 import html
 import json
-import re
 from collections.abc import Iterator
 from datetime import date
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from brain.harvest.auth import credentials_for
 from brain.harvest.base import (
     BaseConnector,
     Checkpoint,
@@ -31,28 +32,37 @@ from brain.harvest.base import (
     signature_of,
     utc_now_iso,
 )
+from brain.harvest.registry import DocumentKeySpec, SourceConfig, get_registry
 
-BASE_URL = "https://cwiki.apache.org/confluence"
 SEARCH_PATH = "/rest/api/content/search"
 
-SPACE = "KAFKA"
-CQL = f'space={SPACE} and type=page and title ~ "KIP-"'
+#: Protocol defaults; `sources.yaml` overrides them under `options`. The space, the CQL
+#: and the title pattern are organisation-specific and have no default in code.
 EXPAND = "body.storage,version,history,ancestors,metadata.labels"
 LIMIT = 25  # the server trims larger limits when bodies are expanded
-
-# "KIP-848: ...", "KIP-929 : ...", "[DRAFT] KIP-1234 ..." — the number is the key.
-_KIP_IN_TITLE = re.compile(r"KIP-(\d+)", re.IGNORECASE)
-# …but a handful of pages write "KIP 156 Add option …" with a space. They carry a real
-# number that the canonical `KIP-N` form misses, so they are counted separately rather
-# than lumped in with the genuinely keyless pages.
-_KIP_SPACED = re.compile(r"KIP\s+(\d+)", re.IGNORECASE)
+SINCE_FIELD = "lastmodified"
 
 
-def build_cql(since: date | None = None) -> str:
+@lru_cache(maxsize=1)
+def default_document_spec() -> DocumentKeySpec:
+    """The title→key rule of the registry's Confluence source.
+
+    Cached because `brain canon` calls :func:`kip_key` once per page and the pattern is
+    a compiled regex either way. `brain.harvest.registry.reset_caches` clears it.
+    """
+    registry = get_registry()
+    for source in registry.sources:
+        if source.type == "confluence":
+            return source.document
+    return DocumentKeySpec()
+
+
+def build_cql(source: SourceConfig, since: date | None = None) -> str:
     """`--since` narrows by CQL `lastmodified` (Confluence's own updated field)."""
     if since is None:
-        return CQL
-    return f'{CQL} and lastmodified >= "{since.isoformat()}"'
+        return source.query
+    field = source.option("since_field", SINCE_FIELD)
+    return f'{source.query} and {field} >= "{since.isoformat()}"'
 
 
 def next_start(payload: dict[str, Any], *, current: int, limit: int) -> int | None:
@@ -79,31 +89,42 @@ class ConfluenceConnector(BaseConnector):
         self,
         raw_dir: Path,
         *,
+        source: SourceConfig | None = None,
         http: HttpFetcher | None = None,
-        limit: int = LIMIT,
-        base_url: str = BASE_URL,
     ) -> None:
         super().__init__(raw_dir)
-        self.limit = limit
-        self.http = http or HttpFetcher(base_url)
+        self.source = source or get_registry().source(self.name)
+        self.name = self.source.name
+        self.limit = self.source.int_option("limit", LIMIT)
+        self.expand = str(self.source.option("expand", EXPAND))
+        self.credentials = credentials_for(self.source)
+        self.http = http or HttpFetcher(
+            self.source.base_url,
+            headers=self.credentials.headers(),
+            secrets=self.credentials.secrets,
+        )
 
     # -- identity ----------------------------------------------------------
 
     def query_text(self, since: date | None) -> str:
-        return build_cql(since)
+        return build_cql(self.source, since)
 
     def signature(self, since: date | None) -> str:
-        return signature_of({"cql": build_cql(since), "expand": EXPAND, "limit": self.limit})
+        return signature_of(
+            {"cql": build_cql(self.source, since), "expand": self.expand, "limit": self.limit}
+        )
 
     # -- probe -------------------------------------------------------------
 
     def probe(self) -> ProbeResult:
         try:
-            payload = self.http.get_json(SEARCH_PATH, {"cql": build_cql(None), "limit": 1})
+            payload = self.http.get_json(
+                SEARCH_PATH, {"cql": build_cql(self.source, None), "limit": 1}
+            )
         except HarvestError as exc:
             return ProbeResult(ok=False, detail=str(exc))
         total = payload.get("totalSize")
-        detail = f"{total} KIP pages in space {SPACE}"
+        detail = f"{total} pages match {self.source.query}"
         return ProbeResult(ok=bool(total), detail=detail, total=total)
 
     # -- fetch -------------------------------------------------------------
@@ -113,12 +134,12 @@ class ConfluenceConnector(BaseConnector):
             return
         start = int(checkpoint.cursor.get("start", 0))
         index = checkpoint.pages
-        cql = build_cql(since)
+        cql = build_cql(self.source, since)
 
         while True:
             payload = self.http.get_json(
                 SEARCH_PATH,
-                {"cql": cql, "expand": EXPAND, "limit": self.limit, "start": start},
+                {"cql": cql, "expand": self.expand, "limit": self.limit, "start": start},
             )
             results = payload.get("results") or []
             if not results:
@@ -157,7 +178,7 @@ class ConfluenceConnector(BaseConnector):
     # -- stats -------------------------------------------------------------
 
     def stats(self, since: date | None) -> dict[str, Any]:
-        return analyze(iter_raw_pages(self.run_dir(since)))
+        return analyze(iter_raw_pages(self.run_dir(since)), spec=self.source.document)
 
 
 # --------------------------------------------------------------------------- raw analysis
@@ -170,19 +191,23 @@ def iter_raw_pages(run_dir: Path) -> Iterator[dict[str, Any]]:
         yield from payload.get("results") or []
 
 
-def kip_key(title: str) -> str | None:
-    """`KIP-N` parsed out of a page title, or None if the title carries no number."""
-    m = _KIP_IN_TITLE.search(title or "")
-    return f"KIP-{int(m.group(1))}" if m else None
+def kip_key(title: str, spec: DocumentKeySpec | None = None) -> str | None:
+    """`KIP-N` parsed out of a page title, or None if the title carries no number.
+
+    The pattern is `sources.yaml` → `sources[confluence].document.title_pattern`; an org
+    whose design docs are called `RFC-12` changes that line, not this function.
+    """
+    return (spec or default_document_spec()).key(title)
 
 
-def spaced_kip_key(title: str) -> str | None:
-    """The key a `KIP 156 …` title *would* have if the space form were accepted."""
-    m = _KIP_SPACED.search(title or "")
-    return f"KIP-{int(m.group(1))}" if m else None
+def spaced_kip_key(title: str, spec: DocumentKeySpec | None = None) -> str | None:
+    """The key a `KIP 156 …` title *would* have if the loose form were accepted."""
+    return (spec or default_document_spec()).loose_key(title)
 
 
-def analyze(pages: Iterator[dict[str, Any]]) -> dict[str, Any]:
+def analyze(
+    pages: Iterator[dict[str, Any]], *, spec: DocumentKeySpec | None = None
+) -> dict[str, Any]:
     """Coverage plus the `KIP-N` key problem canon has to solve.
 
     `Document.key = KIP-N` parsed from the title is not injective on this space: drafts,
@@ -195,6 +220,7 @@ def analyze(pages: Iterator[dict[str, Any]]) -> dict[str, Any]:
     apart from the genuinely keyless ones: they are recoverable if canon widens the parser,
     and folding them in would create *more* collisions, not fewer.
     """
+    spec = spec or default_document_spec()
     total = 0
     with_body = 0
     body_chars = 0
@@ -213,11 +239,11 @@ def analyze(pages: Iterator[dict[str, Any]]) -> dict[str, Any]:
             with_body += 1
             body_chars += len(body)
 
-        key = kip_key(title)
+        key = spec.key(title)
         if key is not None:
             by_key.setdefault(key, []).append({"id": page_id, "title": title})
             continue
-        spaced = spaced_kip_key(title)
+        spaced = spec.loose_key(title)
         if spaced is not None:
             space_separated.append({"id": page_id, "title": title, "would_be_key": spaced})
         else:

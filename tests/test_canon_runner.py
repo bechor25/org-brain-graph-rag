@@ -11,6 +11,7 @@ from brain.canon.models import Change, Document, Person, WorkItem
 from brain.canon.report import summarize
 from brain.canon.runner import CanonError, natural_key, resolve_sources, run_canon
 from brain.cli import app
+from brain.harvest.registry import RegistryError
 from tests.canon_helpers import commit, issue, page, plant_commits, plant_pages
 
 
@@ -52,7 +53,10 @@ def files(tmp_path):
 def test_resolve_sources():
     assert resolve_sources("all") == ["jira", "confluence", "git"]
     assert resolve_sources("git") == ["git"]
-    with pytest.raises(ValueError, match="unknown source"):
+    with pytest.raises(RegistryError, match="unknown source"):
+        resolve_sources("nope")
+    # registered, disabled, and with no mapper: the message says which of those it is.
+    with pytest.raises(RegistryError, match="no mapper"):
         resolve_sources("ado")
 
 
@@ -213,7 +217,7 @@ def test_cli_runs_canon_and_writes_the_report(runner, corpus, monkeypatch):
 
 
 def test_cli_rejects_an_unknown_source(runner):
-    out = runner.invoke(app, ["canon", "--source", "ado"])
+    out = runner.invoke(app, ["canon", "--source", "nope"])
 
     assert out.exit_code != 0
     assert "unknown source" in out.output

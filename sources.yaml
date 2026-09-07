@@ -1,0 +1,126 @@
+# The source registry (ADR-0005). Every org system the pipeline reads is one entry here.
+#
+# `brain harvest --source <name>` resolves the connector through this file, and
+# `brain canon` reads the issue-key allowlist and the document-title pattern from it — so
+# no project key, URL or query lives in Python. Adding a system is three files plus one
+# entry: docs/guides/adding-a-connector.md.
+#
+# Secrets are NEVER here. `auth_env` names an environment variable; the token is read from
+# it at run time and is anonymous when unset (which is what the public ASF endpoints want).
+#
+# Parsed by brain/common/yaml_mini.py — block mappings, block sequences, quoted strings,
+# `[a, b]` flow sequences. Anchors, tags, block scalars and multi-document streams are
+# rejected with a line number rather than half-understood.
+
+version: 1
+
+canon:
+  # `KAFKA-1` is the placeholder key in the KIP page template ("put your Jira key here").
+  # It sits on ~2% of KIP pages and never means the real issue KAFKA-1.
+  issue_key_blacklist: [KAFKA-1]
+
+synthetic:
+  # brain/canon/synthetic_spec.md: the key prefixes `brain synth merge` may mint, and the
+  # canonical `source` each one belongs to. They are on the issue-key allowlist
+  # permanently — a real KIP that quotes `XT-12` must keep the ref — and zero
+  # `XT|XE|XP|XS|ADO-<n>` matches exist in the real corpus, so widening costs nothing.
+  key_prefixes:
+    XT: xray
+    XE: xray
+    XP: xray
+    XS: xray
+    ADO: ado
+
+sources:
+  - name: jira
+    type: jira
+    enabled: true
+    base_url: https://issues.apache.org/jira
+    # `connect` is a reserved JQL word — it MUST stay quoted (probe 2026-09-03 §3).
+    # `ORDER BY` is added by the connector so `--since` can extend the clause list.
+    query: 'project = KAFKA AND component in (streams, "connect", clients) AND created >= "2023-01-01" AND created <= "2025-12-31"'
+    project_keys: [KAFKA]
+    auth_env: JIRA_TOKEN
+    auth_scheme: bearer
+    auth_user_env: JIRA_USER
+    options:
+      # 500 keeps a page under ~25MB; the server hard-caps maxResults at 1000.
+      page_size: 500
+      fields: '*all'
+      # `expand=changelog` returns the complete changelog AND comment list, so the whole
+      # slice is 3 requests instead of 1,416.
+      expand: changelog
+      order_by: created ASC
+      since_field: updated
+      # Report grouping only — the link-density table in data/reports/harvest.json.
+      # The slice itself is whatever `query` says.
+      components: [streams, connect, clients]
+
+  - name: confluence
+    type: confluence
+    enabled: true
+    base_url: https://cwiki.apache.org/confluence
+    query: 'space=KAFKA and type=page and title ~ "KIP-"'
+    project_keys: []
+    auth_env: CONFLUENCE_TOKEN
+    auth_scheme: bearer
+    auth_user_env: CONFLUENCE_USER
+    options:
+      # the server trims larger limits when bodies are expanded
+      limit: 25
+      expand: body.storage,version,history,ancestors,metadata.labels
+      since_field: lastmodified
+    document:
+      # How a page title becomes `Document.key`. `title_pattern` is the canonical spelling;
+      # `title_pattern_loose` is the tolerated one ("KIP 156 Add option …") — recognised,
+      # counted, and NOT used as a key, because accepting it creates more collisions.
+      kind: KIP
+      title_pattern: 'KIP-(\d+)'
+      title_pattern_loose: 'KIP\s+(\d+)'
+      key_format: 'KIP-{number}'
+
+  - name: git
+    type: git
+    enabled: true
+    base_url: https://github.com/apache/kafka
+    # A git "query" is the commit window: `<since>..<until>`; an open end means "to HEAD".
+    # `--since` runs override the start and drop the end (catch-up must not stop at it).
+    query: '2023-01-01..2025-12-31'
+    project_keys: []
+    auth_env: GIT_TOKEN
+    auth_scheme: url_token
+    options:
+      clone_dir: kafka
+      batch: 1000
+
+  # ---------------------------------------------------------------- templates (disabled)
+  # Untested skeletons, written against the public docs — see
+  # docs/guides/adding-a-connector.md. `enabled: false` keeps them out of
+  # `brain harvest --source all` and out of the canon allowlist until someone fills in a
+  # real org, sets the PAT and runs `brain harvest --source ado` once.
+
+  - name: ado
+    type: ado
+    enabled: false
+    base_url: https://dev.azure.com/<org>/<project>
+    query: "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project AND [System.ChangedDate] >= '2023-01-01' ORDER BY [System.Id]"
+    project_keys: [ADO]
+    auth_env: ADO_PAT
+    # Azure DevOps takes a PAT as HTTP basic with an empty username.
+    auth_scheme: basic
+    auth_user_env: ADO_USER
+    options:
+      api_version: '7.1'
+      page_size: 200
+
+  - name: xray
+    type: xray
+    enabled: false
+    base_url: https://xray.cloud.getxray.app
+    query: "project = KAFKA AND issuetype in (Test, 'Test Execution')"
+    project_keys: [XT, XE, XP, XS]
+    auth_env: XRAY_TOKEN
+    auth_scheme: bearer
+    options:
+      page_size: 100
+      graphql_path: /api/v2/graphql

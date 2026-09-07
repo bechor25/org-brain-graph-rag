@@ -23,18 +23,26 @@ from typing import Any
 
 from brain.harvest.base import checkpoint_pages
 from brain.harvest.git import COMMITS_FILE
+from brain.harvest.registry import Registry, get_registry
 
-SOURCES = ("jira", "confluence", "git")
-
-#: source -> (dedupe key path, recency path or None). Mirrors `harvest.report.DEDUPE`.
+#: source **type** -> (dedupe key path, recency path or None). Mirrors
+#: `harvest.report.DEDUPE`. Keyed by type so two Jira instances in `sources.yaml` share
+#: one rule instead of needing an entry each.
 DEDUPE: dict[str, tuple[tuple[str, ...], tuple[str, ...] | None]] = {
     "jira": (("key",), ("fields", "updated")),
     "confluence": (("id",), ("version", "number")),
     "git": (("sha",), None),
+    "ado": (("id",), ("fields", "System.ChangedDate")),
+    "xray": (("key",), ("fields", "updated")),
 }
 
-#: The JSON key each source's raw page keeps its records under (git is JSONL, not a page).
-PAGE_ITEMS = {"jira": "issues", "confluence": "results"}
+#: The JSON key each source type's raw page keeps its records under (git is JSONL).
+PAGE_ITEMS = {"jira": "issues", "confluence": "results", "ado": "value", "xray": "issues"}
+
+
+def source_names(registry: Registry | None = None) -> tuple[str, ...]:
+    """Every enabled source name, in `sources.yaml` order."""
+    return (registry or get_registry()).names()
 
 
 def dig(record: dict[str, Any], path: tuple[str, ...]) -> Any:
@@ -54,9 +62,9 @@ def run_dirs(raw_dir: Path, source: str) -> list[Path]:
     return [base, *sorted((p for p in base.glob("since-*") if p.is_dir()), key=lambda p: p.name)]
 
 
-def iter_dir(run_dir: Path, source: str) -> Iterator[dict[str, Any]]:
-    """Every raw record in one run directory, in write order."""
-    if source == "git":
+def iter_dir(run_dir: Path, source_type: str) -> Iterator[dict[str, Any]]:
+    """Every raw record in one run directory, in write order. Keyed by source *type*."""
+    if source_type == "git":
         path = run_dir / COMMITS_FILE
         if not path.is_file():
             return
@@ -68,7 +76,7 @@ def iter_dir(run_dir: Path, source: str) -> Iterator[dict[str, Any]]:
         return
     for path in checkpoint_pages(run_dir):
         payload = json.loads(path.read_text(encoding="utf-8"))
-        yield from payload.get(PAGE_ITEMS[source]) or []
+        yield from payload.get(PAGE_ITEMS[source_type]) or []
 
 
 @dataclass
@@ -97,20 +105,24 @@ def _recency(record: dict[str, Any], path: tuple[str, ...]) -> Any:
     return "" if value is None else value
 
 
-def load_source(raw_dir: Path, source: str) -> RawSlice:
+def load_source(raw_dir: Path, source: str, *, source_type: str | None = None) -> RawSlice:
     """Read one source's raw records: every run directory, deduplicated, in first-seen order.
 
     First-seen order is kept even when an incremental copy wins, so the output ordering
     does not depend on which `--since` runs happen to exist on disk.
+
+    `source` is the registry *name* (the directory under `data/raw/`); the dedupe rule
+    comes from its *type*, looked up in `sources.yaml` unless given.
     """
-    key_path, recency_path = DEDUPE[source]
+    type_ = source_type or get_registry().source(source).type
+    key_path, recency_path = DEDUPE[type_]
     slice_ = RawSlice(source=source)
     index: dict[str, int] = {}
 
     for run_dir in run_dirs(raw_dir, source):
         slice_.dirs.append(str(run_dir))
         incremental = run_dir.name.startswith("since-")
-        for record in iter_dir(run_dir, source):
+        for record in iter_dir(run_dir, type_):
             slice_.read += 1
             key = str(dig(record, key_path) or "")
             if key not in index:

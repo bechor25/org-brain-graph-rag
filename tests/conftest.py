@@ -16,14 +16,23 @@ import pytest
 from typer.testing import CliRunner
 
 from brain.config import get_settings
+from brain.harvest.registry import reset_caches
 from tests.guards import ForbiddenConnection
 
 
 @pytest.fixture(autouse=True)
 def _clear_settings_cache():
+    """Settings and the source registry are both process-wide caches.
+
+    The registry is read from `sources.yaml` once and the canon ref policy is derived from
+    it; a test that points `$SOURCES_FILE` somewhere else would otherwise leak its
+    allowlist into every test that runs after it.
+    """
     get_settings.cache_clear()
+    reset_caches()
     yield
     get_settings.cache_clear()
+    reset_caches()
 
 
 @pytest.fixture(autouse=True)

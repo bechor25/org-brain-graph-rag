@@ -45,8 +45,7 @@ def harvest(
     source: str = typer.Option(
         "all",
         "--source",
-        help="Which source to run: a `name` from sources.yaml, or `all` for every "
-        "enabled one.",
+        help="Which source to run: a `name` from sources.yaml, or `all` for every enabled one.",
     ),
     since: str | None = typer.Option(
         None,
@@ -97,8 +96,7 @@ def canon(
     source: str = typer.Option(
         "all",
         "--source",
-        help="Which source to map: a `name` from sources.yaml, or `all` for every "
-        "enabled one.",
+        help="Which source to map: a `name` from sources.yaml, or `all` for every enabled one.",
     ),
 ) -> None:
     """Normalize raw data into the canonical model (data/canonical/*.jsonl) [Plan 1]."""

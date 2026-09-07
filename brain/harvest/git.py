@@ -19,6 +19,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from brain.harvest.auth import Credentials, credentials_for, redact
 from brain.harvest.base import (
     BaseConnector,
     Checkpoint,
@@ -28,13 +29,27 @@ from brain.harvest.base import (
     signature_of,
     utc_now_iso,
 )
+from brain.harvest.registry import RegistryError, SourceConfig, get_registry
 
-CLONE_URL = "https://github.com/apache/kafka"
 CLONE_DIRNAME = "kafka"
-WINDOW_START = "2023-01-01"
-WINDOW_END = "2025-12-31"
 COMMITS_FILE = "commits.jsonl"
 BATCH = 1000
+
+
+def parse_window(query: str) -> tuple[str, str | None]:
+    """A git source's `query` is `<since>..<until>`; an open end means "to HEAD".
+
+    Spelled as one field because the two halves are one decision — the corpus slice —
+    and because a start without an end is the normal shape for an ongoing repository.
+    """
+    text = str(query or "").strip()
+    if not text:
+        raise RegistryError("a git source needs a `query` of the form `<since>..<until>`")
+    start, sep, end = text.partition("..")
+    if not sep:
+        return start.strip(), None
+    return start.strip(), (end.strip() or None)
+
 
 # ASCII record/unit separators: they cannot occur in a commit message, unlike any
 # printable delimiter a project might paste into a body.
@@ -46,7 +61,18 @@ ISSUE_KEY = re.compile(r"\bKAFKA-\d+\b")
 PR_NUMBER = re.compile(r"\(#\d+\)")
 
 
-def _run(args: list[str], cwd: Path | None = None, timeout: float = 900.0) -> str:
+def _run(
+    args: list[str],
+    cwd: Path | None = None,
+    timeout: float = 900.0,
+    secrets: tuple[str, ...] = (),
+) -> str:
+    """Run git and return stdout. `secrets` are scrubbed from the failure message.
+
+    A token-bearing clone URL is an argument to `git clone`, and git echoes the remote
+    back in most of its errors — so the one string this function raises is the one place
+    a credential could reach `data/reports/harvest.json`.
+    """
     proc = subprocess.run(  # noqa: S603 - fixed argv, no shell
         args,
         cwd=str(cwd) if cwd else None,
@@ -56,7 +82,8 @@ def _run(args: list[str], cwd: Path | None = None, timeout: float = 900.0) -> st
         check=False,
     )
     if proc.returncode != 0:
-        raise HarvestError(f"{' '.join(args)} failed ({proc.returncode}): {proc.stderr[:400]}")
+        detail = f"{' '.join(args)} failed ({proc.returncode}): {proc.stderr[:400]}"
+        raise HarvestError(redact(detail, *secrets))
     return proc.stdout
 
 
@@ -93,22 +120,35 @@ class GitConnector(BaseConnector):
         self,
         raw_dir: Path,
         *,
+        source: SourceConfig | None = None,
         runner=_run,
-        clone_url: str = CLONE_URL,
-        batch: int = BATCH,
-        window_end: str | None = WINDOW_END,
+        credentials: Credentials | None = None,
     ) -> None:
         super().__init__(raw_dir)
-        self._run = runner
-        self.clone_url = clone_url
-        self.batch = batch
-        self.window_end = window_end
+        self.source = source or get_registry().source(self.name)
+        self.name = self.source.name
+        self._runner = runner
+        self.credentials = credentials or credentials_for(self.source)
+        #: The public remote, safe to print. The credential is added only when git is
+        #: actually invoked (`auth_clone_url`), never stored on the instance.
+        self.clone_url = self.source.base_url
+        self.batch = self.source.int_option("batch", BATCH)
+        self.window_start, self.window_end = parse_window(self.source.query)
+        self.clone_dirname = str(self.source.option("clone_dir", CLONE_DIRNAME))
+
+    def _run(self, args: list[str], cwd: Path | None = None, timeout: float = 900.0) -> str:
+        return self._runner(args, cwd, timeout, self.credentials.secrets)
+
+    @property
+    def auth_clone_url(self) -> str:
+        """The remote with the token in it, if one is configured. Never logged."""
+        return self.credentials.clone_url(self.clone_url)
 
     # -- layout ------------------------------------------------------------
 
     @property
     def clone_dir(self) -> Path:
-        return self.source_dir() / CLONE_DIRNAME
+        return self.source_dir() / self.clone_dirname
 
     def commits_path(self, since: date | None) -> Path:
         return self.run_dir(since) / COMMITS_FILE
@@ -121,7 +161,7 @@ class GitConnector(BaseConnector):
         """
         if since is not None:
             return since.isoformat(), None
-        return WINDOW_START, self.window_end
+        return self.window_start, self.window_end
 
     # -- identity ----------------------------------------------------------
 
@@ -145,8 +185,8 @@ class GitConnector(BaseConnector):
                 "clone",
                 "--filter=blob:none",
                 "--no-checkout",
-                f"--shallow-since={WINDOW_START}",
-                self.clone_url,
+                f"--shallow-since={self.window_start}",
+                self.auth_clone_url,
                 str(self.clone_dir),
             ],
             None,

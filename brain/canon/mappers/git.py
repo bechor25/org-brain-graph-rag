@@ -18,9 +18,18 @@ from typing import Any
 from brain.canon.mappers.base import Bundle, FieldTracker, parse_dt
 from brain.canon.mentions import extract_refs
 from brain.canon.models import Change
-from brain.harvest.git import CLONE_URL
+from brain.harvest.registry import get_registry
 
 SOURCE = "git"
+
+
+def commit_base_url() -> str:
+    """The repository `Change.raw_url` points into — `sources.yaml`, not a constant."""
+    for source in get_registry().enabled():
+        if source.type == "git":
+            return source.base_url.rstrip("/")
+    return ""
+
 
 MAPPED = frozenset(
     {"sha", "author_name", "author_email", "authored_at", "subject", "body", "files"}
@@ -45,7 +54,10 @@ def commit_message(commit: dict[str, Any]) -> str:
     return f"{subject}\n\n{body}" if body else subject
 
 
-def map_commits(commits: Iterable[dict[str, Any]]) -> Bundle:
+def map_commits(commits: Iterable[dict[str, Any]], *, base_url: str | None = None) -> Bundle:
+    # Resolved once per run, not once per commit: `Change.raw_url` is the only canonical
+    # field that carries the repository's address.
+    base_url = (base_url if base_url is not None else commit_base_url()).rstrip("/")
     bundle = Bundle(source=SOURCE)
     tracker = FieldTracker(mapped=MAPPED)
     # pr number -> the commit that owns it. A backport carries the same `(#N)`, so the
@@ -87,7 +99,7 @@ def map_commits(commits: Iterable[dict[str, Any]]) -> Bundle:
                 refs=bundle.refs.collect(
                     extract_refs(message), self_keys=[own_pr.group(1)] if own_pr else []
                 ),
-                raw_url=f"{CLONE_URL}/commit/{sha}",
+                raw_url=f"{base_url}/commit/{sha}",
             )
         )
 
@@ -114,7 +126,7 @@ def map_commits(commits: Iterable[dict[str, Any]]) -> Bundle:
                 # `TOUCHES` edge in the graph.
                 files=[],
                 refs=bundle.refs.collect(extract_refs(subject), self_keys=[number]),
-                raw_url=f"{CLONE_URL}/pull/{number}",
+                raw_url=f"{base_url}/pull/{number}",
             )
         )
 

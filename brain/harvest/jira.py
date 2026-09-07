@@ -14,11 +14,12 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from datetime import date
 from pathlib import Path
 from typing import Any
 
+from brain.harvest.auth import credentials_for
 from brain.harvest.base import (
     BaseConnector,
     Checkpoint,
@@ -29,35 +30,32 @@ from brain.harvest.base import (
     checkpoint_pages,
     signature_of,
 )
+from brain.harvest.registry import SourceConfig, get_registry
 
-BASE_URL = "https://issues.apache.org/jira"
 SEARCH_PATH = "/rest/api/2/search"
 
-PROJECT = "KAFKA"
-# `connect` is a reserved JQL word — it MUST stay quoted (probe §3, gotchas).
-COMPONENTS_JQL = 'component in (streams, "connect", clients)'
-COMPONENTS = ("streams", "connect", "clients")
-WINDOW_START = "2023-01-01"
-WINDOW_END = "2025-12-31"
-
+#: Protocol defaults. A `sources.yaml` entry may override any of them under `options`;
+#: the base URL, the JQL and the project keys have no default at all — they are the
+#: organisation, and the organisation lives in the registry.
 PAGE_SIZE = 500  # server hard cap is 1000; 500 keeps a page under ~25MB
 FIELDS = "*all"
 EXPAND = "changelog"
+ORDER_BY = "created ASC"
+SINCE_FIELD = "updated"
+
+#: Components the link-density table groups by. Only a report grouping — the slice itself
+#: is whatever `query` says.
+COMPONENTS: tuple[str, ...] = ()
 
 _KIP = re.compile(r"KIP-\d+", re.IGNORECASE)
 
 
-def build_jql(since: date | None = None) -> str:
+def build_jql(source: SourceConfig, since: date | None = None) -> str:
     """The slice, as JQL. `--since` narrows by `updated` — ORDER BY must stay last."""
-    clauses = [
-        f"project = {PROJECT}",
-        COMPONENTS_JQL,
-        f'created >= "{WINDOW_START}"',
-        f'created <= "{WINDOW_END}"',
-    ]
+    clauses = [source.query]
     if since is not None:
-        clauses.append(f'updated >= "{since.isoformat()}"')
-    return " AND ".join(clauses) + " ORDER BY created ASC"
+        clauses.append(f'{source.option("since_field", SINCE_FIELD)} >= "{since.isoformat()}"')
+    return " AND ".join(clauses) + f" ORDER BY {source.option('order_by', ORDER_BY)}"
 
 
 class JiraConnector(BaseConnector):
@@ -68,25 +66,34 @@ class JiraConnector(BaseConnector):
         self,
         raw_dir: Path,
         *,
+        source: SourceConfig | None = None,
         http: HttpFetcher | None = None,
-        page_size: int = PAGE_SIZE,
-        base_url: str = BASE_URL,
     ) -> None:
         super().__init__(raw_dir)
-        self.page_size = page_size
-        self.http = http or HttpFetcher(base_url)
+        self.source = source or get_registry().source(self.name)
+        self.name = self.source.name
+        self.page_size = self.source.int_option("page_size", PAGE_SIZE)
+        self.fields = str(self.source.option("fields", FIELDS))
+        self.expand = str(self.source.option("expand", EXPAND))
+        self.components = tuple(self.source.option("components", COMPONENTS) or ())
+        self.credentials = credentials_for(self.source)
+        self.http = http or HttpFetcher(
+            self.source.base_url,
+            headers=self.credentials.headers(),
+            secrets=self.credentials.secrets,
+        )
 
     # -- identity ----------------------------------------------------------
 
     def query_text(self, since: date | None) -> str:
-        return build_jql(since)
+        return build_jql(self.source, since)
 
     def signature(self, since: date | None) -> str:
         return signature_of(
             {
-                "jql": build_jql(since),
-                "fields": FIELDS,
-                "expand": EXPAND,
+                "jql": build_jql(self.source, since),
+                "fields": self.fields,
+                "expand": self.expand,
                 "page_size": self.page_size,
             }
         )
@@ -96,7 +103,8 @@ class JiraConnector(BaseConnector):
     def probe(self) -> ProbeResult:
         try:
             payload = self.http.get_json(
-                SEARCH_PATH, {"jql": build_jql(None), "maxResults": 0, "fields": "key"}
+                SEARCH_PATH,
+                {"jql": build_jql(self.source, None), "maxResults": 0, "fields": "key"},
             )
         except HarvestError as exc:
             return ProbeResult(ok=False, detail=str(exc))
@@ -110,7 +118,7 @@ class JiraConnector(BaseConnector):
             return
         start_at = int(checkpoint.cursor.get("start_at", 0))
         index = checkpoint.pages
-        jql = build_jql(since)
+        jql = build_jql(self.source, since)
 
         while True:
             payload = self.http.get_json(
@@ -119,8 +127,8 @@ class JiraConnector(BaseConnector):
                     "jql": jql,
                     "startAt": start_at,
                     "maxResults": self.page_size,
-                    "fields": FIELDS,
-                    "expand": EXPAND,
+                    "fields": self.fields,
+                    "expand": self.expand,
                 },
             )
             issues = payload.get("issues") or []
@@ -143,7 +151,7 @@ class JiraConnector(BaseConnector):
     # -- stats -------------------------------------------------------------
 
     def stats(self, since: date | None) -> dict[str, Any]:
-        return analyze(iter_raw_issues(self.run_dir(since)))
+        return analyze(iter_raw_issues(self.run_dir(since)), components=self.components)
 
 
 # --------------------------------------------------------------------------- raw analysis
@@ -194,9 +202,11 @@ def _finish_bucket(b: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def analyze(issues: Iterable[dict[str, Any]]) -> dict[str, Any]:
+def analyze(
+    issues: Iterable[dict[str, Any]], *, components: Sequence[str] = COMPONENTS
+) -> dict[str, Any]:
     """Acceptance stats + the per-component link-density table, in one pass over raw."""
-    buckets: dict[str, dict[str, Any]] = {c: _blank_bucket() for c in COMPONENTS}
+    buckets: dict[str, dict[str, Any]] = {c: _blank_bucket() for c in components}
     buckets["all"] = _blank_bucket()
     other = _blank_bucket()
 
@@ -229,7 +239,7 @@ def analyze(issues: Iterable[dict[str, Any]]) -> dict[str, Any]:
             "_fix_versions": bool(fields.get("fixVersions")),
         }
         names = {str((c or {}).get("name") or "").lower() for c in (fields.get("components") or [])}
-        targets = [buckets[c] for c in COMPONENTS if c in names] or [other]
+        targets = [buckets[c] for c in components if c in names] or [other]
         targets.append(buckets["all"])
         for bucket in targets:
             bucket["n"] += 1

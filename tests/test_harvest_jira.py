@@ -10,8 +10,12 @@ import pytest
 import respx
 
 from brain.harvest.base import HttpFetcher
-from brain.harvest.jira import BASE_URL, JiraConnector, analyze, build_jql
+from brain.harvest.jira import JiraConnector, analyze, build_jql
+from tests.harvest_helpers import source
 
+JIRA = source("jira")
+BASE_URL = JIRA.base_url
+COMPONENTS = tuple(JIRA.option("components", ()))
 SEARCH = f"{BASE_URL}/rest/api/2/search"
 
 
@@ -51,20 +55,22 @@ def paged_transport(total: int, page_size: int, seen: list[dict] | None = None):
 
 def connector(tmp_path, page_size: int = 500) -> JiraConnector:
     http = HttpFetcher(BASE_URL, min_interval=0.0, sleep=lambda s: None)
-    return JiraConnector(tmp_path, http=http, page_size=page_size)
+    return JiraConnector(
+        tmp_path, source=source("jira", options={"page_size": page_size}), http=http
+    )
 
 
 # --------------------------------------------------------------------------- JQL
 
 
 def test_jql_quotes_the_reserved_word_connect():
-    jql = build_jql(None)
+    jql = build_jql(JIRA)
     assert 'component in (streams, "connect", clients)' in jql
     assert "component in (streams, connect, clients)" not in jql
 
 
 def test_jql_matches_the_agreed_slice_and_ends_with_order_by():
-    jql = build_jql(None)
+    jql = build_jql(JIRA)
     assert jql == (
         'project = KAFKA AND component in (streams, "connect", clients) '
         'AND created >= "2023-01-01" AND created <= "2025-12-31" ORDER BY created ASC'
@@ -72,7 +78,7 @@ def test_jql_matches_the_agreed_slice_and_ends_with_order_by():
 
 
 def test_since_adds_updated_clause_before_order_by():
-    jql = build_jql(date(2025, 6, 1))
+    jql = build_jql(JIRA, date(2025, 6, 1))
     assert 'AND updated >= "2025-06-01" ORDER BY created ASC' in jql
     assert jql.index('updated >= "2025-06-01"') < jql.index("ORDER BY")
 
@@ -222,7 +228,7 @@ def density_issues() -> list[dict]:
 
 
 def test_link_density_is_computed_per_component(density_issues):
-    density = analyze(density_issues)["link_density"]
+    density = analyze(density_issues, components=COMPONENTS)["link_density"]
 
     assert density["streams"]["n"] == 2
     assert density["streams"]["pct_formal_links"] == 50.0
@@ -240,7 +246,7 @@ def test_link_density_is_computed_per_component(density_issues):
 
 def test_an_issue_with_two_components_counts_in_both_but_once_in_all():
     issues = [make_issue(1, fields={"components": [{"name": "streams"}, {"name": "clients"}]})]
-    density = analyze(issues)["link_density"]
+    density = analyze(issues, components=COMPONENTS)["link_density"]
     assert density["streams"]["n"] == 1
     assert density["clients"]["n"] == 1
     assert density["all"]["n"] == 1
@@ -251,7 +257,7 @@ def test_stats_count_changelog_and_comment_coverage():
         make_issue(1),
         {"key": "KAFKA-2", "fields": {"summary": "no changelog", "comment": None}},
     ]
-    stats = analyze(issues)
+    stats = analyze(issues, components=COMPONENTS)
     assert stats["issues"] == 2
     assert stats["pct_changelog_expanded"] == 50.0
     assert stats["pct_with_comment_field"] == 50.0
@@ -305,7 +311,7 @@ def test_analysis_ignores_a_page_the_checkpoint_does_not_list(tmp_path):
 
     from brain.harvest.jira import analyze, iter_raw_issues
 
-    assert analyze(iter_raw_issues(tmp_path / "jira"))["issues"] == 150
+    assert analyze(iter_raw_issues(tmp_path / "jira"), components=COMPONENTS)["issues"] == 150
 
 
 @respx.mock

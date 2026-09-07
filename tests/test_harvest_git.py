@@ -9,6 +9,7 @@ import pytest
 
 from brain.harvest.base import HarvestError
 from brain.harvest.git import RS, US, GitConnector, analyze, parse_git_log
+from tests.harvest_helpers import source
 
 # A verbatim shape of `git log --name-only --format=LOG_FORMAT`: subject with a PR number,
 # a multi-line body with a trailer, then the touched files. The third record is a merge
@@ -70,7 +71,7 @@ def test_empty_log_yields_nothing():
 
 
 def fake_runner(log_text: str, calls: list[list[str]] | None = None):
-    def runner(args: list[str], cwd=None) -> str:
+    def runner(args: list[str], cwd=None, timeout: float = 900.0, secrets=()) -> str:
         if calls is not None:
             calls.append(args)
         if args[:2] == ["git", "log"] and "--name-only" in args:
@@ -83,7 +84,11 @@ def fake_runner(log_text: str, calls: list[list[str]] | None = None):
 def connector(tmp_path, log_text: str = FIXED_LOG, calls=None, batch: int = 1000) -> GitConnector:
     clone = tmp_path / "git" / "kafka" / ".git"
     clone.mkdir(parents=True, exist_ok=True)
-    return GitConnector(tmp_path, runner=fake_runner(log_text, calls), batch=batch)
+    return GitConnector(
+        tmp_path,
+        source=source("git", options={"batch": batch}),
+        runner=fake_runner(log_text, calls),
+    )
 
 
 def test_writes_commits_jsonl_with_the_agreed_fields(tmp_path):

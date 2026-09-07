@@ -16,8 +16,8 @@ from typing import Any
 
 from brain.harvest import jira as jira_mod
 from brain.harvest.base import HarvestResult, utc_now_iso, write_json_atomic
+from brain.harvest.registry import Registry, get_registry
 
-SOURCES = ("jira", "confluence", "git")
 DENSITY_COLUMNS = (
     "n",
     "pct_formal_links",
@@ -29,12 +29,23 @@ DENSITY_COLUMNS = (
 )
 
 #: How canon must deduplicate the overlap between the full pull and any `--since` pull.
-#: Mirrors the contract documented in `brain.harvest.base`.
-DEDUPE = {
+#: Mirrors the contract documented in `brain.harvest.base`. Keyed by source **type**, not
+#: by name: two Jira instances in `sources.yaml` are two directories with one dedupe rule.
+#: `ado`/`xray` are the template values from the public docs — untested, see
+#: `docs/guides/adding-a-connector.md`.
+DEDUPE: dict[str, dict[str, str | None]] = {
     "jira": {"key": "key", "recency": "fields.updated"},
     "confluence": {"key": "id", "recency": "version.number"},
     "git": {"key": "sha", "recency": None},
+    "ado": {"key": "id", "recency": "fields.System.ChangedDate"},
+    "xray": {"key": "key", "recency": "fields.updated"},
 }
+
+
+def report_sources(registry: Registry | None = None) -> tuple[tuple[str, str], ...]:
+    """`(name, type)` for every enabled source, in `sources.yaml` order."""
+    return tuple((s.name, s.type) for s in (registry or get_registry()).enabled())
+
 
 LAYOUT_RULE = (
     "Read the authoritative directory first, then each incremental directory in date "
@@ -53,25 +64,33 @@ def raw_layout(raw_dir: Path) -> dict[str, Any]:
     dedupe rule rather than something a mapper has to infer from directory names.
     """
     sources: dict[str, Any] = {}
-    for name in SOURCES:
+    for name, type_ in report_sources():
         base = raw_dir / name
         if not base.exists():
             continue
         incremental = sorted(str(p) for p in base.glob("since-*") if p.is_dir())
+        rule = DEDUPE.get(type_, {"key": None, "recency": None})
         sources[name] = {
+            "type": type_,
             "authoritative_dir": str(base),
             "incremental_dirs": incremental,
-            "dedupe_key": DEDUPE[name]["key"],
-            "recency_field": DEDUPE[name]["recency"],
+            "dedupe_key": rule["key"],
+            "recency_field": rule["recency"],
         }
     return {"rule": LAYOUT_RULE, "sources": sources}
 
 
 def link_density(raw_dir: Path, results: dict[str, HarvestResult], since: date | None) -> dict:
     """Per-component density from the **full** Jira pull (never from a `--since` slice)."""
-    if since is None and "jira" in results and results["jira"].stats.get("link_density"):
-        return results["jira"].stats["link_density"]
-    return jira_mod.analyze(jira_mod.iter_raw_issues(raw_dir / "jira")).get("link_density", {})
+    jira = next((s for s in get_registry().enabled() if s.type == "jira"), None)
+    if jira is None:
+        return {}
+    if since is None and jira.name in results and results[jira.name].stats.get("link_density"):
+        return results[jira.name].stats["link_density"]
+    return jira_mod.analyze(
+        jira_mod.iter_raw_issues(raw_dir / jira.name),
+        components=tuple(jira.option("components", ()) or ()),
+    ).get("link_density", {})
 
 
 def build_report(
@@ -144,7 +163,8 @@ def write_report(path: Path, report: dict[str, Any]) -> Path:
 def _fmt_density(density: dict[str, Any]) -> list[str]:
     if not density:
         return []
-    order = [k for k in ("streams", "connect", "clients", "other", "all") if k in density]
+    tail = ("other", "all")
+    order = [k for k in density if k not in tail] + [k for k in tail if k in density]
     columns = "".join(f"{c.replace('pct_', '%'):>22}" for c in DENSITY_COLUMNS)
     head = f"  {'component':<10}" + columns
     lines = ["", "link density (from the full Jira pull):", head]
@@ -163,7 +183,7 @@ def summarize(report: dict[str, Any]) -> str:
     else:
         bucket = report.get("sources") or {}
         lines = ["harvest:"]
-    for name in SOURCES:
+    for name, type_ in report_sources():
         entry = bucket.get(name)
         if not entry:
             continue
@@ -184,7 +204,7 @@ def summarize(report: dict[str, Any]) -> str:
             "git": f"{stats.get('commits', 0)} commits, "
             f"{stats.get('with_issue_key', 0)} keyed "
             f"({stats.get('pct_of_keyed_with_pr_number', 0)}% of those carry a PR)",
-        }[name]
+        }.get(type_, f"{entry.get('records', 0)} records")
         lines.append(
             f"  {name:<11} +{entry.get('pages', 0)} pages / +{entry.get('records', 0)} records "
             f"in {entry.get('duration_s', 0)}s "

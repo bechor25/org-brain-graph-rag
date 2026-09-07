@@ -291,10 +291,17 @@ class HttpFetcher:
         sleep=time.sleep,
         monotonic=time.monotonic,
         rng: random.Random | None = None,
+        headers: dict[str, str] | None = None,
+        secrets: tuple[str, ...] = (),
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.policy = policy or RetryPolicy()
         self.min_interval = min_interval
+        # Auth rides per request, not on the client: a test that injects its own
+        # `httpx.Client` (respx) must get the header too, and the header must never end up
+        # somewhere that is repr'd into a report.
+        self._headers = dict(headers or {})
+        self._secrets = tuple(s for s in secrets if s)
         # A 500-issue Jira page with fields=*all is tens of MB: the read budget has to be
         # generous, while connect stays short so a dead host fails fast into the backoff.
         self._client = client or httpx.Client(
@@ -340,6 +347,12 @@ class HttpFetcher:
 
     # -- request -----------------------------------------------------------
 
+    def _safe(self, text: str) -> str:
+        """Nothing this class records may contain a token (ADR-0005 §4)."""
+        for secret in self._secrets:
+            text = text.replace(secret, "***")
+        return text
+
     def get_json(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         url = path if path.startswith("http") else f"{self.base_url}{path}"
         last_detail = "unknown"
@@ -347,7 +360,7 @@ class HttpFetcher:
             self._pace()
             self.calls += 1
             try:
-                response = self._client.get(url, params=params)
+                response = self._client.get(url, params=params, headers=self._headers or None)
                 self._last_call = self._monotonic()
                 if response.status_code in self.RETRY_STATUS:
                     last_detail = f"HTTP {response.status_code}"
@@ -361,7 +374,9 @@ class HttpFetcher:
                 retry_after = None
             except httpx.HTTPStatusError as exc:  # 4xx that is not worth retrying
                 self._last_call = self._monotonic()
-                detail = f"HTTP {exc.response.status_code} for {url}: {exc.response.text[:400]}"
+                detail = self._safe(
+                    f"HTTP {exc.response.status_code} for {url}: {exc.response.text[:400]}"
+                )
                 self.errors.append(
                     {"when": utc_now_iso(), "kind": "http", "detail": detail, "fatal": True}
                 )
@@ -371,13 +386,17 @@ class HttpFetcher:
                 break
             delay = self._backoff(attempt, retry_after)
             self.retries += 1
-            note = f"{last_detail} for {url}; attempt {attempt + 1}, sleeping {delay:.1f}s"
+            note = self._safe(
+                f"{last_detail} for {url}; attempt {attempt + 1}, sleeping {delay:.1f}s"
+            )
             self.errors.append(
                 {"when": utc_now_iso(), "kind": "retry", "detail": note, "fatal": False}
             )
             self._sleep(delay)
 
-        detail = f"gave up after {self.policy.max_attempts} attempts on {url}: {last_detail}"
+        detail = self._safe(
+            f"gave up after {self.policy.max_attempts} attempts on {url}: {last_detail}"
+        )
         self.errors.append({"when": utc_now_iso(), "kind": "http", "detail": detail, "fatal": True})
         raise HarvestError(detail)
 

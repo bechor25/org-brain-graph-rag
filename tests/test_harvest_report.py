@@ -9,6 +9,7 @@ import pytest
 
 from brain.cli import app
 from brain.harvest.base import HarvestResult, Page
+from brain.harvest.registry import RegistryError
 from brain.harvest.report import build_report, raw_layout, summarize, write_report
 from brain.harvest.runner import resolve_sources, run_harvest
 
@@ -66,7 +67,7 @@ class FakeConnector:
 
 
 def factory(name, **kw):
-    return lambda raw_dir: FakeConnector(raw_dir, name=name, **kw)
+    return lambda raw_dir, **_: FakeConnector(raw_dir, name=name, **kw)
 
 
 @pytest.fixture(autouse=True)
@@ -213,10 +214,14 @@ def test_write_report_is_atomic_json(tmp_path):
 
 
 def test_resolve_sources():
+    """`--source` goes through sources.yaml: `all` is every *enabled* entry."""
     assert resolve_sources("all") == ["jira", "confluence", "git"]
     assert resolve_sources("git") == ["git"]
-    with pytest.raises(ValueError, match="unknown source"):
-        resolve_sources("ado")
+    # `ado` is in the registry but disabled — naming it explicitly is how a new connector
+    # is tried once before it joins `--source all`.
+    assert resolve_sources("ado") == ["ado"]
+    with pytest.raises(RegistryError, match="unknown source"):
+        resolve_sources("nope")
 
 
 def test_run_harvest_runs_every_source_and_writes_the_report(tmp_path):
@@ -255,9 +260,17 @@ def test_a_fatal_error_in_one_source_still_runs_the_others_and_exits_1(tmp_path)
 
 
 def test_cli_rejects_an_unknown_source(runner):
-    out = runner.invoke(app, ["harvest", "--source", "ado"])
+    out = runner.invoke(app, ["harvest", "--source", "nope"])
     assert out.exit_code != 0
     assert "unknown source" in out.output
+
+
+def test_cli_says_which_registered_type_has_no_connector(runner, tmp_path, monkeypatch):
+    """`ado` is configured but unimplemented: name the gap, do not pretend it is unknown."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    out = runner.invoke(app, ["harvest", "--source", "ado"])
+    assert out.exit_code == 1
+    assert "no connector yet" in (out.output + (out.stderr or ""))
 
 
 def test_cli_rejects_a_bad_since(runner):
