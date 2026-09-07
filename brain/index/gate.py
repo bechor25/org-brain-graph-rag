@@ -90,7 +90,8 @@ def corpus_criteria(corpus: dict[str, Any]) -> list[Criterion]:
             _num(kips) is not None and kips >= MIN_KIPS_EMBEDDED,
             note=(
                 "Phase A embeds the KIPs the harvested slice actually references, not all "
-                f"{corpus.get('kip_documents')} harvested pages."
+                f"{corpus.get('kip_documents')} harvested pages. The roadmap summary table's "
+                f"draft asks for >= {ROADMAP_TABLE_VARIANT['kips']}; both are met."
             ),
             detail={"kip_documents_total": corpus.get("kip_documents")},
         ),

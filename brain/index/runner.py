@@ -1,7 +1,7 @@
 """`brain index` — create the final index set, take the census, evaluate the gate.
 
 The order is deliberate. Indexes first, because the census reports their state and a
-census taken before `db.awaitIndexes` would report `POPULATING` for indexes this very run
+census taken before the wait would report `POPULATING` for indexes this very run
 created. Then every read, then the two artefacts (`data/reports/index.json` and the Hebrew
 census), then the gate — which is evaluated from the report dict, not from a second pass
 over the graph, so the table and the document can never disagree.
@@ -33,6 +33,9 @@ CENSUS_NAME = "plan1-graph-census.md"
 
 #: Set while `--smoke` shells out, so a live test that runs `brain index` cannot recurse.
 SMOKE_GUARD = "BRAIN_INDEX_SMOKE_RUNNING"
+
+#: How much of `make smoke`'s output to keep in the report.
+SMOKE_TAIL_LINES = 40
 
 #: Things a reader of `data/reports/index.json` should know that are not counts.
 NOTES = [
@@ -119,13 +122,30 @@ def sanity_warnings(ctx: GraphContext, report: dict[str, Any], present: set[str]
     com = report.get("communities") or {}
     if not com.get("present"):
         _warn(warnings, "warn", "communities_absent", str(com.get("note")))
-    elif com.get("summarised", 0) < com.get("communities", 0):
+    elif not com.get("summarised"):
         _warn(
             warnings,
             "warn",
-            "communities_without_a_report",
-            f"{com['communities'] - com['summarised']} of {com['communities']} communities "
-            "have no summary — global search (S5) cannot reach them.",
+            "no_community_has_a_report",
+            f"none of the {com.get('communities')} communities carries a summary — global "
+            "search (S5) has nothing to search.",
+        )
+    else:
+        # Deliberately `info`, and phrased as coverage. `brain communities` summarises a
+        # *selected* set (min-size); the rest are `misc` by design, so counting them as
+        # "missing a report" would invent a defect out of a design decision. What actually
+        # matters for S5 is how much of the graph a summarised community can reach.
+        _warn(
+            warnings,
+            "info",
+            "community_report_coverage",
+            f"{com['summarised']} of {com['communities']} communities carry a report "
+            f"({com.get('pct_summarised')}%), and they cover "
+            f"{com.get('pct_members_in_a_summarised_community')}% of members "
+            f"({com.get('members_in_a_summarised_community')} of "
+            f"{com.get('distinct_members')}). The unsummarised rest are the `misc` "
+            "communities `brain communities` left below its size threshold — see "
+            "data/reports/communities.json.",
         )
 
     kips = (report.get("sanity") or {}).get("kip_entity_coverage") or {}
@@ -206,7 +226,12 @@ def run_smoke(repo_root: Path, echo: Callable[[str], None] = print) -> dict[str,
         text=True,
         check=False,
     )
-    tail = "\n".join((proc.stdout + proc.stderr).strip().splitlines()[-15:])
+    # Wide enough to hold pytest's whole `FAILED …` block, not just its last few lines:
+    # a recorded FAIL is only actionable if the report says which tests failed, and a
+    # 15-line tail on a 154-test live suite showed 13 of 22 failures and hid the rest.
+    lines = (proc.stdout + proc.stderr).strip().splitlines()
+    failures = [ln for ln in lines if ln.startswith(("FAILED ", "ERROR "))]
+    tail = "\n".join(lines[-SMOKE_TAIL_LINES:])
     return {
         "ok": proc.returncode == 0,
         "status": "PASS" if proc.returncode == 0 else "FAIL",
@@ -215,6 +240,8 @@ def run_smoke(repo_root: Path, echo: Callable[[str], None] = print) -> dict[str,
         "cwd": str(repo_root),
         "at": utc_now_iso(),
         "duration_s": round(time.perf_counter() - started, 1),
+        "failures": failures,
+        "failing_files": sorted({ln.split("::")[0].split(" ", 1)[-1] for ln in failures}),
         "tail": tail,
     }
 

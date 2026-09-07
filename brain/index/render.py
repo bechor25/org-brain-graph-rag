@@ -60,9 +60,17 @@ def _gate(report: dict[str, Any]) -> list[str]:
         [c["name"], c["requirement"], c["value"], c["status"]] for c in gate.get("criteria", [])
     ]
     out = _h(2, "שער היציאה של Plan 1")
+    variant = gate.get("roadmap_table_variant") or {}
     out += _p(
         f"מקור הקריטריונים: `{gate.get('source')}`. "
-        f"עברו {_fmt(gate.get('passed'))} מתוך {_fmt(gate.get('total'))}."
+        f"עברו {_fmt(gate.get('passed'))} מתוך {_fmt(gate.get('total'))}. "
+        + (
+            "טבלת ה-roadmap מחזיקה טיוטה מוקדמת יותר של שני ספים "
+            f"({_fmt(variant)}), שנכתבה לפני שה-probe מדד את הקורפוס; "
+            "שניהם מדווחים ולא נבחר אחד בשקט."
+            if variant
+            else ""
+        )
     )
     out += _table(["קריטריון", "דרישה", "ערך שנמדד", "תוצאה"], rows)
     notes = [c for c in gate.get("criteria", []) if c.get("note")]
@@ -396,15 +404,37 @@ def _canonical(report: dict[str, Any]) -> list[str]:
     out = _h(2, "טביעת אצבע של הקורפוס הקנוני")
     out += _p(
         f'מ-`{canon.get("dir")}`. המפקד עונה על "מה יש בגרף"; הטבלה הזו עונה על "ממה" — '
-        "בלעדיה שתי ריצות עם אותם מספרים יכולות היו לקרוא קבצים שונים."
+        "בלעדיה שתי ריצות עם אותם מספרים יכולות היו לקרוא קבצים שונים. "
+        "ה-sha256 מקוצר ל-16 תווים לקריאוּת; הערך המלא נמצא ב-`canonical.files` שב-JSON."
     )
     out += _table(
-        ["קובץ", "sha256", "בייטים", "רשומות"],
+        ["קובץ", "sha256 (16 ראשונים)", "בייטים", "רשומות"],
         [
             [name, info.get("sha256", "")[:16], info.get("bytes"), info.get("records")]
             for name, info in sorted((canon.get("files") or {}).items())
         ],
     )
+    return out
+
+
+def _smoke(report: dict[str, Any]) -> list[str]:
+    smoke = report.get("smoke")
+    out = _h(2, "`make smoke`")
+    if not smoke:
+        return out + _p("*לא הורץ. `brain index --smoke` מריץ ורושם את התוצאה.*")
+    out += _p(
+        f"**{smoke.get('status')}** — יצא עם קוד {_fmt(smoke.get('exit_code'))} "
+        f"אחרי {_fmt(smoke.get('duration_s'))} שניות, ב-{_fmt(smoke.get('at'))}."
+    )
+    files = smoke.get("failing_files") or []
+    if files:
+        out += _p("קבצים שנכשלו — כל שורה היא בדיקה, מקובצת לפי קובץ:")
+        counts: dict[str, int] = {}
+        for line in smoke.get("failures") or []:
+            for path in files:
+                if path in line:
+                    counts[path] = counts.get(path, 0) + 1
+        out += _table(["קובץ", "בדיקות שנכשלו"], sorted(counts.items(), key=lambda kv: -kv[1]))
     return out
 
 
@@ -462,6 +492,7 @@ def render(report: dict[str, Any]) -> str:
         _orphans,
         _canonical,
         _versions,
+        _smoke,
         _warnings,
     ):
         lines += section(report)

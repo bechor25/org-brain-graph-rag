@@ -110,6 +110,34 @@ def test_absent_communities_are_a_warning_with_the_census_note():
     assert "has not run" in warns["communities_absent"]["detail"]
 
 
+def test_unsummarised_communities_are_coverage_not_a_defect():
+    """`brain communities` summarises a selected set and leaves the rest as `misc`.
+    Counting those as 'missing a report' would invent a defect out of a design decision."""
+    report = {
+        "communities": {
+            "present": True,
+            "communities": 1297,
+            "summarised": 186,
+            "pct_summarised": 14.34,
+            "distinct_members": 11875,
+            "members_in_a_summarised_community": 10618,
+            "pct_members_in_a_summarised_community": 89.41,
+        }
+    }
+    warns = {w["name"]: w for w in runner_mod.sanity_warnings(ctx(), report, set())}
+    assert "communities_without_a_report" not in warns
+    row = warns["community_report_coverage"]
+    assert row["severity"] == "info"
+    assert "89.41% of members" in row["detail"]
+    assert "misc" in row["detail"]
+
+
+def test_a_graph_where_no_community_was_summarised_is_a_real_warning():
+    report = {"communities": {"present": True, "communities": 1297, "summarised": 0}}
+    warns = {w["name"]: w for w in runner_mod.sanity_warnings(ctx(), report, set())}
+    assert warns["no_community_has_a_report"]["severity"] == "warn"
+
+
 # --------------------------------------------------------------------- the census document
 
 
@@ -364,6 +392,31 @@ def test_a_failed_smoke_is_recorded_as_a_failure(monkeypatch, tmp_path):
     out = runner_mod.run_smoke(tmp_path, echo=lambda _m: None)
     assert out["ok"] is False
     assert out["exit_code"] == 1
+
+
+def test_a_failed_smoke_names_every_failing_test_not_just_the_last_few(monkeypatch, tmp_path):
+    """A 15-line tail on a 154-test live suite showed 13 of 22 failures and hid the rest,
+    which makes a recorded FAIL unactionable."""
+
+    class Failed:
+        returncode = 1
+        stdout = "\n".join(
+            [f"FAILED tests/live/test_resolve_live.py::test_{i}" for i in range(20)]
+            + ["ERROR tests/live/test_chunk_live.py::test_setup"]
+            + [f"noise line {i}" for i in range(60)]
+            + ["19 failed, 135 passed"]
+        )
+        stderr = ""
+
+    monkeypatch.delenv(runner_mod.SMOKE_GUARD, raising=False)
+    monkeypatch.setattr(runner_mod.subprocess, "run", lambda *a, **k: Failed())
+    out = runner_mod.run_smoke(tmp_path, echo=lambda _m: None)
+    assert len(out["failures"]) == 21
+    assert out["failing_files"] == [
+        "tests/live/test_chunk_live.py",
+        "tests/live/test_resolve_live.py",
+    ]
+    assert len(out["tail"].splitlines()) == runner_mod.SMOKE_TAIL_LINES
 
 
 # -------------------------------------------------------------------------------- report io

@@ -218,3 +218,30 @@ def test_the_index_meta_live_count_is_read_from_the_graph_not_the_node(productio
     chunk_row = next(r for r in meta["rows"] if r["index"] == "chunk_embedding")
     live = ctx.read("MATCH (c:Chunk) WHERE c.embedding IS NOT NULL RETURN count(c) AS c")[0]["c"]
     assert chunk_row["live_vectors"] == live
+
+
+def test_person_text_finds_a_person_by_an_alias_resolve_merged_away(production):
+    """The whole reason `person_text` indexes `aliases` and not just `display`.
+
+    After `brain resolve` merges two identities the loser's name survives only in
+    `aliases[]`. A who-is question asked with that name has to reach the survivor, or the
+    merge has quietly made the graph less answerable than it was before.
+    """
+    ctx, _present = production
+    rows = ctx.read(
+        "MATCH (p:Person) WHERE p.aliases IS NOT NULL AND size(p.aliases) > 0 "
+        "RETURN p.display AS display, p.aliases AS aliases LIMIT 50"
+    )
+    pair = next(
+        ((r["display"], a) for r in rows for a in r["aliases"] if a and a != r["display"]),
+        None,
+    )
+    if pair is None:
+        pytest.skip("no merged person carries an alias that differs from its display name")
+    display, alias = pair
+    hits = ctx.read(
+        "CALL db.index.fulltext.queryNodes('person_text', $q) YIELD node, score "
+        "RETURN node.display AS display ORDER BY score DESC LIMIT 5",
+        q=f'"{alias}"',
+    )
+    assert display in [h["display"] for h in hits], f"{alias!r} did not find {display!r}"
