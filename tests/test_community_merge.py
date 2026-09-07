@@ -15,7 +15,13 @@ from __future__ import annotations
 import json
 
 from brain.community.graph import MODEL, PROVENANCE_PROPS, decode_findings, encode_findings
-from brain.community.merge import embed_hash, embed_text, findings_without_evidence, node_rows
+from brain.community.merge import (
+    embed_hash,
+    embed_text,
+    findings_without_evidence,
+    node_rows,
+    report_is_current,
+)
 from brain.community.models import Report
 from tests.community_helpers import (
     SUMMARY,
@@ -218,3 +224,44 @@ def test_encoded_findings_are_stable_so_a_re_merge_writes_the_same_bytes():
     findings = [{"statement": "s", "evidence_chunk_ids": [C, A]}]
     assert encode_findings(findings) == encode_findings(findings)
     assert json.loads(encode_findings(findings)[0])["evidence_chunk_ids"] == [A, C]
+
+
+# --------------------------------------------------------------- writing only what changed
+
+
+def props_of(tmp_path) -> dict:
+    return node_rows([one(tmp_path)], "2026-09-07T15:00:00+00:00")[0]["props"]
+
+
+def test_a_report_already_on_the_node_word_for_word_is_not_written_again(tmp_path):
+    """A second merge over the same outputs must leave the graph alone, not rewrite it."""
+    props = props_of(tmp_path)
+    # `reported_at` is when merge ran, not what it says: it differs on every run and is
+    # the one property that must not make a report look changed.
+    stored = {**props, "reported_at": "2026-09-01T00:00:00+00:00"}
+    assert report_is_current(stored, props) is True
+
+
+def test_a_community_with_no_report_yet_is_not_current(tmp_path):
+    assert report_is_current(None, props_of(tmp_path)) is False
+    assert report_is_current({}, props_of(tmp_path)) is False
+
+
+def test_any_changed_property_makes_the_report_stale(tmp_path):
+    props = props_of(tmp_path)
+    for field, value in (
+        ("title", "A different theme"),
+        ("rank", 1.0),
+        ("summary", "rewritten"),
+        ("batch_id", "shard-02/009"),
+        ("extracted_at", "2026-09-08T00:00:00+00:00"),
+        ("evidence_chunk_ids", [C]),
+    ):
+        assert report_is_current({**props, field: value}, props) is False, field
+
+
+def test_a_reordered_findings_list_is_a_real_change_not_a_false_alarm(tmp_path):
+    """Order is meaning here: the agent puts the most important finding first."""
+    props = props_of(tmp_path)
+    stored = {**props, "findings": list(reversed(props["findings"]))}
+    assert report_is_current(stored, props) is (len(props["findings"]) == 1)

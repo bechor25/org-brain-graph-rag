@@ -25,6 +25,7 @@ document per finding keeps a finding and its evidence in one value, and
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Sequence
 from typing import Any
 
@@ -40,6 +41,8 @@ MODEL = "opus:community-summarizer"
 
 #: The four properties conventions rule 3 requires on every LLM-derived node.
 PROVENANCE_PROPS: tuple[str, ...] = ("evidence_chunk_ids", "batch_id", "model", "extracted_at")
+#: On a report this run copied from a community with the same members, the id it came from.
+COPIED_FROM = "copied_from"
 #: Everything a community report puts on the node. Carried across a rebuild as one unit.
 REPORT_PROPS: tuple[str, ...] = (
     "title",
@@ -49,8 +52,12 @@ REPORT_PROPS: tuple[str, ...] = (
     "rank",
     "rank_reason",
     "reported_at",
+    COPIED_FROM,
     *PROVENANCE_PROPS,
 )
+#: What `report_is_current` compares. `reported_at` is when merge last ran, not what it
+#: said, so including it would make every re-merge look like a change.
+COMPARED_PROPS: tuple[str, ...] = tuple(p for p in REPORT_PROPS if p != "reported_at")
 
 #: Where each projected label keeps its key, its display name and its description.
 MEMBER_LABELS: tuple[str, ...] = ("Entity", "WorkItem", "Document", "Component")
@@ -87,13 +94,14 @@ def apply_community_schema(ctx: GraphContext, dim: int) -> dict[str, Any]:
     ]
     for cypher in statements:
         ctx.write(cypher)
-    ctx.client.write("CALL db.awaitIndexes(300)")
+    waited = await_own_indexes(ctx)
     return {
         "constraints": 1,
         "indexes": 2,
         "vector_index": index_name(ctx),
         "dim": dim,
         "similarity": "cosine",
+        **waited,
     }
 
 
@@ -104,16 +112,111 @@ SCHEMA_NAMES: tuple[str, ...] = (
     INDEX_NAME,
 )
 
+#: How long `await_own_indexes` waits before reporting what is still not ONLINE.
+INDEX_WAIT_SECONDS = 120.0
+INDEX_POLL_SECONDS = 0.2
+
+
+def await_own_indexes(
+    ctx: GraphContext, timeout: float = INDEX_WAIT_SECONDS, poll: float = INDEX_POLL_SECONDS
+) -> dict[str, Any]:
+    """Wait for *this step's* indexes. Never for the whole database.
+
+    `CALL db.awaitIndexes` is database-wide: it blocks on every index in the database,
+    including the ones another step's scratch namespace left half-built. Observed, not
+    theorised — this call sat for four minutes on a `_ResetTestbrain_file_path_key` stuck
+    at POPULATING 100% while three agents shared one Neo4j, and would have burned its full
+    300-second timeout on an index this step neither made nor reads.
+
+    Polling the four names this step owns answers the only question that matters. What is
+    still pending when the timeout runs out is returned rather than raised: the index's
+    state is in the report either way, and a merge that has already validated its batches
+    should not throw them away over a slow index build.
+    """
+    names = [f"{ctx.prefix}{name}" for name in SCHEMA_NAMES]
+    started = time.monotonic()
+    pending: dict[str, str] = {}
+    while True:
+        rows = ctx.read(
+            "SHOW INDEXES YIELD name, state WHERE name IN $names RETURN name, state", names=names
+        )
+        pending = {r["name"]: r["state"] for r in rows if r["state"] != "ONLINE"}
+        if not pending or time.monotonic() - started >= timeout:
+            break
+        time.sleep(poll)
+    return {
+        "awaited_indexes": len(names),
+        "await_ms": round((time.monotonic() - started) * 1000),
+        "indexes_not_online": pending,
+    }
+
 
 def drop_community_schema(ctx: GraphContext) -> None:
-    """Tests only: remove what a scratch namespace created, in either flavour."""
+    """Tests only: remove what a scratch namespace created — the meta node included.
+
+    An `IndexMeta` left behind would make the next run in this namespace describe an index
+    that no longer exists, which is worse than describing none.
+    """
     for name in SCHEMA_NAMES:
         ctx.client.write(f"DROP CONSTRAINT {ctx.name(name)} IF EXISTS")
         ctx.client.write(f"DROP INDEX {ctx.name(name)} IF EXISTS")
+    ctx.client.write(
+        f"MATCH (m:{ctx.label(META_LABEL)} {{`name`: $name}}) DETACH DELETE m",
+        name=index_name(ctx),
+    )
 
 
 def index_name(ctx: GraphContext) -> str:
     return f"{ctx.prefix}{INDEX_NAME}"
+
+
+META_LABEL = "IndexMeta"
+
+
+def write_index_meta(ctx: GraphContext, *, model: str, dim: int, now: str) -> dict[str, Any]:
+    """Record what made these vectors, beside the index itself.
+
+    `brain chunk` and `brain resolve` each write one of these for the same reason: a vector
+    index is unreadable without knowing which model produced it, and a question embedded by
+    a different model returns nonsense rather than an error. `live` is the number of
+    `Community` nodes actually carrying a vector right now, so a reader can spot a
+    half-embedded index — a `live` under the summarised count — without trusting this run's
+    own arithmetic.
+    """
+    live = ctx.read(
+        f"MATCH (c:{ctx.label(LABEL)}) WHERE c.`{EMBEDDING_PROP}` IS NOT NULL "
+        "RETURN count(c) AS live"
+    )
+    status = index_status(ctx)
+    props = {
+        "model": model,
+        "dim": dim,
+        "similarity": "cosine",
+        "label": LABEL,
+        "live": int(live[0]["live"]) if live else 0,
+        "state": status.get("state"),
+        "updated_at": now,
+    }
+    ctx.write(
+        f"MERGE (m:{ctx.label(META_LABEL)} {{`name`: $name}})\n"
+        "ON CREATE SET m.created_at = $now\n"
+        "SET m += $props",
+        name=index_name(ctx),
+        now=now,
+        props=props,
+    )
+    return {"name": index_name(ctx), **props}
+
+
+def read_index_meta(ctx: GraphContext) -> dict[str, Any] | None:
+    rows = ctx.read(
+        f"MATCH (m:{ctx.label(META_LABEL)} {{`name`: $name}}) "
+        "RETURN m.name AS name, m.label AS label, m.model AS model, m.dim AS dim, "
+        "m.similarity AS similarity, m.live AS live, m.state AS state, "
+        "toString(m.created_at) AS created_at, toString(m.updated_at) AS updated_at",
+        name=index_name(ctx),
+    )
+    return rows[0] if rows else None
 
 
 def index_status(ctx: GraphContext) -> dict[str, Any]:
@@ -414,6 +517,61 @@ def carry_reports(ctx: GraphContext, rows: Sequence[dict[str, Any]]) -> int:
         rows,
     )
     return len(rows)
+
+
+def copy_reports(ctx: GraphContext, rows: Sequence[dict[str, Any]]) -> int:
+    """`carry_reports` across *levels* rather than across rebuilds.
+
+    Same write, different question. `carry_reports` answers "this community survived a
+    rebuild"; this one answers "another community holds exactly these members and already
+    has a report". Both put a text somewhere it was not written for, and both keep the
+    provenance of the run that wrote it — `copied_from` in the props is what says which.
+    """
+    return carry_reports(ctx, rows)
+
+
+def stored_reports(ctx: GraphContext, ids: Sequence[str]) -> dict[str, dict[str, Any]]:
+    """The report properties these communities already carry, for change detection."""
+    if not ids:
+        return {}
+    props = ", ".join(f"c.`{p}` AS `{p}`" for p in COMPARED_PROPS)
+    rows = ctx.read(
+        f"MATCH (c:{ctx.label(LABEL)}) WHERE c.id IN $ids AND c.`summary` IS NOT NULL\n"
+        f"RETURN c.id AS id, {props}",
+        ids=list(ids),
+    )
+    return {row.pop("id"): row for row in rows}
+
+
+def cross_level_duplicates(ctx: GraphContext) -> dict[str, Any]:
+    """Summarisable communities at different levels holding exactly the same members.
+
+    Leiden's coarse level does not have to merge anything, and when it does not, the
+    coarse community *is* the fine one under another id. Reported rather than hidden: it
+    is the honest measure of how much a second level is worth on this corpus.
+    """
+    rows = ctx.read(
+        f"MATCH (c:{ctx.label(LABEL)}) WHERE coalesce(c.misc, false) = false\n"
+        "WITH c ORDER BY c.level, c.id\n"
+        "WITH c.member_hash AS member_hash, c.size AS size, "
+        "collect({id: c.id, level: c.level, title: c.title}) AS communities\n"
+        "WHERE size(communities) > 1\n"
+        "RETURN member_hash, size, communities ORDER BY size DESC, member_hash"
+    )
+    return {
+        "total": len(rows),
+        "communities": sum(len(r["communities"]) for r in rows),
+        "levels_involved": sorted({c["level"] for r in rows for c in r["communities"]}),
+        "pairs": [
+            {
+                "member_hash": r["member_hash"],
+                "size": r["size"],
+                "ids": [c["id"] for c in r["communities"]],
+                "titles": [c["title"] for c in r["communities"]],
+            }
+            for r in rows
+        ],
+    }
 
 
 def write_reports(ctx: GraphContext, rows: Sequence[dict[str, Any]]) -> int:

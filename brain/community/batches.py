@@ -21,13 +21,14 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from brain.community import graph as community_graph
 from brain.community.build import BuildError
+from brain.community.graph import COPIED_FROM
 from brain.community.models import TASK, BatchInput, ShardStatus
 from brain.community.report import write_section
 from brain.extract.build import (
@@ -158,6 +159,52 @@ def _weight(community: dict[str, Any]) -> int:
     )
 
 
+def split_copyable(
+    wanted: Sequence[dict[str, Any]], reports: Mapping[str, dict[str, Any]]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """`(to_copy, to_summarize)` — the reports that already exist under another id.
+
+    Leiden's coarse level does not always merge anything: on the live graph 22 coarse
+    communities hold *exactly* the members of a fine one, so `member_hash` is equal and the
+    two would get two agent-written reports about one set of things. The text would differ
+    only in the way two runs of the same model differ, which is not information — it is 22
+    batches of agent time and a global search that returns the same cluster twice under two
+    ids that look unrelated.
+
+    So the second one is copied instead of re-summarised: the same title, summary, findings
+    and rank, the same vector, and the provenance of the run that actually wrote it — the
+    batch, the model and the extraction time all name the report's real origin, with
+    `copied_from` naming the community it was written for. Nothing here claims a second
+    agent said the same thing twice.
+    """
+    to_copy: list[dict[str, Any]] = []
+    to_summarize: list[dict[str, Any]] = []
+    for row in wanted:
+        stored = reports.get(row["member_hash"] or "")
+        source = (stored or {}).get("previous_id")
+        if not stored or not source or source == row["community_id"]:
+            to_summarize.append(row)
+            continue
+        props = {
+            k: v
+            for k, v in stored.items()
+            if k not in {"embedding", "embed_hash", "previous_id"} and v is not None
+        }
+        to_copy.append(
+            {
+                "id": row["community_id"],
+                "community_id": row["community_id"],
+                "member_hash": row["member_hash"],
+                "source": source,
+                "level": row["level"],
+                "props": {**props, COPIED_FROM: source},
+                "embedding": stored.get("embedding"),
+                "embed_hash": stored.get("embed_hash"),
+            }
+        )
+    return to_copy, to_summarize
+
+
 def collect(
     ctx: GraphContext,
     *,
@@ -165,8 +212,12 @@ def collect(
     evidence: int = DEFAULT_EVIDENCE,
     evidence_chars: int = DEFAULT_EVIDENCE_CHARS,
     resummarize: bool = False,
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Every community that still needs a report, with the context the agent gets."""
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    """Every community that still needs a report, with the context the agent gets.
+
+    Returns `(selected, to_copy, stats)`: what an agent must write, what can be copied
+    from a community that already holds these exact members, and the numbers behind both.
+    """
     rows = ctx.read(
         f"MATCH (c:{ctx.label(community_graph.LABEL)})\n"
         "RETURN c.id AS community_id, c.level AS level, c.level_name AS level_name, "
@@ -182,7 +233,13 @@ def collect(
         )
     misc = [r for r in rows if r["misc"]]
     already = [r for r in rows if not r["misc"] and r["summary"]]
-    wanted = [r for r in rows if not r["misc"] and (resummarize or not r["summary"])]
+    asked = [r for r in rows if not r["misc"] and (resummarize or not r["summary"])]
+    # `--resummarize` means "write these again", so it also overrides the copy rule: the
+    # planner asking for a rewrite must not be answered with the old text under a new id.
+    to_copy: list[dict[str, Any]] = []
+    wanted = asked
+    if not resummarize:
+        to_copy, wanted = split_copyable(asked, community_graph.read_reports(ctx))
 
     ids = [r["community_id"] for r in wanted]
     members = community_graph.read_members(ctx, ids, top_n=top_members)
@@ -217,6 +274,8 @@ def collect(
         "communities_in_graph": len(rows),
         "misc_skipped": len(misc),
         "already_summarized_skipped": len(already),
+        "copied_from_another_level": len(to_copy),
+        "copied_pairs": [{"community": c["id"], "from": c["source"]} for c in to_copy],
         "no_evidence_skipped": len(without_evidence),
         "selected": len(out),
         "without_evidence": without_evidence[:20],
@@ -225,7 +284,7 @@ def collect(
         "evidence_chars": evidence_chars,
         "resummarize": resummarize,
     }
-    return out, stats
+    return out, to_copy, stats
 
 
 def run_batches(
@@ -259,13 +318,20 @@ def run_batches(
             "its .out.json files aside."
         )
 
-    selected, stats = collect(
+    selected, to_copy, stats = collect(
         ctx,
         top_members=top_members,
         evidence=evidence,
         evidence_chars=evidence_chars,
         resummarize=resummarize,
     )
+    if to_copy:
+        stats["copied_written"] = community_graph.copy_reports(ctx, to_copy)
+        echo(
+            f"copied {len(to_copy)} report(s) onto communities that hold exactly the "
+            "members of a community already summarised at the other level "
+            f"(first: {to_copy[0]['id']} from {to_copy[0]['source']})"
+        )
     if not selected:
         report = {
             "step": "communities.batches",

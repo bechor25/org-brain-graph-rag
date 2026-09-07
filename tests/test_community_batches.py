@@ -17,6 +17,7 @@ from brain.community.batches import (
     envelope,
     pack,
     serialise,
+    split_copyable,
 )
 from brain.community.build import BuildError
 from brain.community.models import BatchInput
@@ -119,3 +120,74 @@ def test_a_shard_keeps_its_communities_in_a_stable_order():
 def test_zero_shards_is_refused():
     with pytest.raises(BuildError, match="at least 1"):
         assign_shards([community_context()], 0)
+
+
+# ------------------------------------------------- the same members at two levels at once
+
+
+def wanted(cid: str, level: int, member_hash: str) -> dict:
+    """One row of what `collect` found: a community that has no report of its own yet."""
+    return {
+        "community_id": cid,
+        "level": level,
+        "level_name": "fine" if level == 0 else "coarse",
+        "size": 33,
+        "member_hash": member_hash,
+        "misc": False,
+        "summary": None,
+    }
+
+
+def stored_report(previous_id: str = "L0-594") -> dict:
+    return {
+        "previous_id": previous_id,
+        "title": "Consumer rebalance moves to the coordinator",
+        "summary": "…",
+        "findings": ['{"statement": "x", "evidence_chunk_ids": ["a"]}'],
+        "rank": 8.5,
+        "evidence_chunk_ids": ["a"],
+        "batch_id": "shard-01/003",
+        "model": "opus:community-summarizer",
+        "extracted_at": "2026-09-07T14:00:00+00:00",
+        "embedding": [0.1, 0.2],
+        "embed_hash": "e" * 40,
+    }
+
+
+def test_a_community_whose_members_already_carry_a_report_is_copied_not_resummarized():
+    """L1-138 holds exactly the members of L0-594. Paying an agent twice for one text."""
+    to_copy, to_summarize = split_copyable([wanted("L1-138", 1, "h1")], {"h1": stored_report()})
+
+    assert to_summarize == []
+    assert [c["community_id"] for c in to_copy] == ["L1-138"]
+    assert to_copy[0]["source"] == "L0-594"
+    assert to_copy[0]["props"]["title"] == "Consumer rebalance moves to the coordinator"
+    assert to_copy[0]["props"]["copied_from"] == "L0-594"
+    # the vector too: the same title and summary embed to the same place
+    assert to_copy[0]["embedding"] == [0.1, 0.2]
+
+
+def test_a_copied_report_keeps_the_provenance_of_the_run_that_wrote_it():
+    """Conventions rule 3: the batch and model that produced this text, not this run."""
+    to_copy, _ = split_copyable([wanted("L1-138", 1, "h1")], {"h1": stored_report()})
+    props = to_copy[0]["props"]
+    assert props["batch_id"] == "shard-01/003"
+    assert props["model"] == "opus:community-summarizer"
+    assert props["extracted_at"] == "2026-09-07T14:00:00+00:00"
+    assert props["evidence_chunk_ids"] == ["a"]
+    assert "embedding" not in props and "previous_id" not in props
+
+
+def test_a_community_with_no_report_anywhere_still_goes_to_an_agent():
+    to_copy, to_summarize = split_copyable([wanted("L1-9", 1, "unseen")], {"h1": stored_report()})
+    assert to_copy == []
+    assert [c["community_id"] for c in to_summarize] == ["L1-9"]
+
+
+def test_a_report_is_never_copied_onto_the_community_it_already_belongs_to():
+    """The source is the row's own id: there is nothing to copy, and it is not wanted."""
+    to_copy, to_summarize = split_copyable(
+        [wanted("L0-594", 0, "h1")], {"h1": stored_report("L0-594")}
+    )
+    assert to_copy == []
+    assert [c["community_id"] for c in to_summarize] == ["L0-594"]

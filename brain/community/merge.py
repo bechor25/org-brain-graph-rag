@@ -277,6 +277,28 @@ def node_rows(batches: Sequence[Batch], merged_at: str) -> list[dict[str, Any]]:
     return [rows[k] for k in sorted(rows)]
 
 
+def report_is_current(stored: dict[str, Any] | None, props: dict[str, Any]) -> bool:
+    """True when the node already carries exactly this report.
+
+    A second merge over unchanged outputs must leave the graph alone. `SET c += props`
+    would happily rewrite 186 identical nodes and report 186 writes, which reads as work
+    and is noise: the counters, the report and any change-data-capture downstream would all
+    say something happened. Everything the report *says* is compared; `reported_at` — when
+    merge last ran — is not, because it differs on every run by construction.
+    """
+    if not stored:
+        return False
+    return all(stored.get(p) == props.get(p) for p in community_graph.COMPARED_PROPS)
+
+
+def stale_reports(ctx: GraphContext, rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The rows whose report is not already on the node, word for word."""
+    if not rows:
+        return []
+    stored = community_graph.stored_reports(ctx, [r["id"] for r in rows])
+    return [r for r in rows if not report_is_current(stored.get(r["id"]), r["props"])]
+
+
 def stale_embeddings(ctx: GraphContext, rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     """The rows whose embedded text is not what the node already carries."""
     if not rows:
@@ -410,11 +432,13 @@ def run_merge(
     known_ids = _known_community_ids(ctx)
     missing_nodes = [r["id"] for r in rows if r["id"] not in known_ids]
     rows = [r for r in rows if r["id"] in known_ids]
+    changed = stale_reports(ctx, rows)
     written = community_graph.write_reports(
-        ctx, [{"id": r["id"], "props": r["props"]} for r in rows]
+        ctx, [{"id": r["id"], "props": r["props"]} for r in changed]
     )
 
     embedded = 0
+    embed_ms = 0
     embed_usage: dict[str, Any] = {}
     to_embed = stale_embeddings(ctx, rows)
     if to_embed:
@@ -423,7 +447,9 @@ def run_merge(
                 f"{len(to_embed)} community reports need an embedding and no embedder was "
                 "given. `Community.embedding` is what global search matches against."
             )
+        embed_started = time.perf_counter()
         vectors = embedder.embed([r["embed_text"] for r in to_embed])
+        embed_ms = round((time.perf_counter() - embed_started) * 1000)
         embedded = community_graph.write_embeddings(
             ctx,
             [
@@ -437,6 +463,12 @@ def run_merge(
         )
     if embedder is not None:
         embed_usage = dict(embedder.usage())
+    index_meta = community_graph.write_index_meta(
+        ctx,
+        model=(embedder.model if embedder is not None else "unknown"),
+        dim=dim,
+        now=merged_at,
+    )
 
     provenance = community_graph.provenance_gaps(ctx)
     if provenance["total"]:
@@ -487,12 +519,16 @@ def run_merge(
         invalid=invalid,
         rows=rows,
         written=written,
+        unchanged=len(rows) - len(changed),
         embedded=embedded,
+        embed_ms=embed_ms,
         embed_usage=embed_usage,
         to_embed=len(to_embed),
         missing_nodes=missing_nodes,
         schema_stats=schema_stats,
         index=community_graph.index_status(ctx),
+        index_meta=index_meta,
+        duplicates=community_graph.cross_level_duplicates(ctx),
         provenance=provenance,
         census=community_graph.census(ctx),
         top=community_graph.top_ranked(ctx, 3),
@@ -535,12 +571,16 @@ def build_report(
     invalid: Sequence[Batch],
     rows: Sequence[dict[str, Any]],
     written: int,
+    unchanged: int,
     embedded: int,
+    embed_ms: int,
     embed_usage: dict[str, Any],
     to_embed: int,
     missing_nodes: Sequence[str],
     schema_stats: dict[str, Any],
     index: dict[str, Any],
+    index_meta: dict[str, Any],
+    duplicates: dict[str, Any],
     provenance: dict[str, Any],
     census: dict[str, Any],
     top: Sequence[dict[str, Any]],
@@ -557,6 +597,10 @@ def build_report(
     reports_seen = sum(len(b.output.reports) if b.output else 0 for b in batches)
     accepted = sum(len(b.accepted) for b in valid)
     findings = [f for r in rows for f in community_graph.decode_findings(r["props"]["findings"])]
+    by_level: dict[str, int] = {}
+    for row in rows:
+        level = row["id"].split("-", 1)[0].lstrip("L")
+        by_level[level] = by_level.get(level, 0) + 1
     return {
         "step": "communities.merge",
         "generated_at": merged_at,
@@ -575,6 +619,11 @@ def build_report(
             "accepted": accepted,
             "rejected": reports_seen - accepted,
             "written": written,
+            # A re-merge over unchanged outputs writes nothing; this is how many it left
+            # alone, and the two together always add up to the reports on the graph.
+            "unchanged": unchanged,
+            "on_graph": len(rows),
+            "by_level": dict(sorted(by_level.items())),
             "rejection_reasons": dict(sorted(reasons.items())),
             "rejections": [r.row() for b in batches for r in b.rejections[:3]][:40],
             "community_nodes_missing": list(missing_nodes[:20]),
@@ -582,7 +631,9 @@ def build_report(
         },
         "findings": {
             "total": len(findings),
-            "per_report": round(len(findings) / written, 2) if written else 0.0,
+            # over the reports on the graph, not over the ones this run wrote: a re-merge
+            # writes nothing and would otherwise report 1,527 findings at 0.0 per report
+            "per_report": round(len(findings) / len(rows), 2) if rows else 0.0,
             # The acceptance criterion. Zero, or the step failed.
             "without_evidence": findings_without_evidence(batches),
             "evidence_chunk_ids": sum(len(f.get("evidence_chunk_ids") or []) for f in findings),
@@ -590,9 +641,13 @@ def build_report(
         "embedding": {
             "needed": to_embed,
             "written": embedded,
+            "duration_ms": embed_ms,
+            "text": "title + summary",
             "index": index,
+            "index_meta": index_meta,
             **({"usage": embed_usage} if embed_usage else {}),
         },
+        "cross_level_duplicates": duplicates,
         "schema": schema_stats,
         "provenance": {
             "required": list(community_graph.PROVENANCE_PROPS),
@@ -635,12 +690,23 @@ def summarize(report: dict[str, Any]) -> str:
     )
     lines = [
         f"communities merge: {b['valid']}/{b['found']} batches valid → "
-        f"{r['written']} reports written, {r['rejected']} reports rejected",
+        f"{r['written']} reports written, {r['unchanged']} unchanged, "
+        f"{r['rejected']} reports rejected",
+        f"reports by level: {r['by_level']}",
         f"findings: {f['total']} ({f['per_report']} per report), "
         f"{f['without_evidence']} without evidence",
-        f"embedding: {e['written']} written of {e['needed']} needed; index "
-        f"{e['index'].get('name')} is {e['index'].get('state')}",
+        f"embedding: {e['written']} written of {e['needed']} needed in {e['duration_ms']} ms; "
+        f"index {e['index'].get('name')} is {e['index'].get('state')} "
+        f"({e['index_meta'].get('live')} vectors, model {e['index_meta'].get('model')})",
     ]
+    dup = report["cross_level_duplicates"]
+    if dup["total"]:
+        lines.append(
+            f"{dup['total']} member sets carry a report at more than one level "
+            f"({dup['communities']} communities): "
+            + ", ".join("=".join(p["ids"]) for p in dup["pairs"][:3])
+            + (" …" if dup["total"] > 3 else "")
+        )
     if r["rejection_reasons"]:
         lines.append(
             "rejected because: "

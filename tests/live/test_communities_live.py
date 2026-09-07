@@ -467,6 +467,18 @@ def test_the_vector_index_is_online_and_every_report_is_embedded(merged, ctx):
     assert all(c["embedded"] for c in communities(ctx).values() if c["summary"])
 
 
+def test_the_index_meta_says_which_model_made_the_vectors(merged, ctx, settings):
+    """A vector index without one is unreadable: a query embedded by another model
+    returns nonsense rather than an error."""
+    meta = community_graph.read_index_meta(ctx)
+    assert meta is not None, "community_embedding has no IndexMeta node"
+    assert meta["name"] == "_Commcommunity_embedding"
+    assert meta["model"] == settings.embed_model and meta["dim"] == 1024
+    assert meta["label"] == "Community" and meta["state"] == "ONLINE"
+    live = len([c for c in communities(ctx).values() if c["embedded"]])
+    assert meta["live"] == live == merged["embedding"]["index_meta"]["live"]
+
+
 def test_the_ledger_records_the_member_hash_a_report_was_written_for(merged, workdir, ctx):
     ledger = json.loads((workdir["batches"] / TASK / LEDGER_NAME).read_text(encoding="utf-8"))
     hashes = {c["member_hash"] for c in communities(ctx).values() if c["summary"]}
@@ -486,10 +498,25 @@ def test_a_second_merge_writes_the_same_reports_and_embeds_nothing(merged, ctx, 
     )
     assert code == 0
     assert report["embedding"]["needed"] == 0 and report["embedding"]["written"] == 0
+    # nothing embedded and nothing written: a re-merge of the same outputs is a read
+    assert report["reports"]["written"] == 0
+    assert report["reports"]["unchanged"] == report["reports"]["on_graph"] >= 1
     after = communities(ctx)
     assert {k: v["summary"] for k, v in after.items()} == {
         k: v["summary"] for k, v in before.items()
     }
+
+
+def test_a_member_set_summarised_at_two_levels_is_named_in_the_report(merged, ctx):
+    """Leiden's coarse level need not merge anything; when it does not, say so."""
+    dup = merged["cross_level_duplicates"]
+    expected = ctx.read(
+        f"MATCH (c:{ctx.label('Community')}) WHERE coalesce(c.misc, false) = false\n"
+        "WITH c.member_hash AS h, collect(c.id) AS ids WHERE size(ids) > 1 RETURN count(*) AS n"
+    )[0]["n"]
+    assert dup["total"] == expected
+    assert dup["communities"] == sum(len(p["ids"]) for p in dup["pairs"])
+    assert all(len(set(p["ids"])) == len(p["ids"]) for p in dup["pairs"])
 
 
 # ------------------------------------------------------ the incremental half of the step
@@ -519,6 +546,53 @@ def test_after_a_rebuild_there_is_nothing_left_to_summarise(merged, ctx, workdir
     assert code == 0
     assert manifest["selection"]["already_summarized_skipped"] >= 1
     assert manifest["selection"]["selected"] == 0
+
+
+def test_a_repeated_member_set_is_copied_rather_than_sent_to_an_agent_again(merged, ctx, workdir):
+    """The other half of "re-summarise only what changed", across levels instead of runs.
+
+    The report is stripped off one of a duplicate pair, exactly as it would be after a
+    build that produced that community for the first time. Packing it would buy a second
+    agent-written text about one set of things.
+    """
+    pairs = merged["cross_level_duplicates"]["pairs"]
+    if not pairs:
+        pytest.skip("Leiden merged something at every level of the mini corpus")
+    source, victim = pairs[0]["ids"][0], pairs[0]["ids"][-1]
+    ctx.write(
+        f"MATCH (c:{ctx.label('Community')} {{id: $id}})\n"
+        "REMOVE c.title, c.summary, c.findings, c.finding_statements, c.rank, "
+        "c.rank_reason, c.evidence_chunk_ids, c.batch_id, c.model, c.extracted_at, "
+        "c.reported_at, c.embedding, c.embed_hash\n"
+        "SET c.summarized = false",
+        id=victim,
+    )
+    manifest, code = run_batches(
+        ctx=ctx,
+        batches_dir=workdir["batches"],
+        reports_dir=workdir["reports"],
+        shards=2,
+        force=True,
+        write_report=False,
+        echo=lambda _m: None,
+    )
+    assert code == 0
+    assert manifest["selection"]["copied_from_another_level"] == 1
+    assert manifest["selection"]["copied_pairs"] == [{"community": victim, "from": source}]
+    assert manifest["selection"]["selected"] == 0, "the copy still went to an agent"
+
+    rows = communities(ctx)
+    assert rows[victim]["summary"] == rows[source]["summary"]
+    assert rows[victim]["embedded"], "a copied report reuses the vector it already has"
+    copied = ctx.read(
+        f"MATCH (c:{ctx.label('Community')} {{id: $id}}) "
+        "RETURN c.copied_from AS copied_from, c.batch_id AS batch_id, c.model AS model",
+        id=victim,
+    )[0]
+    # provenance of the run that wrote the text, plus where this copy came from
+    assert copied["copied_from"] == source
+    assert copied["batch_id"] == rows[source]["batch_id"]
+    assert copied["model"] == "opus:community-summarizer"
 
 
 def test_a_batch_that_breaks_the_contract_is_quarantined_after_two_retries(ctx, workdir, merged):
