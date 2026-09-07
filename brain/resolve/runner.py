@@ -722,11 +722,22 @@ def run_resolve(
         # After the tiers, not inside tier 2: `live` is only true once this run has
         # finished embedding, and a tier-1 or tier-3 run that merged nodes away changed it
         # too. Every run therefore leaves the index described by the graph as it now is.
+        #
+        # Only described, never created: building the index belongs to tier 2, which is
+        # the tier that fills it, and `CREATE VECTOR INDEX` here would make every run wait
+        # on `db.awaitIndexes` — a database-wide wait that another agent's half-built
+        # scratch index is enough to fail.
         if embedder is not None and not dry_run:
-            resolve_graph.apply_resolve_schema(ctx, label, embedder.dim)
-            section["index"] = resolve_graph.write_index_meta(
-                ctx, label, model=embedder.model, dim=embedder.dim, now=stamp
-            )
+            if resolve_graph.index_status(ctx, label):
+                section["index"] = resolve_graph.write_index_meta(
+                    ctx, label, model=embedder.model, dim=embedder.dim, now=stamp
+                )
+            elif "index" not in section:
+                section["index"] = {
+                    "missing": resolve_graph.index_name(ctx, label),
+                    "note": "no vector index for this label yet — `brain resolve --tier 2` "
+                    "creates it and fills it.",
+                }
         durations[kind] = round(time.perf_counter() - t0, 2)
         sections[kind] = section
 

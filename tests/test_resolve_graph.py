@@ -95,7 +95,12 @@ def test_the_index_meta_node_is_named_after_the_index_in_this_namespace():
 
 
 def test_the_index_meta_counts_the_vectors_that_are_there_now():
-    c = ctx(reads={"IS NOT NULL": [{"live": 1229}]})
+    c = ctx(
+        reads={
+            "IS NOT NULL": [{"live": 1229}],
+            "SHOW INDEXES": [{"name": "entity_embedding", "state": "ONLINE"}],
+        }
+    )
     meta = resolve_graph.write_index_meta(
         c, "Entity", model="bge-m3", dim=1024, now="2026-09-07T00:00:00+00:00"
     )
@@ -107,6 +112,7 @@ def test_the_index_meta_counts_the_vectors_that_are_there_now():
         "dim": 1024,
         "similarity": "cosine",
         "live": 1229,
+        "state": "ONLINE",
         "updated_at": "2026-09-07T00:00:00+00:00",
     }
 
@@ -121,3 +127,13 @@ def test_dropping_the_resolve_schema_takes_the_index_meta_with_it():
     assert "`_ResIndexMeta`" in written
     assert "DROP INDEX `_Resperson_embedding`" in written
     assert "DROP INDEX `_Resentity_embedding`" in written
+
+
+def test_an_index_that_does_not_exist_reads_as_none_and_asks_the_server_only_about_itself():
+    """`db.awaitIndexes` waits for every index in the database, so a resolve run that used
+    it to check its own index would fail on another namespace's half-built one."""
+    c = ctx("_Res")
+    assert resolve_graph.index_status(c, "Person") is None
+
+    c = ctx("_Res", reads={"SHOW INDEXES": [{"name": "_Resperson_embedding", "state": "ONLINE"}]})
+    assert resolve_graph.index_status(c, "Person")["state"] == "ONLINE"

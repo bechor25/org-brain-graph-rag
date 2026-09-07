@@ -86,6 +86,22 @@ def index_name(ctx: GraphContext, label: str) -> str:
     return f"{ctx.prefix}{INDEX_NAMES[label]}"
 
 
+def index_status(ctx: GraphContext, label: str) -> dict[str, Any] | None:
+    """This one index's row from `SHOW INDEXES`, or `None` if it does not exist.
+
+    Scoped to the one name on purpose. `db.awaitIndexes` is database-wide: it waits for
+    every index in the database, including the scratch namespaces other test runs leave
+    behind, and asking it whether *this* index is ready is how a resolve run ends up
+    failing on somebody else's half-built `_ResetTestVersion`.
+    """
+    rows = ctx.read(
+        "SHOW INDEXES YIELD name, type, state, populationPercent WHERE name = $name "
+        "RETURN name, type, state, populationPercent",
+        name=index_name(ctx, label),
+    )
+    return rows[0] if rows else None
+
+
 def write_index_meta(ctx: GraphContext, label: str, *, model: str, dim: int, now: str) -> dict:
     """Record what made the vectors in this index, beside the index itself.
 
@@ -93,7 +109,8 @@ def write_index_meta(ctx: GraphContext, label: str, *, model: str, dim: int, now
     index is unreadable without knowing which model produced it, and a query embedded by a
     different model returns nonsense rather than an error. `live` is the count of nodes
     actually carrying a vector right now, which is how a reader spots a half-built index:
-    a `live` well under the label's node count means the index was never finished.
+    a `live` well under the label's node count means the index was never finished, and
+    `state` is what the server says about the index itself.
 
     `model` is the embedder this run is configured with, exactly as `brain chunk` records
     it — including on a run that embedded nothing because every vector was already current.
@@ -104,12 +121,14 @@ def write_index_meta(ctx: GraphContext, label: str, *, model: str, dim: int, now
         f"MATCH (n:{ctx.label(label)}) WHERE n.`{EMBEDDING_PROP}` IS NOT NULL "
         "RETURN count(n) AS live"
     )
+    status = index_status(ctx, label) or {}
     props = {
         "model": model,
         "dim": dim,
         "similarity": "cosine",
         "label": label,
         "live": int(live[0]["live"]) if live else 0,
+        "state": status.get("state"),
         "updated_at": now,
     }
     ctx.write(
