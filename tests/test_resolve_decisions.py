@@ -255,3 +255,15 @@ def test_the_backfill_does_not_rewrite_a_batch_id_that_is_already_there():
     assert ledger_rows == 0
     assert ledger.persons["confluence:x"]["batch_id"] == "shard-01/001"
     assert rows[0]["props"]["resolution_batch_ids"] == ["shard-02/007"]
+
+
+def test_a_dry_run_counts_the_backfill_and_writes_none_of_it():
+    from brain.resolve.decisions import backfill_provenance
+
+    ledger = led(("confluence:x", "jira:a", 3))
+    rows, ledger_rows = backfill_provenance(
+        ledger, "person", [("confluence:x", "jira:a", "shard-02/007")], apply=False
+    )
+
+    assert ledger_rows == 1 and rows[0]["id"] == "jira:a"
+    assert ledger.persons["confluence:x"]["batch_id"] is None

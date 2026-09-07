@@ -324,7 +324,7 @@ def apply_decisions(
         )
     )
     stats["closure_overrides"] = closure_overrides(ledger, kind, graded)
-    rows, ledger_rows = backfill_provenance(ledger, kind, same_verdicts)
+    rows, ledger_rows = backfill_provenance(ledger, kind, same_verdicts, apply=not dry_run)
     stats["provenance"] = {
         "model": MODEL,
         "survivors": 0
@@ -345,7 +345,11 @@ def apply_decisions(
 
 
 def backfill_provenance(
-    ledger: ResolutionLedger, kind: str, same: Sequence[tuple[str, str, str]]
+    ledger: ResolutionLedger,
+    kind: str,
+    same: Sequence[tuple[str, str, str]],
+    *,
+    apply: bool = True,
 ) -> tuple[list[dict[str, Any]], int]:
     """Survivor rows and ledger rows for tier-3 merges that were applied without a batch id.
 
@@ -357,6 +361,9 @@ def backfill_provenance(
     Only where a tier-3 row actually made the merge. A pair the adjudicator also called
     `same` but tier 1 merged first is a tier-1 merge: writing `resolution_model` onto it
     would say a language model decided something no language model decided.
+
+    `apply=False` counts the same rows and writes none of them: a `--dry-run` must leave
+    the ledger exactly as it found it, and it must still say what it would have filled in.
     """
     section = ledger.section(kind)
     batches: dict[str, set[str]] = {}
@@ -370,7 +377,8 @@ def backfill_provenance(
             continue
         for side in decided:
             if not section[side].get("batch_id"):
-                section[side] |= {"batch_id": batch_id, "model": MODEL}
+                if apply:
+                    section[side] |= {"batch_id": batch_id, "model": MODEL}
                 ledger_rows += 1
         batches.setdefault(canonical, set()).add(batch_id)
     rows = [

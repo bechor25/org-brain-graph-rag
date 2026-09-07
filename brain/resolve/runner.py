@@ -556,6 +556,36 @@ def _merge_report(
     return existing
 
 
+#: Report keys that have been renamed, old -> new. `baseline` is written once and then
+#: carried forward for the life of the report, so a rename leaves the old name sitting in
+#: it next to the new one in `before` and `after` — two names for one measure in one file,
+#: which is how a reader ends up comparing a number with itself.
+RENAMED_KEYS: dict[str, str] = {"duplicate_rate": "folded_rate"}
+
+
+def normalised(section: dict[str, Any]) -> dict[str, Any]:
+    """A carried-forward section under today's key names."""
+    return {RENAMED_KEYS.get(k, k): v for k, v in section.items()}
+
+
+def with_last_applied(stats: dict[str, Any], prior_tier: dict[str, Any]) -> dict[str, Any]:
+    """A tier that merged nothing keeps the record of the last run of it that did.
+
+    Proving a step idempotent means running the tier a second time and watching it merge
+    zero pairs — and that rerun overwrites the only place the real pass was described:
+    which rule found how many pairs, the sample, the largest group. So does a `--dry-run`.
+    `merges_by_tier` and `merges_by_rule` are read from the ledger and survive; nothing
+    else here does, and "tier 1 found 0 pairs" is exactly what the run before it disproved.
+
+    Never nests more than one deep: an applied run drops the key, and a second no-op run
+    carries the same kept section rather than wrapping it again.
+    """
+    if stats.get("applied"):
+        return stats
+    kept = prior_tier.get("last_applied") or (prior_tier if prior_tier.get("applied") else None)
+    return {**stats, "last_applied": kept} if kept else stats
+
+
 def carried_forward(prior: dict[str, Any]) -> dict[str, Any]:
     """What a kind's report section keeps from the run before it.
 
@@ -604,7 +634,8 @@ def run_resolve(
         # before any resolution ever ran. The brief asks for duplicates before *and* after,
         # and a rerun that merges nothing would otherwise report "1425 -> 1425".
         prior = previous.get(kind) or {}
-        baseline = prior.get("baseline") or derived_baseline(before, ledger, kind)
+        baseline = normalised(prior["baseline"]) if prior.get("baseline") else None
+        baseline = baseline or derived_baseline(before, ledger, kind)
         section: dict[str, Any] = {
             **carried_forward(prior),
             "baseline": baseline,
@@ -663,7 +694,10 @@ def run_resolve(
                     stamp=stamp,
                     echo=echo,
                 )
-            section[f"tier{tier}"] = {"at": stamp, **stats}
+            section[f"tier{tier}"] = {
+                "at": stamp,
+                **with_last_applied(stats, prior.get(f"tier{tier}") or {}),
+            }
             for group in stats.get("large_groups", []):
                 warnings.append(
                     f"{kind} tier {tier}: merge group of {len(group)} identities — {group[:6]}"

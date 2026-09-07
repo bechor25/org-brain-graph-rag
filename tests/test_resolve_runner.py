@@ -11,9 +11,11 @@ from brain.resolve.runner import (
     derived_baseline,
     load_alias_candidates,
     merges_by,
+    normalised,
     resolve_kinds,
     resolve_tiers,
     survivor_rows,
+    with_last_applied,
 )
 from tests.resolve_helpers import person
 
@@ -259,3 +261,37 @@ def test_a_run_keeps_the_tier_sections_and_the_index_and_recomputes_the_rest():
         "index": {"name": "person_embedding", "live": 1214},
     }
     assert carried_forward({}) == {}
+
+
+def test_a_baseline_written_under_the_old_key_name_is_read_under_the_new_one():
+    """`baseline` is measured once and carried for the life of the report, so a rename
+    leaves the old key in it beside the new one in `before` and `after`."""
+    assert normalised({"nodes": 2187, "duplicate_rate": 0.0, "derived": True}) == {
+        "nodes": 2187,
+        "folded_rate": 0.0,
+        "derived": True,
+    }
+    assert normalised({"folded_rate": 0.44}) == {"folded_rate": 0.44}
+
+
+def test_a_rerun_that_merges_nothing_keeps_the_run_that_did():
+    """`brain resolve --tier 1` twice is how idempotency is proved. The second run must
+    not be the only thing the report remembers about the first."""
+    real = {"at": "1", "applied": True, "pairs": 16, "by_rule": {"username_stem": 16}}
+    noop = {"applied": False, "pairs": 0, "by_rule": {}}
+
+    once = with_last_applied(noop, real)
+    assert once["pairs"] == 0
+    assert once["last_applied"] == real
+
+    # a third run carries the same kept section rather than wrapping it again
+    twice = with_last_applied(noop, {"at": "2", **once})
+    assert twice["last_applied"] == real
+    assert "last_applied" not in twice["last_applied"]
+
+    # and a run that did merge says so on its own
+    assert with_last_applied(real, {"at": "0", **noop}) == real
+
+
+def test_a_first_run_has_nothing_to_keep():
+    assert with_last_applied({"applied": False}, {}) == {"applied": False}
