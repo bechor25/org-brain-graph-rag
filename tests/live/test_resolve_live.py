@@ -143,7 +143,9 @@ def persons(ctx) -> dict[str, dict]:
     rows = ctx.read(
         f"MATCH (p:{ctx.label('Person')}) RETURN p.id AS id, p.identity_keys AS identity_keys, "
         "p.aliases AS aliases, p.merged_from AS merged_from, p.resolved AS resolved, "
-        "p.resolution_tier AS tier"
+        "p.resolution_tier AS tier, p.model AS model, p.batch_id AS batch_id, "
+        "p.resolution_model AS resolution_model, "
+        "p.resolution_batch_id AS resolution_batch_id"
     )
     return {r["id"]: r for r in rows}
 
@@ -227,6 +229,36 @@ def test_tier_two_auto_merges_the_identical_display_and_bands_the_reordered_one(
     assert "git:junrao@example.org" not in people
     assert people["jira:jrao"]["tier"] == 2
     assert "confluence:rao.jun" in people
+
+
+def embedded(ctx) -> int:
+    return ctx.read(
+        f"MATCH (p:{ctx.label('Person')}) WHERE p.embedding IS NOT NULL RETURN count(p) AS n"
+    )[0]["n"]
+
+
+def test_the_index_meta_records_the_model_the_vectors_came_from(after_tier2, ctx, settings):
+    """A vector index is unreadable without the model behind it: a query embedded by
+    another model returns neighbours rather than an error.
+
+    `live` is the count of vectors, not of nodes, and here it is deliberately one short of
+    the node count: the merge this tier just made dropped the survivor's vector so the next
+    pass re-embeds it. A reader who sees `live` below the node count is seeing work left."""
+    meta = after_tier2["person"]["index"]
+
+    assert meta["name"] == f"{PREFIX}person_embedding"
+    assert meta["model"] == settings.embed_model and meta["dim"] == settings.embed_dim
+    assert meta["live"] == embedded(ctx) == len(persons(ctx)) - 1
+    assert resolve_graph.read_index_meta(ctx, "Person")["model"] == settings.embed_model
+
+
+def test_a_tier_one_run_refreshes_the_live_count_it_did_not_write(
+    ctx, split_corpus, workdir, embedder, after_tier2
+):
+    """Tier 1 embeds nothing, but a run that merges a node away takes a vector out of the
+    index. A run that leaves `live` describing the graph before it ran describes a lie."""
+    report = resolve(ctx, split_corpus, workdir, tiers=[1], embedder=embedder)
+    assert report["person"]["index"]["live"] == embedded(ctx)
 
 
 def test_a_second_tier_two_run_merges_nothing_and_re_embeds_only_the_survivor(
@@ -350,6 +382,17 @@ def test_jraos_three_identities_are_now_one_node(adjudicated, ctx):
     assert node["merged_from"] == ["confluence:rao.jun", "git:junrao@example.org"]
     assert node["aliases"] == ["Rao, Jun"]
     assert node["resolved"] is True and node["tier"] == 3
+
+
+def test_the_tier_three_survivor_names_the_batch_and_the_model_that_decided_it(adjudicated, ctx):
+    """Conventions rule 3 for a merge an agent made — under keys of its own, so the
+    extraction provenance a node already carries survives being merged into."""
+    node = persons(ctx)["jira:jrao"]
+
+    assert node["resolution_model"] == "opus:entity-adjudicator"
+    assert node["resolution_batch_id"] and "/" in node["resolution_batch_id"]
+    # …and the node's own `model`/`batch_id` keys were not written over
+    assert node["model"] is None and node["batch_id"] is None
 
 
 def test_the_merged_person_kept_every_edge_of_the_identities_it_swallowed(adjudicated, ctx):

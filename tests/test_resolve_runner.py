@@ -134,3 +134,107 @@ def test_the_report_remembers_earlier_runs_and_replaces_only_this_ones_keys(tmp_
     assert [r["at"] for r in final["runs"]] == ["1", "2"]
     assert final["person"] == {"tier2": 2}  # the section is this run's
     assert final["eval"] == {"kept": True}  # another command's section is untouched
+
+
+# ---------------------------------------------------- what a tier-3 merge may overwrite
+
+
+def tier3_pair(a: str, b: str, batch_id: str = "shard-01/003"):
+    from brain.resolve.models import make_pair
+
+    return make_pair(
+        a,
+        b,
+        kind="person",
+        block="person",
+        tier=3,
+        rule="adjudicator_same",
+        score=0.88,
+        reason="one committer",
+        batch_id=batch_id,
+        model="opus:entity-adjudicator",
+    )
+
+
+def test_a_tier_three_merge_records_its_batch_under_a_name_of_its_own():
+    """`Entity.model` is `opus:kg-extractor` and `Entity.batch_id` names an *extract*
+    batch. Writing the adjudicator's batch into those keys would delete the provenance of
+    the extraction — a different fact, made by a different agent, from different evidence."""
+    members = {
+        "jira:a": person("jira:a", "A"),
+        "jira:b": person("jira:b", "A"),
+    }
+    _, props = survivor_rows(
+        "person",
+        sorted(members),
+        members,
+        tier=3,
+        stamp="2026-09-07T00:00:00+00:00",
+        evidence=[tier3_pair("jira:a", "jira:b")],
+    )
+
+    assert props["resolution_batch_id"] == "shard-01/003"
+    assert props["resolution_batch_ids"] == ["shard-01/003"]
+    assert props["resolution_model"] == "opus:entity-adjudicator"
+    assert "model" not in props and "batch_id" not in props and "batch_ids" not in props
+
+
+def test_a_merge_code_decided_stamps_no_model_at_all():
+    from brain.resolve.models import make_pair
+
+    members = {"jira:a": person("jira:a", "A"), "jira:b": person("jira:b", "A")}
+    _, props = survivor_rows(
+        "person",
+        sorted(members),
+        members,
+        tier=1,
+        stamp="s",
+        evidence=[
+            make_pair(
+                "jira:a",
+                "jira:b",
+                kind="person",
+                block="person",
+                tier=1,
+                rule="email",
+                score=1.0,
+                reason="r",
+            )
+        ],
+    )
+    assert not [k for k in props if k.startswith("resolution_batch")]
+    assert "resolution_model" not in props
+
+
+# ---------------------------------------------------------- one grouping, not two
+
+
+def test_the_survivor_a_merge_keeps_is_computed_once_and_reused():
+    """`run_tier2` drops the vectors of the nodes a merge kept. It has to ask the same
+    question `apply_merges` asked — for entities the survivor depends on evidence weight,
+    so a second, weightless computation would clear the wrong node's embedding."""
+    from brain.resolve.models import Evidence, make_pair
+    from brain.resolve.runner import merge_plan
+    from tests.resolve_helpers import entity
+
+    thin = entity("Feature|a", "a")
+    fat = entity("Feature|the a", "the a")
+    fat.evidence = [Evidence(role="MENTIONS", key=f"{i:040d}", title="q") for i in range(3)]
+    by_id = {c.id: c for c in (thin, fat)}
+    pairs = [
+        make_pair(
+            thin.id,
+            fat.id,
+            kind="entity",
+            block="Feature",
+            tier=2,
+            rule="embedding_auto",
+            score=0.95,
+            reason="r",
+        )
+    ]
+
+    grouped, refused, keeps = merge_plan("entity", pairs, by_id)
+    assert grouped == [["Feature|a", "Feature|the a"]]
+    assert refused == []
+    assert keeps == ["Feature|the a"]  # the better-evidenced node, not the shorter name

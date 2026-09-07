@@ -181,11 +181,22 @@ def survivor_rows(
     }
     # Conventions rule 3: a merge an agent decided is LLM-derived and names its batch and
     # its model. Tiers 1 and 2 are code, so they stamp nothing and the absence is the
-    # statement — `model IS NULL` is exactly "no language model was involved in this node".
+    # statement — `resolution_model IS NULL` is exactly "no language model was involved in
+    # merging this node".
+    #
+    # Under `resolution_*` and not `model`/`batch_id`, which are taken: an `Entity` already
+    # carries the extract batch and `opus:kg-extractor` that *made* it, and a `Person` from
+    # the synthetic layer carries `opus:synthetic-org-generator`. Writing the adjudicator
+    # into those keys would delete the provenance of a different fact by a different agent
+    # from different evidence. Two provenances, two names, both readable.
     batches = sorted({p.batch_id for p in evidence if p.batch_id})
     models = sorted({p.model for p in evidence if p.model})
     if batches:
-        props |= {"batch_id": batches[0], "batch_ids": batches, "model": models[0]}
+        props |= {
+            "resolution_batch_id": batches[0],
+            "resolution_batch_ids": batches,
+            "resolution_model": models[0],
+        }
     if kind == "person":
         props["identity_keys"] = identities
     else:
@@ -203,6 +214,25 @@ def survivor_rows(
         if props["descriptions"]:
             props["description"] = props["descriptions"][0]
     return keep, props
+
+
+def merge_plan(
+    kind: str,
+    pairs: Sequence[Pair],
+    by_id: dict[str, Candidate],
+    forbidden: Sequence[tuple[str, str]] = (),
+) -> tuple[list[list[str]], list[dict[str, Any]], list[str]]:
+    """The groups a merge would make, what closure refused, and the id each group keeps.
+
+    One function because two callers need the *same* answer: `apply_merges` merges the
+    groups, and `run_tier2` afterwards drops the vectors of the nodes that survived. For
+    an entity the survivor is the best-evidenced id, not the shortest name, so a second
+    computation that forgot the weight would clear a node the merge never touched and
+    leave the survivor's stale vector in the index.
+    """
+    grouped, refused = connected_groups(pairs, forbidden)
+    weight = evidence_weight(by_id) if kind == "entity" else None
+    return grouped, refused, [survivor(kind, g, weight) for g in grouped]
 
 
 def apply_merges(
@@ -227,12 +257,8 @@ def apply_merges(
     """
     label = LABELS[kind]
     by_id = {c.id: c for c in candidates}
-    grouped, refused = connected_groups(pairs, forbidden)
-    weight = evidence_weight(by_id) if kind == "entity" else None
-    ordered = [
-        [survivor(kind, g, weight), *[i for i in g if i != survivor(kind, g, weight)]]
-        for g in grouped
-    ]
+    grouped, refused, keeps = merge_plan(kind, pairs, by_id, forbidden)
+    ordered = [[keep, *[i for i in g if i != keep]] for keep, g in zip(keeps, grouped, strict=True)]
     stats: dict[str, Any] = {
         "pairs": len(pairs),
         "groups": len(grouped),
@@ -245,7 +271,7 @@ def apply_merges(
         stats["applied"] = False
         return stats
 
-    stats["same_as_edges"] = resolve_graph.write_same_as(ctx, label, pairs)
+    stats["same_as_edges"] = resolve_graph.write_same_as(ctx, label, pairs, stamp=stamp)
     merged = resolve_graph.merge_groups(ctx, label, ordered)
     stats["merge"] = merged
 
@@ -365,9 +391,6 @@ def score_tier2(
     label = LABELS[kind]
     by_id = {c.id: c for c in candidates}
     resolve_graph.apply_resolve_schema(ctx, label, embedder.dim)
-    index_meta = resolve_graph.write_index_meta(
-        ctx, label, model=embedder.model, dim=embedder.dim, now=utc_now_iso()
-    )
     usage = resolve_embed.ensure_embeddings(
         ctx, label, candidates, embedder, evidence=vector_evidence, echo=echo
     )
@@ -391,7 +414,6 @@ def score_tier2(
         "band": [ADJUDICATE_FLOOR, AUTO_THRESHOLD],
         "min_substantive_tokens": MIN_SUBSTANTIVE_TOKENS,
         "embedding": usage,
-        "index": index_meta,
         "scored_pairs": len(scored),
         "auto": len(auto),
         "grey": len(grey),
@@ -451,9 +473,8 @@ def run_tier2(
     if not dry_run and stats.get("applied"):
         # A survivor's text changed: it inherited the other node's activity. Dropping the
         # vector is what makes the next pass re-embed exactly the nodes the merge touched.
-        stats["embeddings_cleared"] = resolve_graph.clear_embeddings(
-            ctx, LABELS[kind], [survivor(kind, g) for g in connected_groups(auto)]
-        )
+        _, _, keeps = merge_plan(kind, auto, by_id)
+        stats["embeddings_cleared"] = resolve_graph.clear_embeddings(ctx, LABELS[kind], keeps)
     return stats
 
 
@@ -653,6 +674,14 @@ def run_resolve(
         section["merges_by_tier"] = merges_by(ledger, kind, "tier")
         section["merges_by_rule"] = merges_by(ledger, kind, "rule")
         section["after"] = resolve_graph.census(ctx, label)
+        # After the tiers, not inside tier 2: `live` is only true once this run has
+        # finished embedding, and a tier-1 or tier-3 run that merged nodes away changed it
+        # too. Every run therefore leaves the index described by the graph as it now is.
+        if embedder is not None and not dry_run:
+            resolve_graph.apply_resolve_schema(ctx, label, embedder.dim)
+            section["index"] = resolve_graph.write_index_meta(
+                ctx, label, model=embedder.model, dim=embedder.dim, now=stamp
+            )
         durations[kind] = round(time.perf_counter() - t0, 2)
         sections[kind] = section
 
@@ -729,8 +758,11 @@ def resolve_from_settings(
     from brain.config import get_settings
 
     s = get_settings()
-    needs_embedder = 2 in tiers
-    embedder = _embedder() if needs_embedder else None
+    # Built for every run, not only tier 2. Constructing it opens no connection and asks
+    # Ollama nothing — only `embed()` does — and every run ends by recording which model
+    # and dimension the vector index is meant to hold. A tier-1 run that merged nodes away
+    # changed that index's contents just as surely as tier 2 did.
+    embedder = _embedder()
     try:
         with GraphClient(s.neo4j_uri, s.neo4j_user, s.neo4j_password, s.neo4j_database) as client:
             return run_resolve(

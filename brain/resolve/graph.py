@@ -81,13 +81,24 @@ def apply_resolve_schema(ctx: GraphContext, label: str, dim: int) -> dict[str, A
 META_LABEL = "IndexMeta"
 
 
+def index_name(ctx: GraphContext, label: str) -> str:
+    """The index's real name, namespace and all — what `SHOW INDEXES` answers with."""
+    return f"{ctx.prefix}{INDEX_NAMES[label]}"
+
+
 def write_index_meta(ctx: GraphContext, label: str, *, model: str, dim: int, now: str) -> dict:
     """Record what made the vectors in this index, beside the index itself.
 
     `brain chunk` does the same for `chunk_embedding`, and for the same reason: a vector
     index is unreadable without knowing which model produced it, and a query embedded by a
     different model returns nonsense rather than an error. `live` is the count of nodes
-    actually carrying a vector right now, which is how a reader spots a half-built index.
+    actually carrying a vector right now, which is how a reader spots a half-built index:
+    a `live` well under the label's node count means the index was never finished.
+
+    `model` is the embedder this run is configured with, exactly as `brain chunk` records
+    it — including on a run that embedded nothing because every vector was already current.
+    A dimension that disagrees with the index is a hard error one layer down
+    (`EmbedDimMismatch`), so the pair recorded here cannot silently drift apart.
     """
     live = ctx.read(
         f"MATCH (n:{ctx.label(label)}) WHERE n.`{EMBEDDING_PROP}` IS NOT NULL "
@@ -105,17 +116,36 @@ def write_index_meta(ctx: GraphContext, label: str, *, model: str, dim: int, now
         f"MERGE (m:{ctx.label(META_LABEL)} {{`name`: $name}})\n"
         "ON CREATE SET m.created_at = $now\n"
         "SET m += $props",
-        name=INDEX_NAMES[label],
+        name=index_name(ctx, label),
         now=now,
         props=props,
     )
-    return {"name": INDEX_NAMES[label], **props}
+    return {"name": index_name(ctx, label), **props}
+
+
+def read_index_meta(ctx: GraphContext, label: str) -> dict[str, Any] | None:
+    rows = ctx.read(
+        f"MATCH (m:{ctx.label(META_LABEL)} {{`name`: $name}}) "
+        "RETURN m.name AS name, m.label AS label, m.model AS model, m.dim AS dim, "
+        "m.similarity AS similarity, m.live AS live, "
+        "toString(m.created_at) AS created_at, toString(m.updated_at) AS updated_at",
+        name=index_name(ctx, label),
+    )
+    return rows[0] if rows else None
 
 
 def drop_resolve_schema(ctx: GraphContext) -> None:
-    """Tests only: remove what a scratch namespace created."""
-    for name in INDEX_NAMES.values():
+    """Tests only: remove what a scratch namespace created — the meta node included.
+
+    Leaving an `IndexMeta` behind would make the next run in this namespace describe an
+    index that no longer exists, which is worse than describing none.
+    """
+    for label, name in INDEX_NAMES.items():
         ctx.client.write(f"DROP INDEX {ctx.name(name)} IF EXISTS")
+        ctx.client.write(
+            f"MATCH (m:{ctx.label(META_LABEL)} {{`name`: $name}}) DETACH DELETE m",
+            name=index_name(ctx, label),
+        )
 
 
 # ---------------------------------------------------------------------------------- reads
@@ -383,11 +413,17 @@ def write_embeddings(ctx: GraphContext, label: str, rows: Sequence[dict[str, Any
     return len(rows)
 
 
-def write_same_as(ctx: GraphContext, label: str, pairs: Sequence[Pair]) -> int:
+def write_same_as(ctx: GraphContext, label: str, pairs: Sequence[Pair], *, stamp: str) -> int:
     """`(a)-[:SAME_AS {tier, score, reason, rule}]->(b)` — the merge, before it happens.
 
     Written first and on purpose (brief 08 decision 5): with `--dry-run` this is the whole
     output, and it is what a reviewer reads to disagree with a merge before it is taken.
+
+    A tier-3 edge adds `batch_id`, `model` and `extracted_at` — conventions rule 3, because
+    an adjudicator decided it. There is no `evidence_chunk_ids`: the evidence a resolution
+    decision rests on is the two identities themselves, and those are the edge's endpoints.
+    Tiers 1 and 2 are code and add nothing, so `model IS NULL` on a `SAME_AS` reads as
+    exactly "no language model was involved in this merge".
     """
     if not pairs:
         return 0
@@ -401,6 +437,11 @@ def write_same_as(ctx: GraphContext, label: str, pairs: Sequence[Pair]) -> int:
                 "rule": p.rule,
                 "score": p.score,
                 "reason": p.reason,
+                **(
+                    {"batch_id": p.batch_id, "model": p.model, "extracted_at": stamp}
+                    if p.batch_id and p.model
+                    else {}
+                ),
             },
         }
         for p in pairs
