@@ -510,8 +510,9 @@ def _orphaned_chunks(ctx: GraphContext, *, apply: bool) -> int:
     and that query would return 0 — a manifest promising to delete nothing and then
     deleting thousands. So a dry run counts the chunks whose parent is *about to* go
     instead, plus the ones already orphaned, minus the ones the label sweep already
-    claimed — counting those twice is what made the manifest report 1,939 phantom orphans
-    against an unstamped graph.
+    claimed. That subtraction is what keeps a stamped graph from counting its 1,939
+    synthetic chunks twice — once under `Chunk` and again here — which is how the manifest
+    would have read after the backfill without it.
     """
     if "Chunk" not in existing_labels(ctx):
         return 0
