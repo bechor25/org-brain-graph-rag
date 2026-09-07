@@ -7,6 +7,7 @@ import pytest
 from brain.resolve.ledger import ResolutionLedger
 from brain.resolve.runner import (
     _merge_report,
+    carried_forward,
     derived_baseline,
     load_alias_candidates,
     merges_by,
@@ -238,3 +239,23 @@ def test_the_survivor_a_merge_keeps_is_computed_once_and_reused():
     assert grouped == [["Feature|a", "Feature|the a"]]
     assert refused == []
     assert keeps == ["Feature|the a"]  # the better-evidenced node, not the shorter name
+
+
+def test_a_run_keeps_the_tier_sections_and_the_index_and_recomputes_the_rest():
+    """A `--tier 3` invocation must still report what tier 1 merged, and a `--dry-run`
+    writes no meta node — so neither may delete what the run before it wrote."""
+    prior = {
+        "tier1": {"pairs": 278},
+        "tier3": {"pairs": 338},
+        "index": {"name": "person_embedding", "live": 1214},
+        "before": {"nodes": 1229},
+        "after": {"nodes": 1214},
+        "baseline": {"nodes": 2187},
+        "merges_by_tier": {"1": 283},
+    }
+    assert carried_forward(prior) == {
+        "tier1": {"pairs": 278},
+        "tier3": {"pairs": 338},
+        "index": {"name": "person_embedding", "live": 1214},
+    }
+    assert carried_forward({}) == {}

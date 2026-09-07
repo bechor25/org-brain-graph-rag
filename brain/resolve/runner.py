@@ -556,6 +556,20 @@ def _merge_report(
     return existing
 
 
+def carried_forward(prior: dict[str, Any]) -> dict[str, Any]:
+    """What a kind's report section keeps from the run before it.
+
+    The `tierN` sections, because tiers are meant to be run one command at a time and a
+    `--tier 2` invocation must not erase what `--tier 1` recorded an hour earlier. And
+    `index`, because a `--dry-run` writes no meta node at all: a preview that changed
+    nothing would otherwise delete the description of the vector index from the report.
+
+    Everything else — `baseline`, `before`, `after`, the merge totals — is recomputed from
+    the graph and the ledger on every run, so carrying it would be carrying a stale answer.
+    """
+    return {k: v for k, v in prior.items() if k.startswith("tier") or k == "index"}
+
+
 def run_resolve(
     *,
     client: GraphClient,
@@ -591,11 +605,8 @@ def run_resolve(
         # and a rerun that merges nothing would otherwise report "1425 -> 1425".
         prior = previous.get(kind) or {}
         baseline = prior.get("baseline") or derived_baseline(before, ledger, kind)
-        # Tiers are run one command at a time, so a `--tier 2` invocation must not erase
-        # what the `--tier 1` invocation before it recorded. Each section carries the
-        # timestamp of the run that produced it.
         section: dict[str, Any] = {
-            **{k: v for k, v in prior.items() if k.startswith("tier")},
+            **carried_forward(prior),
             "baseline": baseline,
             "before": before,
         }
