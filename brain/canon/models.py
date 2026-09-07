@@ -34,8 +34,10 @@ class Origin(BaseModel):
       would change every line of every file and retire that check permanently — the check
       that exists to prove config-driven sources changed nothing.
 
-    A reader wanting "which entry" without caring which case it is in asks
-    :meth:`origin`. Nothing downstream branches on the field being absent.
+    The one reader that has to resolve both cases is
+    :func:`brain.canon.runner.owner_of`, and it is the only one that can: the fallback for
+    an unset `source_id` needs the registry (and, for a `Change`, which has no `source`
+    either, a convention). Nothing else branches on the field being absent.
     """
 
     source_id: str | None = None
@@ -46,11 +48,6 @@ class Origin(BaseModel):
         if isinstance(data, dict) and data.get("source_id") is None:
             data.pop("source_id", None)
         return data
-
-    @property
-    def origin(self) -> str:
-        """The registry entry this record came from, whether or not it was written down."""
-        return self.source_id or str(getattr(self, "source", "") or "")
 
 
 class Ref(BaseModel):
