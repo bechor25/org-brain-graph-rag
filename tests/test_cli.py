@@ -23,9 +23,17 @@ def test_help_lists_every_pipeline_step(runner):
 
 
 def test_unimplemented_step_exits_2_and_names_plan(runner):
-    result = runner.invoke(app, ["index"])
+    """`serve` is the stub now — `index` stopped being one in step 10 (see below)."""
+    result = runner.invoke(app, ["serve"])
     assert result.exit_code == NOT_IMPLEMENTED_EXIT
-    assert "Plan 1" in result.output
+    assert "Plan 2" in result.output
+
+
+def test_index_is_implemented_and_offers_the_gate_check(runner):
+    result = runner.invoke(app, ["index", "--help"])
+    assert result.exit_code == 0
+    assert "--check-gate" in result.output
+    assert "--smoke" in result.output
 
 
 def test_communities_is_a_group_of_three_commands(runner):

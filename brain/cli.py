@@ -19,7 +19,6 @@ app = typer.Typer(
 NOT_IMPLEMENTED_EXIT = 2
 
 _PLANNED: dict[str, tuple[str, str]] = {
-    "index": ("Final vector/fulltext indexes + graph stats report", "Plan 1"),
     "serve": ("Run the MCP server (stdio or HTTP)", "Plan 2"),
     "eval": ("Run the evaluation harness and generate the report", "Plan 3"),
 }
@@ -907,6 +906,46 @@ def reset(
     finally:
         if client is not None:
             client.close()
+    raise typer.Exit(code=code)
+
+
+@app.command()
+def index(
+    check_gate: bool = typer.Option(
+        False,
+        "--check-gate",
+        help="Also print every Plan 1 exit criterion with its measured value and "
+        "PASS/FAIL, and exit 1 if any of them fails.",
+    ),
+    smoke: bool = typer.Option(
+        False,
+        "--smoke",
+        help="Run `make smoke` and record the result in the report, so the gate's "
+        "smoke criterion has a measured value instead of an assertion. Takes minutes.",
+    ),
+    docs_dir: str = typer.Option(
+        "docs",
+        "--docs-dir",
+        metavar="PATH",
+        help="Where the lessons, progress.md and the generated census document live.",
+    ),
+) -> None:
+    """Create the final indexes, write the graph census and check the Plan 1 gate [Plan 1]."""
+    from brain.config import get_settings
+    from brain.index.runner import index_from_settings
+
+    settings = get_settings()
+    try:
+        _, code = index_from_settings(
+            settings,
+            docs_dir=Path(docs_dir),
+            check_gate=check_gate,
+            smoke=smoke,
+            echo=typer.echo,
+        )
+    except (OSError, ValueError, RuntimeError) as exc:
+        typer.echo(f"index: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
     raise typer.Exit(code=code)
 
 
