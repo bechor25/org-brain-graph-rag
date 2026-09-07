@@ -113,6 +113,30 @@ def quote_found(quote: str, chunk_text: str) -> bool:
     return bool(needle) and needle in normalise_quote(chunk_text)
 
 
+def quote_boundary_ok(quote: str, chunk_text: str) -> bool:
+    """Does the quote begin and end where a word does?
+
+    `quote_found` is satisfied by any substring, so an extractor that stopped counting at
+    300 characters produces "...the listeners configuratio" — verbatim, and evidence of
+    nothing. The rule is only about *word* edges: a quote may start or end on punctuation
+    (`[KIP-889|`, `# Motivation`) because the text does too. It is a cut mid-word that
+    means the span was measured rather than read.
+
+    True when the quote is not found at all: that is `quote_not_verbatim`'s business, and
+    reporting one fault under two names would double-count it.
+    """
+    needle = normalise_quote(quote)
+    body = normalise_quote(chunk_text)
+    at = body.find(needle)
+    if not needle or at < 0:
+        return True
+    before = body[at - 1] if at > 0 else " "
+    after = body[at + len(needle)] if at + len(needle) < len(body) else " "
+    starts_clean = not (needle[0].isalnum() and (before.isalnum() or before == "_"))
+    ends_clean = not (needle[-1].isalnum() and (after.isalnum() or after == "_"))
+    return starts_clean and ends_clean
+
+
 def key_kind(name: str) -> str | None:
     """`"KIP-848"` -> `"Document"`, `"KAFKA-16046"` -> `"WorkItem"`, anything else -> None."""
     candidate = name.strip()

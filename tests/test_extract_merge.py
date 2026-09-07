@@ -11,6 +11,7 @@ from pathlib import Path
 
 from brain.extract.graph import MODEL, PROVENANCE_PROPS
 from brain.extract.merge import drop_missing_chunks, plan
+from brain.extract.models import KINDS, RELATION_TYPES
 from brain.extract.validate import GraphFacts, Ref
 from tests.extract_helpers import (
     batch_input,
@@ -380,38 +381,129 @@ def test_an_entity_keeps_every_description_and_shows_the_fullest(tmp_path):
     assert props["description"] == max(props["descriptions"], key=len)
 
 
-def test_depends_on_between_two_technologies_raises_the_off_spec_warning(tmp_path):
-    """Spec 2.4 says Component/Feature. Technology -> Technology is the shape an extractor
-    reaches for when it is drawing a call graph rather than a stated dependency."""
+def _one_relation(tmp_path, src_kind, dst_kind, rel_type, note=None):
+    out = batch_output(
+        entities=[
+            entity(kind=src_kind, name="assignment", quote="do assignment", chunk_id=A),
+            entity(
+                kind=dst_kind,
+                name="group coordinator",
+                quote="Move assignment to the group coordinator",
+                chunk_id=A,
+            ),
+        ],
+        relations=[
+            relation(
+                type=rel_type,
+                source="assignment",
+                target="group coordinator",
+                evidence_chunk_id=A,
+                **({"note": note} if note else {}),
+            )
+        ],
+    )
+    path = written_batch(tmp_path, inp=batch_input([chunk_context(chunk_id=A, text=TEXT)]), out=out)
+    return plan([screened(path, SCHEMA, FACTS)])
+
+
+def test_depends_on_between_two_technologies_is_in_shape(tmp_path):
+    """Planner ruling, 2026-09-07: a dependency is stated between whatever two things the
+    sentence names, and 235 of the first merge's 254 DEPENDS_ON were Technology to
+    Technology. The shape follows the corpus."""
     from brain.extract.merge import shape_warnings
 
-    path = written_batch(
-        tmp_path,
-        inp=batch_input([chunk_context(chunk_id=A, text=TEXT)]),
-        out=batch_output(
-            entities=[
-                entity(
-                    kind="Technology",
-                    name="assignment",
-                    quote="do assignment",
-                    chunk_id=A,
-                ),
-                entity(
-                    kind="Technology",
-                    name="group coordinator",
-                    quote="Move assignment to the group coordinator",
-                    chunk_id=A,
-                ),
-            ],
-            relations=[
-                relation(
-                    type="DEPENDS_ON",
-                    source="assignment",
-                    target="group coordinator",
-                    evidence_chunk_id=A,
-                )
-            ],
+    plan_obj = _one_relation(tmp_path, "Technology", "Technology", "DEPENDS_ON")
+    assert shape_warnings(plan_obj)["off_spec_shape"] == 0
+
+
+def test_a_relation_outside_the_shapes_table_is_counted_not_dropped(tmp_path):
+    """`INTRODUCES_RISK` must land on a Risk. Its source list used to be empty, which
+    silently exempted the whole type from the check it exists for."""
+    from brain.extract.merge import shape_warnings
+
+    plan_obj = _one_relation(tmp_path, "Decision", "Technology", "INTRODUCES_RISK")
+    assert len(plan_obj.relations) == 1  # merged anyway
+    warnings = shape_warnings(plan_obj)
+    assert warnings["off_spec_by_type"] == {"INTRODUCES_RISK": 1}
+    assert "target is Entity:Technology" in warnings["off_spec_examples"][0]["why"]
+    assert warnings["shapes"] == "brain/extract/shapes.json"
+
+
+def test_a_relation_in_its_shape_raises_no_warning(tmp_path):
+    from brain.extract.merge import shape_warnings
+
+    assert shape_warnings(plan(two_batches(tmp_path)))["off_spec_shape"] == 0
+
+
+# ------------------------------------------------------------------------- shapes table
+
+
+def test_the_shapes_table_covers_the_closed_set_and_leaves_no_type_unchecked():
+    """One source for the rule. An empty list means "any", which is how INTRODUCES_RISK was
+    exempted by accident; every type now states both ends."""
+    from brain.extract.merge import SHAPES_PATH, load_shapes
+
+    raw = json.loads(SHAPES_PATH.read_text(encoding="utf-8"))
+    assert "§2.4" in raw["spec"]
+    shapes = load_shapes()
+    assert sorted(shapes) == sorted(RELATION_TYPES)
+    for rel_type, (sources, targets) in shapes.items():
+        assert sources, f"{rel_type} has no source shape — it would never be checked"
+        assert targets, f"{rel_type} has no target shape"
+        assert raw["shapes"][rel_type]["note"], rel_type
+
+
+def test_every_descriptor_in_the_shapes_table_is_one_this_step_can_produce():
+    from brain.extract.graph import NODE_KEYS
+    from brain.extract.merge import load_shapes
+
+    allowed = set(NODE_KEYS) | {"Commit"} | {f"Entity:{k}" for k in KINDS}
+    used = {d for shape in load_shapes().values() for side in shape for d in side}
+    assert used <= allowed, used - allowed
+
+
+# ------------------------------------------------------------------------- merged_at
+
+
+def test_every_row_carries_the_merge_stamp_that_finds_withdrawn_facts(tmp_path):
+    """`merged_at` is how the stale sweep sees what the current batches no longer declare;
+    a row written without it would be invisible to that check forever."""
+    plan_obj = plan(two_batches(tmp_path))
+    plan_obj.merged_at = "2026-09-07T10:00:00+00:00"
+    rows = [r["props"] for r in plan_obj.entity_rows()]
+    rows += [r["props"] for g in plan_obj.mention_rows().values() for r in g]
+    rows += [r["props"] for g in plan_obj.relation_rows().values() for r in g]
+    assert rows
+    assert all(r["merged_at"] == "2026-09-07T10:00:00+00:00" for r in rows)
+    # and it is not the same field as extracted_at, which never moves
+    created = {r["on_create"]["extracted_at"] for r in plan_obj.entity_rows()}
+    assert plan_obj.merged_at not in created
+
+
+# --------------------------------------------------------------------- precision sample
+
+
+def test_the_judged_sample_is_read_from_the_sheet_never_computed(tmp_path):
+    from brain.extract.merge import load_precision_sample
+
+    assert load_precision_sample(tmp_path) is None
+    (tmp_path / "extract_sample.json").write_text(
+        json.dumps(
+            {
+                "seed": 7,
+                "targets": "entity",
+                "sample": [],
+                "judged": {"n": 50, "supported": 46, "partial": 4, "not": 0},
+            }
         ),
+        encoding="utf-8",
     )
-    warnings = shape_warnings(plan([screened(path, SCHEMA, FACTS)]))
-    assert warnings["off_spec_by_type"] == {"DEPENDS_ON": 1}
+    judged = load_precision_sample(tmp_path)
+    assert judged == {
+        "seed": 7,
+        "targets": "entity",
+        "n": 50,
+        "supported": 46,
+        "partial": 4,
+        "not": 0,
+    }

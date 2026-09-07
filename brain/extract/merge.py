@@ -36,6 +36,7 @@ from brain.extract.models import DESCRIPTION_MAX
 from brain.extract.validate import Batch, GraphFacts, Ref
 from brain.graph.context import GraphContext
 from brain.harvest.base import utc_now_iso, write_json_atomic
+from brain.resolve.ledger import ResolutionLedger
 
 MAX_RETRIES = 2
 RETRY_DIR = "retry"
@@ -134,6 +135,10 @@ class Plan:
     mentions: dict[tuple[str, str, str, str], Aggregate] = field(default_factory=dict)
     relations: dict[tuple[str, str, str, str, str], Aggregate] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+    #: Stamped on every node and edge this run writes. `extracted_at` says when the agent
+    #: wrote the fact and never moves; this says when merge last saw a batch declare it,
+    #: which is the only way to find what the current batches no longer say.
+    merged_at: str = ""
 
     def entity_rows(self) -> list[dict[str, Any]]:
         rows = []
@@ -142,7 +147,10 @@ class Plan:
             rows.append(
                 {
                     "key": key,
-                    "props": {k: v for k, v in props.items() if k != "extracted_at"},
+                    "props": {
+                        **{k: v for k, v in props.items() if k != "extracted_at"},
+                        "merged_at": self.merged_at,
+                    },
                     "on_create": {"extracted_at": props["extracted_at"]},
                 }
             )
@@ -158,7 +166,11 @@ class Plan:
         """
         grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for (chunk_id, label, key, kind), agg in sorted(self.mentions.items()):
-            props: dict[str, Any] = {"quote": agg.payload["quote"], **agg.provenance()}
+            props: dict[str, Any] = {
+                "quote": agg.payload["quote"],
+                **agg.provenance(),
+                "merged_at": self.merged_at,
+            }
             if label != "Entity":
                 props |= {
                     "kind": kind,
@@ -172,7 +184,7 @@ class Plan:
         grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
         for key, agg in sorted(self.relations.items()):
             rel_type, src_label, src_key, dst_label, dst_key = key
-            props: dict[str, Any] = dict(agg.provenance())
+            props: dict[str, Any] = {**agg.provenance(), "merged_at": self.merged_at}
             if agg.payload.get("note"):
                 props["note"] = agg.payload["note"][:DESCRIPTION_MAX]
             grouped[(rel_type, src_label, dst_label)].append(
@@ -181,14 +193,28 @@ class Plan:
         return dict(grouped)
 
 
-def plan(batches: Sequence[Batch]) -> Plan:
+def route(ref: Ref, ledger: ResolutionLedger | None) -> Ref:
+    """Send an `Entity` reference to the node `brain resolve` merged it into.
+
+    `apoc.refactor.mergeNodes` deleted the entity an extractor named, so a re-merge of the
+    same batches would `MERGE` it straight back and undo the resolution — the same trap the
+    person ledger exists for, one label over. Non-entity refs (a `Document`, a `WorkItem`,
+    a `Component`) are untouched: those nodes belong to `brain load`, not to resolution.
+    """
+    if ledger is None or ref.label != "Entity":
+        return ref
+    canonical = ledger.canonical("entity", ref.key)
+    return ref if canonical == ref.key else Ref(label=ref.label, key=canonical)
+
+
+def plan(batches: Sequence[Batch], ledger: ResolutionLedger | None = None) -> Plan:
     """Fold every screened batch into one node/edge plan, in batch-id order."""
     out = Plan()
     for batch in sorted(batches, key=lambda b: b.batch_id):
         if not batch.ok:
             continue
         for accepted in batch.entities:
-            entity, ref = accepted.entity, accepted.ref
+            entity, ref = accepted.entity, route(accepted.ref, ledger)
             if ref.label == "Entity":
                 agg = out.entities.get(ref.key)
                 if agg is None:
@@ -206,12 +232,20 @@ def plan(batches: Sequence[Batch]) -> Plan:
             mention.add(chunk_id=entity.chunk_id, batch=batch)
         for accepted in batch.relations:
             rel = accepted.relation
+            source, target = route(accepted.source, ledger), route(accepted.target, ledger)
+            if source == target:
+                # Both ends resolved to one node: the relation says a thing depends on
+                # itself, which is not a fact the graph should hold.
+                out.warnings.append(
+                    f"{batch.batch_id}: {rel.type} dropped — both ends resolve to {source.key}"
+                )
+                continue
             key = (
                 rel.type,
-                accepted.source.label,
-                accepted.source.key,
-                accepted.target.label,
-                accepted.target.key,
+                source.label,
+                source.key,
+                target.label,
+                target.key,
             )
             agg = out.relations.get(key)
             if agg is None:
@@ -222,23 +256,23 @@ def plan(batches: Sequence[Batch]) -> Plan:
     return out
 
 
-#: The endpoint shapes spec 2.4 states for each relation. A relation outside its shape is
-#: *counted and reported*, never dropped: the shapes are the common case, not a closed rule,
-#: and a KIP that lists its rejected alternatives without restating the decision genuinely
-#: rejects them from the document itself. Silently discarding those would lose the answer to
-#: "what alternatives were rejected in KIP-932" — the question the schema exists for.
-SPEC_SHAPES: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
-    "DECIDES": (("Document", "Entity:Decision"), ("Entity:Decision",)),
-    "MOTIVATED_BY": (("Entity:Decision",), ("Entity:Problem",)),
-    "REJECTS": (("Entity:Decision", "Document"), ("Entity:Alternative",)),
-    "IMPLEMENTS": (("WorkItem", "Component", "Entity:Feature"), ("Entity:Feature",)),
-    # Spec 2.4 writes `DEPENDS_ON (Component/Feature -> Component/Feature)`. Technology is
-    # deliberately not in the set: `Technology -> Technology` is the shape an extractor
-    # reaches for when it is describing a call graph rather than a dependency the text
-    # states, and the count is what says whether that is happening.
-    "DEPENDS_ON": (("Component", "Entity:Feature"), ("Component", "Entity:Feature")),
-    "INTRODUCES_RISK": ((), ("Entity:Risk",)),
-}
+SHAPES_PATH = Path(__file__).with_name("shapes.json")
+SHAPES_REF = "brain/extract/shapes.json"
+
+
+def load_shapes(path: Path = SHAPES_PATH) -> dict[str, tuple[tuple[str, ...], tuple[str, ...]]]:
+    """The endpoint table, from the one file that states it.
+
+    It used to be a dict in this module and a sentence in the spec, which is two sources
+    for one rule and exactly how `INTRODUCES_RISK` ended up with an empty source list —
+    silently exempting the type from the check it was written for. `shapes.json` carries
+    the spec reference it is answerable to; a test asserts it covers the closed set.
+    """
+    raw = json.loads(path.read_text(encoding="utf-8"))["shapes"]
+    return {
+        rel: (tuple(entry.get("source") or ()), tuple(entry.get("target") or ()))
+        for rel, entry in raw.items()
+    }
 
 
 def descriptor(ref: Ref) -> str:
@@ -248,18 +282,25 @@ def descriptor(ref: Ref) -> str:
     return f"Entity:{ref.key.split('|', 1)[0]}"
 
 
-def shape_warnings(plan_obj: Plan) -> dict[str, Any]:
-    """Relations whose endpoints are not the shape spec 2.4 describes. Counted, not dropped."""
+def shape_warnings(
+    plan_obj: Plan, shapes: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] | None = None
+) -> dict[str, Any]:
+    """Relations whose endpoints are not the shape `shapes.json` describes.
+
+    Counted, never dropped. The shapes are what the corpus turned out to say, and a
+    relation outside them is a signal about the extraction, not a reason to lose an edge.
+    """
+    shapes = shapes if shapes is not None else load_shapes()
     off: list[dict[str, str]] = []
     for rel_type, src_label, src_key, dst_label, dst_key in plan_obj.relations:
-        sources, targets = SPEC_SHAPES.get(rel_type, ((), ()))
+        sources, targets = shapes.get(rel_type, ((), ()))
         src = descriptor(Ref(src_label, src_key))
         dst = descriptor(Ref(dst_label, dst_key))
         problems = []
         if sources and src not in sources:
-            problems.append(f"source is {src}, spec 2.4 says {'/'.join(sources)}")
+            problems.append(f"source is {src}, shapes.json says {'/'.join(sources)}")
         if targets and dst not in targets:
-            problems.append(f"target is {dst}, spec 2.4 says {'/'.join(targets)}")
+            problems.append(f"target is {dst}, shapes.json says {'/'.join(targets)}")
         if problems:
             off.append(
                 {
@@ -271,6 +312,7 @@ def shape_warnings(plan_obj: Plan) -> dict[str, Any]:
             )
     counted: Counter = Counter(o["type"] for o in off)
     return {
+        "shapes": SHAPES_REF,
         "off_spec_shape": len(off),
         "off_spec_by_type": dict(sorted(counted.items())),
         "off_spec_examples": off[:20],
@@ -417,12 +459,29 @@ def collect_facts(ctx: GraphContext, batches: Sequence[Batch]) -> GraphFacts:
     )
 
 
+def load_precision_sample(reports_dir: Path) -> dict[str, Any] | None:
+    """The human verdict on `brain extract sample`, if someone has recorded one.
+
+    It lives in `data/reports/extract_sample.json` under `judged`, written by whoever did
+    the judging — never computed here. The step report carries it so the acceptance number
+    and the graph it is about are one file, and so a later run cannot quietly lose it.
+    """
+    from brain.extract.sample import load_sample
+
+    sheet = load_sample(reports_dir)
+    judged = (sheet or {}).get("judged")
+    if not isinstance(judged, dict):
+        return None
+    return {"seed": (sheet or {}).get("seed"), "targets": (sheet or {}).get("targets"), **judged}
+
+
 def run_merge(
     *,
     ctx: GraphContext,
     batches_dir: Path,
     reports_dir: Path,
     schema_path: Path = SCHEMA_PATH,
+    canonical_dir: Path | None = None,
     write_report: bool = True,
     echo: Callable[[str], None] = print,
 ) -> tuple[dict[str, Any], int]:
@@ -444,14 +503,19 @@ def run_merge(
     valid = [b for b in batches if b.ok]
     invalid = [b for b in batches if not b.ok]
 
-    plan_obj = plan(valid)
+    # Route every entity reference through the resolution ledger before anything is
+    # written, so a re-merge lands on the survivor instead of recreating what it swallowed.
+    ledger = ResolutionLedger.load(canonical_dir) if canonical_dir else None
+    merged_at = utc_now_iso()
+    plan_obj = plan(valid, ledger)
+    plan_obj.merged_at = merged_at
     chunk_ids = (
         {c for agg in plan_obj.mentions.values() for c in agg.chunk_ids}
         | {c for agg in plan_obj.entities.values() for c in agg.chunk_ids}
         | {c for agg in plan_obj.relations.values() for c in agg.chunk_ids}
     )
     present = extract_graph.existing_chunk_ids(ctx, sorted(chunk_ids))
-    gaps = drop_missing_chunks(plan_obj, present) | shape_warnings(plan_obj)
+    gaps = drop_missing_chunks(plan_obj, present) | shape_warnings(plan_obj, load_shapes())
 
     schema_stats = extract_graph.apply_extract_schema(ctx)
     written = {
@@ -474,7 +538,6 @@ def run_merge(
     ledger = _read_json(ledger_path) or {}
     ledger_failed: dict[str, Any] = dict(ledger.get("failed") or {})
     previously_merged = set(ledger.get("batches") or {})
-    merged_at = utc_now_iso()
     new_batches = {
         b.batch_id: {
             "sha256": b.sha256,
@@ -504,6 +567,10 @@ def run_merge(
     status = read_shard_status(root)
     census = extract_graph.census(ctx)
     report = build_report(
+        consolidation=extract_graph.consolidation(ctx),
+        stale=extract_graph.stale(ctx, merged_at),
+        precision_sample=load_precision_sample(reports_dir),
+        records_seen=validate_mod.records_seen(list(batches)),
         batches=batches,
         valid=valid,
         invalid=invalid,
@@ -551,18 +618,23 @@ def build_report(
     gone: Sequence[str],
     duration_ms: int,
     prefix: str,
+    consolidation: dict[str, Any],
+    stale: dict[str, Any],
+    precision_sample: dict[str, Any] | None,
+    records_seen: int,
 ) -> dict[str, Any]:
     expected = {b["id"] for b in (manifest or {}).get("batches", [])}
     seen = {b.batch_id for b in batches}
     by_kind: Counter = Counter(a.kind for a in plan_obj.entities.values())
     by_type: Counter = Counter(k[0] for k in plan_obj.relations)
     by_target: Counter = Counter(k[1] for k in plan_obj.mentions)
-    first_pass = len(valid) / len(batches) if batches else 0.0
     # Two denominators, because they answer different questions: "of what the agents wrote"
     # is the extraction quality gate (>= 90%), "of what build planned" also counts the
     # batches nobody has written yet, which is progress, not quality.
+    envelope_valid = len(valid) / len(batches) if batches else 0.0
     against_expected = len(valid) / len(expected) if expected else None
     missing = sorted(expected - seen)
+    rejected_records = sum(len(b.rejections) for b in batches)
     return {
         "step": "extract.merge",
         "generated_at": utc_now_iso(),
@@ -574,8 +646,12 @@ def build_report(
             "valid": len(valid),
             "invalid": len(invalid),
             "expected": len(expected),
-            "first_pass_rate": round(first_pass, 4),
-            "first_pass_rate_vs_expected": (
+            # Named for what it measures. A batch is valid or not on its *envelope* alone;
+            # how good the records inside it were is `record_rejection_rate`, and calling
+            # the first one a "first pass rate" hid that they are different questions with
+            # different denominators.
+            "envelope_valid_rate": round(envelope_valid, 4),
+            "envelope_valid_rate_vs_expected": (
                 round(against_expected, 4) if against_expected is not None else None
             ),
             "reported_failed": len(reported_failures),
@@ -597,8 +673,13 @@ def build_report(
         "schema": schema_stats,
         "weak_decisions": weak,
         "rejected_records": {
-            "total": sum(len(b.rejections) for b in batches),
+            "total": rejected_records,
+            "records_seen": records_seen,
+            "record_rejection_rate": round(rejected_records / records_seen, 6)
+            if records_seen
+            else 0.0,
             "by_reason": dict(sorted(validate_mod.reasons(batches).items())),
+            "counted_not_enforced": validate_mod.soft_reasons(list(batches)),
             "examples": [r.row() for b in batches for r in b.rejections[:3]][:40],
         },
         "rejected_batches": [
@@ -633,6 +714,9 @@ def build_report(
             "by_type": provenance["by_type"],
         },
         "census": census,
+        "consolidation": consolidation,
+        "stale": stale,
+        "precision_sample": precision_sample,
     }
 
 
@@ -640,7 +724,7 @@ def summarize(report: dict[str, Any]) -> str:
     b, p, c = report["batches"], report["planned"], report["census"]
     lines = [
         f"extract merge: {b['valid']}/{b['found']} batches valid "
-        f"({b['first_pass_rate'] * 100:.0f}% first pass) → "
+        f"({b['envelope_valid_rate'] * 100:.0f}% envelope) → "
         f"{p['entities']} entities, {p['mentions']} mentions, {p['relations']} relations",
         "entities: " + (", ".join(f"{n} {k}" for k, n in p["entities_by_kind"].items()) or "none"),
         "relations: "

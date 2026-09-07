@@ -1,0 +1,39 @@
+{
+  "$schema": "https://org-brain.local/brain/extract/shapes.schema",
+  "title": "endpoint shapes for the extracted relation types",
+  "spec": "docs/superpowers/specs/2026-09-03-org-brain-graph-rag-design.md §2.4 — \"צמתים/קשתות מחילוץ LLM\"",
+  "description": "The node each relation type may run between, as one table both the report and the spec are read against. A relation outside its shape is COUNTED and REPORTED, never dropped: the shapes describe what the corpus actually says, and the first production merge found 756 relations outside the narrower reading of §2.4 — mostly a `Feature` motivating a `Problem`, which is a real sentence a KIP writes. Losing those would lose the answer to \"why was this built\". A descriptor is either a node label (`Document`, `WorkItem`, `Commit`, `Component`) or `Entity:<kind>`; an empty list means \"any\".",
+  "amended": "2026-09-07 — planner ruling after the first production merge; §2.4 amended to match.",
+  "shapes": {
+    "DECIDES": {
+      "source": ["Document", "WorkItem"],
+      "target": ["Entity:Decision"],
+      "note": "The KIP page, or the issue that records the choice, decides."
+    },
+    "MOTIVATED_BY": {
+      "source": ["Entity:Decision", "Entity:Feature"],
+      "target": ["Entity:Problem"],
+      "note": "A KIP as often motivates the capability it adds as the choice it made."
+    },
+    "REJECTS": {
+      "source": ["Entity:Decision", "Document", "WorkItem"],
+      "target": ["Entity:Alternative"],
+      "note": "A `Rejected Alternatives` section usually lists what was turned down without restating the decision, so the document itself is the rejecter."
+    },
+    "IMPLEMENTS": {
+      "source": ["WorkItem", "Commit", "Document"],
+      "target": ["Entity:Feature"],
+      "note": "What realises a capability: an issue, the commit that closed it, or the KIP that specifies it."
+    },
+    "DEPENDS_ON": {
+      "source": ["Component", "Entity:Feature", "Entity:Technology", "Entity:Decision"],
+      "target": ["Component", "Entity:Feature", "Entity:Technology", "Document"],
+      "note": "The widest shape on purpose: a dependency is stated between whatever two things the sentence names, and a KIP depending on another KIP is a Document on the target side."
+    },
+    "INTRODUCES_RISK": {
+      "source": ["Entity:Decision", "Entity:Feature", "Entity:Problem", "Entity:Alternative"],
+      "target": ["Entity:Risk"],
+      "note": "Something the text states brings the risk. The source list was empty before 2026-09-07, which silently exempted this type from the check."
+    }
+  }
+}

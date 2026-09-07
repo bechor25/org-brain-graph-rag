@@ -154,13 +154,23 @@ def run_sample(
         ],
         "note": (
             "Set `supported` to true/false by hand. Acceptance is >= 85% supported "
-            "(step brief 07 decision 7). `context` marks the quote with [[ ]]."
+            "(step brief 07 decision 7). `context` marks the quote with [[ ]]. Record the "
+            "tally under a top-level `judged` object — `brain extract merge` copies it into "
+            "`extract.json` as `precision_sample`, and a re-draw at the same seed keeps it."
         ),
     }
     echo(
         f"\nextract sample: {len(ordered)} of {len(population)} {targets} mentions, "
         f"seed {seed}. Judge each one: does the quote support the entity?"
     )
+    # A human verdict already recorded against this seed survives a re-draw: the sample is
+    # deterministic, so re-running the command is a re-read of the same 50 rows, and losing
+    # the judgement to it would mean re-judging them.
+    previous = load_sample(reports_dir) or {}
+    judged = previous.get("judged")
+    if isinstance(judged, dict) and previous.get("seed") == seed:
+        report["judged"] = judged
+
     if write_report:
         reports_dir.mkdir(parents=True, exist_ok=True)
         path = reports_dir / "extract_sample.json"

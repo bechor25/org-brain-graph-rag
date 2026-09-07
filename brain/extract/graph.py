@@ -215,6 +215,107 @@ def provenance_gaps(ctx: GraphContext) -> dict[str, Any]:
     return {"total": sum(r["n"] for r in rows), "by_type": {r["type"]: r["n"] for r in rows}}
 
 
+#: The edges that make an entity part of the graph rather than a lonely quote. `MENTIONS`
+#: is not one of them: every entity has one by construction.
+SEMANTIC_TYPES: tuple[str, ...] = tuple(t for t in LLM_RELATION_TYPES if t != DERIVED_RELATION_TYPE)
+
+
+def consolidation(ctx: GraphContext) -> dict[str, Any]:
+    """How much of the corpus the extraction actually joined up.
+
+    The number that matters for `brain resolve`: if almost every entity is cited by exactly
+    one chunk, nothing was consolidated and the graph is 9,000 separate observations rather
+    than a picture of a few hundred things. `isolated_by_kind` is the other half — an entity
+    with no semantic edge answers no question a traversal can ask.
+    """
+    entity = ctx.label(ENTITY_LABEL)
+    types = "|".join(f"`{t}`" for t in SEMANTIC_TYPES)
+    spread = ctx.read(
+        f"MATCH (c:{ctx.label(CHUNK_LABEL)})-[m:{DERIVED_RELATION_TYPE}]->(e:{entity}) "
+        "WITH e, count(DISTINCT c) AS chunks "
+        "RETURN count(e) AS entities, sum(chunks) AS mentions, "
+        "sum(CASE WHEN chunks = 1 THEN 1 ELSE 0 END) AS single_chunk, "
+        "max(chunks) AS max_chunks"
+    )[0]
+    per_chunk = ctx.read(
+        f"MATCH (c:{ctx.label(CHUNK_LABEL)})-[m:{DERIVED_RELATION_TYPE}]->(:{entity}) "
+        "WITH c, count(m) AS n "
+        "RETURN count(c) AS chunks, avg(n) AS mean, percentileDisc(n, 0.5) AS p50, max(n) AS max"
+    )[0]
+    isolated = ctx.read(
+        f"MATCH (e:{entity}) OPTIONAL MATCH (e)-[r:{types}]-() "
+        "WITH e, count(r) AS n "
+        "RETURN e.kind AS kind, count(e) AS entities, "
+        "sum(CASE WHEN n = 0 THEN 1 ELSE 0 END) AS isolated ORDER BY kind"
+    )
+    entities = spread["entities"] or 0
+    return {
+        "entities": entities,
+        "mentions": spread["mentions"] or 0,
+        "mentions_per_entity": round((spread["mentions"] or 0) / entities, 3) if entities else 0,
+        "max_chunks_per_entity": spread["max_chunks"] or 0,
+        "entities_with_one_evidence_chunk": spread["single_chunk"] or 0,
+        "pct_entities_with_one_evidence_chunk": (
+            round(100 * (spread["single_chunk"] or 0) / entities, 1) if entities else 0
+        ),
+        "chunks_with_an_entity": per_chunk["chunks"] or 0,
+        "entities_per_chunk_mean": round(per_chunk["mean"] or 0, 3),
+        "entities_per_chunk_p50": per_chunk["p50"] or 0,
+        "entities_per_chunk_max": per_chunk["max"] or 0,
+        "isolated_by_kind": {
+            r["kind"]: {
+                "entities": r["entities"],
+                "isolated": r["isolated"],
+                "pct_isolated": round(100 * r["isolated"] / r["entities"], 1)
+                if r["entities"]
+                else 0,
+            }
+            for r in isolated
+        },
+        "isolated_total": sum(r["isolated"] for r in isolated),
+        "semantic_types": list(SEMANTIC_TYPES),
+    }
+
+
+def stale(ctx: GraphContext, merged_at: str) -> dict[str, Any]:
+    """Nodes and edges this step wrote that the current batches no longer declare.
+
+    Every write of this run stamps `merged_at`; anything carrying an older stamp — or none
+    at all, which is what a node written before this property existed looks like — was
+    declared by a batch that has since been regenerated or removed. `coalesce` is doing real
+    work in those queries: `null <> $now` is `null` in Cypher, so a bare `<>` silently drops
+    exactly the rows the sweep exists to find.
+
+    It is *reported*, never deleted: whether a fact the agents withdrew should leave the
+    graph is a decision about evidence, not a cleanup, and deleting it silently would make
+    the graph disagree with the batches with nothing to say so.
+    """
+    entities = ctx.read(
+        f"MATCH (e:{ctx.label(ENTITY_LABEL)}) "
+        "WHERE e.model = $model AND coalesce(e.merged_at, '') <> $now "
+        "RETURN e.id AS id, e.merged_at AS merged_at ORDER BY id",
+        model=MODEL,
+        now=merged_at,
+    )
+    edges = ctx.read(
+        "MATCH (a)-[r]->(b) "
+        f"WHERE type(r) IN $types AND ({_labelled(ctx, 'a')}) "
+        "AND r.model = $model AND coalesce(r.merged_at, '') <> $now "
+        "RETURN type(r) AS type, count(r) AS n ORDER BY type",
+        types=list(LLM_RELATION_TYPES),
+        model=MODEL,
+        now=merged_at,
+    )
+    return {
+        "rule": "written by an earlier merge, not declared by the current batches",
+        "action": "reported only — deleting withdrawn evidence is a planner decision",
+        "entities": len(entities),
+        "entity_examples": [e["id"] for e in entities[:20]],
+        "edges": sum(e["n"] for e in edges),
+        "edges_by_type": {e["type"]: e["n"] for e in edges},
+    }
+
+
 def census(ctx: GraphContext) -> dict[str, Any]:
     """What the graph holds now — read back, never inferred from what we meant to send."""
     entity = ctx.label(ENTITY_LABEL)

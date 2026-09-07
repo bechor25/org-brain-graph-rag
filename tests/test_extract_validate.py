@@ -375,3 +375,41 @@ def test_cross_batch_misses_say_whether_a_second_pass_would_pay(tmp_path):
     assert stats["unresolved_endpoint_names"] == 2
     assert stats["unresolved_endpoint_matches_other_batch"] == 1
     assert stats["unresolved_endpoint_examples"][0]["name"] == "long rebalances"
+
+
+def test_a_quote_cut_mid_word_is_counted_but_still_merges(tmp_path):
+    """`quote_boundary` is a soft check: the report says what it would cost before the
+    planner switches it on, so a new rule cannot quietly delete a shard's work."""
+    batch = run(
+        tmp_path,
+        batch_output(entities=[entity(quote="causes long rebalanc")]),
+        inp=batch_input(
+            [chunk_context(text="clients do assignment, which causes long rebalances.")]
+        ),
+    )
+    assert batch.ok
+    assert batch.rejections == []  # not enforced yet
+    assert len(batch.entities) == 1  # the entity merged
+    soft = validate_mod.soft_reasons([batch])
+    assert soft["by_reason"] == {"entity:quote_boundary": 1}
+    assert soft["not_yet_enforced"] == ["quote_boundary"]
+    assert soft["examples"][0]["reason"] == "quote_boundary"
+
+
+def test_quote_boundary_is_listed_as_not_yet_enforced():
+    """When the planner moves it, this test is the one that has to change with it."""
+    assert "quote_boundary" in validate_mod.SOFT_CHECKS
+
+
+def test_records_seen_counts_what_the_agents_actually_wrote(tmp_path):
+    """The denominator of `record_rejection_rate`: every entity and relation in the file,
+    including the ones that were rejected."""
+    batch = run(
+        tmp_path,
+        batch_output(
+            entities=[entity(), entity(name="assignment"), entity(kind="Component")],
+            relations=[relation(source="long rebalances", target="assignment")],
+        ),
+    )
+    assert validate_mod.records_seen([batch]) == 4
+    assert len(batch.entities) == 2  # one kind was outside the closed set

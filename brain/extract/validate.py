@@ -45,6 +45,12 @@ MAX_ERRORS = 50
 #: component node itself. Brief 07 review, decision 2.
 COMPONENT_KINDS: frozenset[str] = frozenset({"Technology", "Feature"})
 
+#: Checks that are counted but do not reject yet. A new rule lands here first, the report
+#: says what it would have cost on real data, and the planner moves it out. `quote_boundary`
+#: was added on 2026-09-07 after the first production merge and is report-only until the
+#: planner has seen the number against 9,390 accepted quotes.
+SOFT_CHECKS: frozenset[str] = frozenset({"quote_boundary"})
+
 
 @dataclass(frozen=True)
 class Ref:
@@ -110,6 +116,10 @@ class Batch:
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     rejections: list[Rejection] = field(default_factory=list)
+    #: Faults that are counted but not (yet) enforced — see `ENFORCE_SOFT`. The record
+    #: merges. Keeping them here rather than in `rejections` is what lets the report say
+    #: how much a rule would cost before it is switched on.
+    soft: list[Rejection] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -299,10 +309,14 @@ def screen(batch: Batch, facts: GraphFacts, schema: dict[str, Any] | None = None
             continue
         reason = _entity_problem(entity, texts)
         if reason is not None:
-            batch.rejections.append(
-                Rejection(batch.batch_id, "entity", reason, f"{entity.kind} {entity.name!r}")
+            found = Rejection(
+                batch.batch_id, "entity", reason, f"{entity.kind} {entity.name!r}: {entity.quote}"
             )
-            continue
+            if reason in SOFT_CHECKS:
+                batch.soft.append(found)
+            else:
+                batch.rejections.append(found)
+                continue
         ref = facts.key_ref(entity.name, entity.kind) or Ref(
             "Entity", names_mod.entity_id(entity.kind, entity.name)
         )
@@ -410,6 +424,8 @@ def _entity_problem(entity: Entity, texts: dict[str, str]) -> str | None:
         return "quote_too_long"
     if not names_mod.quote_found(entity.quote, texts[entity.chunk_id]):
         return "quote_not_verbatim"
+    if not names_mod.quote_boundary_ok(entity.quote, texts[entity.chunk_id]):
+        return "quote_boundary"
     try:
         names_mod.norm_name(entity.name)
     except ValueError:
@@ -462,6 +478,28 @@ def reasons(batches: list[Batch]) -> Counter:
         for rejection in batch.rejections:
             counted[f"{rejection.record}:{rejection.reason}"] += 1
     return counted
+
+
+def soft_reasons(batches: list[Batch]) -> dict[str, Any]:
+    """What the not-yet-enforced checks would have cost, and on which records."""
+    counted: Counter = Counter()
+    examples: list[dict[str, str]] = []
+    for batch in batches:
+        for flagged in batch.soft:
+            counted[f"{flagged.record}:{flagged.reason}"] += 1
+            if len(examples) < 20:
+                examples.append(flagged.row())
+    return {
+        "not_yet_enforced": sorted(SOFT_CHECKS),
+        "by_reason": dict(sorted(counted.items())),
+        "total": sum(counted.values()),
+        "examples": examples,
+    }
+
+
+def records_seen(batches: list[Batch]) -> int:
+    """Entities plus relations as written, the denominator a rejection rate needs."""
+    return sum(len(b.raw_records("entities")) + len(b.raw_records("relations")) for b in batches)
 
 
 def cross_batch_misses(batches: list[Batch]) -> dict[str, Any]:

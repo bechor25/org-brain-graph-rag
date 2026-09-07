@@ -31,6 +31,11 @@ from tests.extract_helpers import MINI, MINI_MIN_CHARS, mini_chunks, write_chunk
 pytestmark = pytest.mark.live
 
 PREFIX = "_Extract"
+#: A one-off namespace an earlier fixture-building script used. It is cleaned here so the
+#: repository has one place that knows every scratch label this step has ever created —
+#: leftovers in a prefixed namespace are invisible to every production query and therefore
+#: never noticed until someone counts nodes.
+LEGACY_PREFIXES = ("_ExtractFix",)
 FIXTURES = Path("tests/fixtures/extract")
 QUIET = lambda _m: None  # noqa: E731
 
@@ -49,6 +54,18 @@ def client():
 def _clean(ctx: GraphContext) -> None:
     ctx.client.write(f"MATCH (c:{ctx.label('Chunk')}) DETACH DELETE c")
     ctx.client.write(f"MATCH (e:{ctx.label('Entity')}) DETACH DELETE e")
+    wipe(ctx)
+    chunk_graph.drop_chunk_schema(ctx)
+    extract_graph.drop_extract_schema(ctx)
+    drop_schema(ctx)
+    for prefix in LEGACY_PREFIXES:
+        _clean_legacy(GraphContext(ctx.client, prefix=prefix))
+
+
+def _clean_legacy(ctx: GraphContext) -> None:
+    ctx.client.write(f"MATCH (c:{ctx.label('Chunk')}) DETACH DELETE c")
+    ctx.client.write(f"MATCH (e:{ctx.label('Entity')}) DETACH DELETE e")
+    ctx.client.write(f"MATCH (m:{ctx.label('IndexMeta')}) DETACH DELETE m")
     wipe(ctx)
     chunk_graph.drop_chunk_schema(ctx)
     extract_graph.drop_extract_schema(ctx)
@@ -212,7 +229,7 @@ def test_both_canned_batches_merge_with_nothing_rejected(merged):
         "found": 2,
         "valid": 2,
         "invalid": 0,
-        "first_pass_rate": 1.0,
+        "envelope_valid_rate": 1.0,
     }
     assert report["rejected_records"]["total"] == 0
     assert report["rejected_batches"] == []
@@ -305,6 +322,57 @@ def test_a_decision_with_no_motivation_is_marked_weak_and_a_motivated_one_is_not
     assert rows["move assignment to the group coordinator"] is False
     assert rows["fence members with stale epochs"] is True
     assert report["weak_decisions"] == {"decisions": 2, "weak": 1, "supported": 1}
+
+
+def test_the_report_measures_how_much_the_extraction_consolidated(merged):
+    """The number `brain resolve` is sized by: entities cited by exactly one chunk are
+    observations, not things."""
+    report, _root = merged
+    c = report["consolidation"]
+    assert c["entities"] == report["census"]["entities"]
+    assert c["mentions_per_entity"] >= 1
+    assert c["entities_with_one_evidence_chunk"] <= c["entities"]
+    assert 0 <= c["pct_entities_with_one_evidence_chunk"] <= 100
+    assert set(c["isolated_by_kind"]) <= {
+        "Feature",
+        "Decision",
+        "Problem",
+        "Alternative",
+        "Risk",
+        "Technology",
+    }
+    assert c["chunks_with_an_entity"] >= 1
+    assert "MENTIONS" not in c["semantic_types"]
+
+
+def test_a_fact_the_batches_no_longer_declare_is_reported_not_deleted(merged, graph, tmp_path):
+    """A node written by an earlier merge and dropped from the current batches is the one
+    thing a MERGE-only step cannot notice by itself."""
+    report, root = merged
+    assert report["stale"] == {**report["stale"], "entities": 0, "edges": 0}
+
+    label = graph.label("Entity")
+    stamp = graph.read(f"MATCH (e:{label}) RETURN e.merged_at AS at LIMIT 1")[0]["at"]
+    assert stamp
+    graph.write(
+        f"MATCH (e:{label}) WITH e ORDER BY e.id LIMIT 1 "
+        "SET e.merged_at = '1999-01-01T00:00:00+00:00'"
+    )
+    graph.write(
+        f"MATCH (e:{label}) WHERE e.merged_at = $stamp WITH e ORDER BY e.id LIMIT 1 "
+        "REMOVE e.merged_at",
+        stamp=stamp,
+    )
+    stale = extract_graph.stale(graph, stamp)
+    # both the old stamp and the missing one: `null <> $now` is null, not true
+    assert stale["entities"] == 2, stale
+    assert stale["action"].startswith("reported only")
+
+    again, code = run_merge(
+        ctx=graph, batches_dir=root, reports_dir=tmp_path, write_report=False, echo=QUIET
+    )
+    assert code == 0
+    assert again["stale"]["entities"] == 0  # the batches still declare them, so they restamp
 
 
 def test_the_ledger_records_every_merged_batch(merged):
