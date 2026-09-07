@@ -85,10 +85,15 @@ def stems(candidate: Candidate) -> frozenset[str]:
 
     `ado:an.sanghyeok.10115` gives {`sanghyeok`}; `jira:chickenchickenlove` gives
     {`chickenchickenlove`}. Digits and short fragments are dropped: they match by accident.
+
+    An `Entity` id is `kind|norm_name`, not `source:key`, so the kind prefix comes off
+    here too — otherwise every Decision shares the word `decision` with every other one
+    and the grey-band blocking passes everything, which is the same as not blocking.
     """
     words: set[str] = set()
     for identity in candidate.identities or [candidate.id]:
-        for word in norm_display(key_of(identity)).split(" "):
+        bare = identity.split("|", 1)[1] if "|" in identity else key_of(identity)
+        for word in norm_display(bare).split(" "):
             if len(word) >= MIN_STEM and not word.isdigit():
                 words.add(word)
     return frozenset(words)
@@ -567,23 +572,54 @@ def dedupe(pairs: Iterable[Pair]) -> list[Pair]:
     return sorted(best.values(), key=lambda p: (p.tier, p.rule, p.a, p.b))
 
 
-def groups(pairs: Iterable[Pair]) -> list[list[str]]:
-    """Connected components of the merge graph: union-find, sorted, size >= 2."""
+def groups(
+    pairs: Iterable[Pair], forbidden: Iterable[tuple[str, str]] = ()
+) -> tuple[list[list[str]], list[dict[str, Any]]]:
+    """Connected components of the merge graph, sorted, size >= 2 — plus what was refused.
+
+    Transitive closure is most of what resolution does (measured: half the person merges
+    were asserted by nobody), and that is fine while every edge in a component is a `same`.
+    It stops being fine the moment a component would swallow a pair a reader explicitly
+    called `different`: A=B and B=C, but a human already said A≠C. Merging anyway would
+    quietly overrule the one judgement in the run that was actually made by a reader.
+
+    So a union that would put a forbidden pair in one component is refused, and the pair
+    that caused it is returned rather than dropped. Pairs are taken strongest-evidence
+    first (tier, then score), so the refusal falls on the weakest link, not an arbitrary one.
+    """
     parent: dict[str, str] = {}
+    blocked = {tuple(sorted(p)) for p in forbidden}
+    members: dict[str, set[str]] = {}
 
     def find(x: str) -> str:
         parent.setdefault(x, x)
+        members.setdefault(x, {x})
         while parent[x] != x:
             parent[x] = parent[parent[x]]
             x = parent[x]
         return x
 
-    for pair in pairs:
+    refused: list[dict[str, Any]] = []
+    for pair in sorted(pairs, key=lambda p: (p.tier, -p.score, p.a, p.b)):
         ra, rb = find(pair.a), find(pair.b)
-        if ra != rb:
-            parent[max(ra, rb)] = min(ra, rb)
+        if ra == rb:
+            continue
+        clash = sorted(
+            (a, b) for a in members[ra] for b in members[rb] if tuple(sorted((a, b))) in blocked
+        )
+        if clash:
+            refused.append(
+                {"pair": [pair.a, pair.b], "would_merge": list(clash[0]), "rule": pair.rule}
+            )
+            continue
+        keep, gone = min(ra, rb), max(ra, rb)
+        parent[gone] = keep
+        members[keep] |= members.pop(gone)
 
-    members: dict[str, list[str]] = defaultdict(list)
+    out: dict[str, list[str]] = defaultdict(list)
     for node in parent:
-        members[find(node)].append(node)
-    return sorted((sorted(v) for v in members.values() if len(v) > 1), key=lambda g: g[0])
+        out[find(node)].append(node)
+    return (
+        sorted((sorted(v) for v in out.values() if len(v) > 1), key=lambda g: g[0]),
+        refused,
+    )

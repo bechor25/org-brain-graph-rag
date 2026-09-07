@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 import time
 from collections import Counter, defaultdict
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -36,6 +36,7 @@ from brain.extract.models import DESCRIPTION_MAX
 from brain.extract.validate import Batch, GraphFacts, Ref
 from brain.graph.context import GraphContext
 from brain.harvest.base import utc_now_iso, write_json_atomic
+from brain.resolve import graph as resolve_graph
 from brain.resolve.ledger import ResolutionLedger
 
 MAX_RETRIES = 2
@@ -140,7 +141,15 @@ class Plan:
     #: which is the only way to find what the current batches no longer say.
     merged_at: str = ""
 
-    def entity_rows(self) -> list[dict[str, Any]]:
+    def entity_rows(self, synthetic_chunks: Collection[str] = ()) -> list[dict[str, Any]]:
+        """`synthetic` is true only when **every** evidence chunk is synthetic.
+
+        One real chunk saying the same thing makes the entity a fact about the real
+        corpus, and `brain reset --synthetic` must leave it standing. The conservative
+        direction is deliberate: a kept entity is visible and can be deleted later, a
+        deleted one takes its provenance with it.
+        """
+        synthetic = set(synthetic_chunks)
         rows = []
         for key, agg in sorted(self.entities.items()):
             props = agg.props()
@@ -150,6 +159,7 @@ class Plan:
                     "props": {
                         **{k: v for k, v in props.items() if k != "extracted_at"},
                         "merged_at": self.merged_at,
+                        "synthetic": bool(agg.chunk_ids) and agg.chunk_ids <= synthetic,
                     },
                     "on_create": {"extracted_at": props["extracted_at"]},
                 }
@@ -515,15 +525,26 @@ def run_merge(
         | {c for agg in plan_obj.relations.values() for c in agg.chunk_ids}
     )
     present = extract_graph.existing_chunk_ids(ctx, sorted(chunk_ids))
+    synthetic_chunks = extract_graph.synthetic_chunk_ids(ctx, sorted(present))
     gaps = drop_missing_chunks(plan_obj, present) | shape_warnings(plan_obj, load_shapes())
 
     schema_stats = extract_graph.apply_extract_schema(ctx)
     written = {
-        "entities": extract_graph.write_entities(ctx, plan_obj.entity_rows()),
+        "entities": extract_graph.write_entities(ctx, plan_obj.entity_rows(synthetic_chunks)),
         "mentions": extract_graph.write_mentions(ctx, plan_obj.mention_rows()),
         "relations": extract_graph.write_relations(ctx, plan_obj.relation_rows()),
     }
     weak = extract_graph.mark_weak_decisions(ctx)
+
+    # Routing both sides of a resolved pair onto one survivor turns two extractions of two
+    # entities into two parallel edges of the same type between the same two nodes, and
+    # `MERGE … SET r += props` then updates both — so they end up identical in every
+    # property and only one of them is a fact. `MERGE` cannot see that: it matches on the
+    # pattern, not on the properties it is about to set. So the duplicates are removed
+    # after the write, and only where every property agrees; two edges that differ in any
+    # property are two claims and are left alone.
+    survivors = sorted({str(e["canonical"]) for e in (ledger.entities if ledger else {}).values()})
+    duplicate_edges = resolve_graph.dedupe_relationships(ctx, "Entity", survivors)
 
     provenance = extract_graph.provenance_gaps(ctx)
     if provenance["total"]:
@@ -577,6 +598,7 @@ def run_merge(
         plan_obj=plan_obj,
         written=written,
         weak=weak,
+        duplicate_edges=duplicate_edges,
         gaps=gaps,
         provenance=provenance,
         census=census,
@@ -607,6 +629,7 @@ def build_report(
     plan_obj: Plan,
     written: dict[str, int],
     weak: dict[str, int],
+    duplicate_edges: int = 0,
     gaps: dict[str, Any],
     provenance: dict[str, Any],
     census: dict[str, Any],
@@ -672,6 +695,7 @@ def build_report(
         "counters": counters,
         "schema": schema_stats,
         "weak_decisions": weak,
+        "duplicate_edges_deleted": duplicate_edges,
         "rejected_records": {
             "total": rejected_records,
             "records_seen": records_seen,

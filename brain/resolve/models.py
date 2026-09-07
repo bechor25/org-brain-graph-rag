@@ -46,6 +46,8 @@ class Candidate(BaseModel):
     #: Every surface description a merge has collected, longest first in `description`.
     descriptions: list[str] = Field(default_factory=list)
     identities: list[str] = Field(default_factory=list)
+    #: Only the display forms that *differ* from the survivor's own name — a merge of two
+    #: identities spelled the same leaves this empty, which is not a bug.
     aliases: list[str] = Field(default_factory=list)
     #: Ids an *earlier* tier already merged into this node. Carried so tier 3 adds to the
     #: list tier 1 wrote instead of replacing it — the node would otherwise forget which
@@ -162,6 +164,10 @@ class Pair(BaseModel):
     rule: str
     score: float
     reason: str
+    #: Conventions rule 3: a merge an agent decided is LLM-derived, so it names the batch
+    #: it came from and the model that wrote it. Empty for tiers 1 and 2, which are code.
+    batch_id: str | None = None
+    model: str | None = None
 
     @property
     def key(self) -> tuple[str, str]:
@@ -169,10 +175,29 @@ class Pair(BaseModel):
 
 
 def make_pair(
-    a: str, b: str, *, kind: str, block: str, tier: int, rule: str, score: float, reason: str
+    a: str,
+    b: str,
+    *,
+    kind: str,
+    block: str,
+    tier: int,
+    rule: str,
+    score: float,
+    reason: str,
+    batch_id: str | None = None,
+    model: str | None = None,
 ) -> Pair:
     """Ordered so `(a, b)` and `(b, a)` are the same pair and the same `pair_id`."""
     lo, hi = sorted((a, b))
     return Pair(
-        a=lo, b=hi, kind=kind, block=block, tier=tier, rule=rule, score=score, reason=reason
+        a=lo,
+        b=hi,
+        kind=kind,
+        block=block,
+        tier=tier,
+        rule=rule,
+        score=score,
+        reason=reason,
+        batch_id=batch_id,
+        model=model,
     )

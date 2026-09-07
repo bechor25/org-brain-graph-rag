@@ -156,6 +156,7 @@ def survivor_rows(
     *,
     tier: int,
     stamp: str,
+    evidence: Sequence[Pair] = (),
 ) -> tuple[str, dict[str, Any]]:
     """The survivor id and the properties that record what it swallowed."""
     keep = survivor(kind, group, evidence_weight(by_id) if kind == "entity" else None)
@@ -178,6 +179,13 @@ def survivor_rows(
         "merged_from": sorted(set(swallowed) | {i for m in members for i in m.merged_from}),
         "aliases": aliases,
     }
+    # Conventions rule 3: a merge an agent decided is LLM-derived and names its batch and
+    # its model. Tiers 1 and 2 are code, so they stamp nothing and the absence is the
+    # statement — `model IS NULL` is exactly "no language model was involved in this node".
+    batches = sorted({p.batch_id for p in evidence if p.batch_id})
+    models = sorted({p.model for p in evidence if p.model})
+    if batches:
+        props |= {"batch_id": batches[0], "batch_ids": batches, "model": models[0]}
     if kind == "person":
         props["identity_keys"] = identities
     else:
@@ -207,11 +215,19 @@ def apply_merges(
     tier: int,
     dry_run: bool,
     stamp: str,
+    forbidden: Sequence[tuple[str, str]] = (),
 ) -> dict[str, Any]:
-    """SAME_AS, then mergeNodes, then the survivor's lists and the ledger rows."""
+    """SAME_AS, then mergeNodes, then the survivor's lists and the ledger rows.
+
+    With `dry_run` nothing here writes: no `SAME_AS`, no merge, no survivor properties and
+    no ledger row. The groups and the counts are still computed and reported, which is the
+    whole point — `--dry-run` is how a merge gets disagreed with before it is taken, and a
+    merge cannot be taken back. (Tier 2 does still write embeddings; they are derived data,
+    not a decision, and the tier cannot be scored without them.)
+    """
     label = LABELS[kind]
     by_id = {c.id: c for c in candidates}
-    grouped = connected_groups(pairs)
+    grouped, refused = connected_groups(pairs, forbidden)
     weight = evidence_weight(by_id) if kind == "entity" else None
     ordered = [
         [survivor(kind, g, weight), *[i for i in g if i != survivor(kind, g, weight)]]
@@ -223,6 +239,7 @@ def apply_merges(
         "identities_merged": sum(len(g) - 1 for g in grouped),
         "largest_group": max((len(g) for g in grouped), default=0),
         "large_groups": [g for g in grouped if len(g) > LARGE_GROUP],
+        "closure_refused": refused,
     }
     if dry_run or not pairs:
         stats["applied"] = False
@@ -240,8 +257,18 @@ def apply_merges(
             prior = best.get(node)
             if prior is None or (pair.tier, -pair.score) < (prior.tier, -prior.score):
                 best[node] = pair
+    in_group = {
+        tuple(sorted(g)): [p for p in pairs if p.a in g and p.b in g] for g in map(tuple, grouped)
+    }
     for group in grouped:
-        keep, props = survivor_rows(kind, group, by_id, tier=tier, stamp=stamp)
+        keep, props = survivor_rows(
+            kind,
+            group,
+            by_id,
+            tier=tier,
+            stamp=stamp,
+            evidence=in_group.get(tuple(sorted(group)), []),
+        )
         rows.append({"id": keep, "props": props})
         for member in group:
             if member == keep:
@@ -256,6 +283,8 @@ def apply_merges(
                         "rule": evidence.rule if evidence else None,
                         "score": evidence.score if evidence else None,
                         "reason": evidence.reason if evidence else None,
+                        "batch_id": evidence.batch_id if evidence else None,
+                        "model": evidence.model if evidence else None,
                     },
                 )
             )
@@ -336,6 +365,9 @@ def score_tier2(
     label = LABELS[kind]
     by_id = {c.id: c for c in candidates}
     resolve_graph.apply_resolve_schema(ctx, label, embedder.dim)
+    index_meta = resolve_graph.write_index_meta(
+        ctx, label, model=embedder.model, dim=embedder.dim, now=utc_now_iso()
+    )
     usage = resolve_embed.ensure_embeddings(
         ctx, label, candidates, embedder, evidence=vector_evidence, echo=echo
     )
@@ -351,6 +383,7 @@ def score_tier2(
         auto_extra=entity_auto_ok if kind == "entity" else None,
     )
     cut_off = None
+    grey_before_cap = len(grey)
     if kind == "entity":
         grey, cut_off = cap_band(grey, by_id, limit=band_limit)
     stats = {
@@ -358,12 +391,15 @@ def score_tier2(
         "band": [ADJUDICATE_FLOOR, AUTO_THRESHOLD],
         "min_substantive_tokens": MIN_SUBSTANTIVE_TOKENS,
         "embedding": usage,
+        "index": index_meta,
         "scored_pairs": len(scored),
         "auto": len(auto),
         "grey": len(grey),
         "filtered": filtered,
         "band_limit": band_limit if kind == "entity" else None,
         "band_cut_off_rank": cut_off,
+        "grey_before_cap": grey_before_cap,
+        "dropped_by_cap": grey_before_cap - len(grey),
         # Reported, never applied: what the adjudicator's bill would be at other floors.
         "band_table": band_table(scored, by_id),
     }
@@ -462,7 +498,7 @@ def derived_baseline(before: dict[str, Any], ledger: ResolutionLedger, kind: str
         "nodes": nodes,
         "identities": identities,
         "identities_per_node": round(identities / nodes, 4) if nodes else 0.0,
-        "duplicate_rate": round(1 - nodes / identities, 4) if identities else 0.0,
+        "folded_rate": round(1 - nodes / identities, 4) if identities else 0.0,
         "resolved": 0,
         "embedded": 0,
         "key": before.get("key"),
@@ -658,7 +694,10 @@ def run_resolve(
                 "counts": ledger.counts(),
                 "written": not dry_run,
             },
-            "warnings": warnings,
+            # Per section, not per run: `--tier 2` alone must not erase what tier 1 warned
+            # about, and a rerun that merges nothing must not erase both.
+            "warnings": sorted(set(previous.get("warnings") or []) | set(warnings)),
+            "warnings_this_run": warnings,
             "notes": NOTES,
         },
         history=this_run,

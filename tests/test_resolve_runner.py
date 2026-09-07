@@ -67,7 +67,7 @@ def test_the_baseline_is_reconstructed_from_the_ledger_and_says_so():
 
     assert baseline["nodes"] == 2187
     assert baseline["identities_per_node"] == 1.0
-    assert baseline["duplicate_rate"] == 0.0
+    assert baseline["folded_rate"] == 0.0
     assert baseline["derived"] is True
 
 

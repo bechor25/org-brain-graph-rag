@@ -35,6 +35,9 @@ RETRY_FIELD = "_resolve_retry"
 STATUS_NAME = "status.json"
 MAX_ERRORS = 50
 VERDICTS: tuple[str, ...] = ("same", "different", "unsure")
+#: What wrote a tier-3 merge. One string, not per batch: every adjudicator runs the same
+#: definition, and the batch is what tells them apart (conventions rule 3).
+MODEL = "opus:entity-adjudicator"
 #: Distinct parent documents an entity has to appear under before "the same words appear
 #: in both" stops being evidence of identity. Boilerplate — "THIS TICKET CANNOT BE WORKED
 #: ON UNTIL…", a licence header, a template sentence — is extracted once per page it is
@@ -224,6 +227,8 @@ def apply_decisions(
     verdicts: dict[str, int] = dict.fromkeys(VERDICTS, 0)
     pairs = []
     boilerplate: list[dict[str, Any]] = []
+    refused_pairs: list[tuple[str, str]] = []
+    graded: dict[str, list[tuple[str, str]]] = {"different": [], "unsure": []}
     failed: list[dict[str, Any]] = []
     accepted: list[str] = []
     stale: list[str] = []
@@ -244,6 +249,11 @@ def apply_decisions(
             verdicts[decision.verdict] += 1
             pair = sides[decision.pair_id]
             if decision.verdict != "same":
+                if decision.verdict == "different":
+                    # A reader looked at these two and said no. Closure must not overrule
+                    # that by arriving at the same merge the long way round.
+                    refused_pairs.append((pair.a.id, pair.b.id))
+                graded[decision.verdict].append((pair.a.id, pair.b.id))
                 continue
             if pair.a.id not in by_id or pair.b.id not in by_id:
                 # An earlier tier already merged one side away. Not an error: the verdict
@@ -272,6 +282,8 @@ def apply_decisions(
                     rule="adjudicator_same",
                     score=pair.similarity,
                     reason=decision.reason,
+                    batch_id=batch.batch_id,
+                    model=MODEL,
                 )
             )
 
@@ -302,14 +314,49 @@ def apply_decisions(
             tier=3,
             dry_run=dry_run,
             stamp=stamp,
+            forbidden=refused_pairs,
         )
     )
+    stats["closure_overrides"] = closure_overrides(ledger, kind, graded)
     echo(
         f"{kind} tier 3: {len(accepted)}/{len(batches)} batches, "
         f"same={verdicts['same']} different={verdicts['different']} unsure={verdicts['unsure']}"
         + (f", boilerplate refused={len(boilerplate)}" if boilerplate else "")
     )
     return stats
+
+
+def closure_overrides(
+    ledger: ResolutionLedger, kind: str, graded: dict[str, list[tuple[str, str]]]
+) -> dict[str, Any]:
+    """Pairs a reader graded `different` or `unsure` that are merged anyway.
+
+    `different` should now be zero — `groups` refuses to close across one. `unsure` is
+    expected and is not a bug: "I cannot tell" is not "not the same", so a chain of
+    confident merges is allowed to answer the question the reader could not. It is
+    reported because it is the number that says how much of the graph rests on closure
+    rather than on a judgement.
+    """
+    import itertools
+
+    components: dict[str, set[str]] = {}
+    for identity, entry in ledger.section(kind).items():
+        components.setdefault(str(entry["canonical"]), set()).update(
+            {identity, str(entry["canonical"])}
+        )
+    merged = {
+        p for members in components.values() for p in itertools.combinations(sorted(members), 2)
+    }
+    out: dict[str, Any] = {}
+    for verdict, pairs in graded.items():
+        hit = sorted({tuple(sorted(p)) for p in pairs} & merged)
+        out[verdict] = {"graded": len(pairs), "merged_anyway": len(hit), "pairs": hit[:20]}
+    out["note"] = (
+        "`different` must be 0: closure refuses to cross an edge a reader rejected. "
+        "`unsure` merged anyway is allowed — the reader did not decide, and a chain of "
+        "confident merges may. Neither undoes an existing merge; this only counts them."
+    )
+    return out
 
 
 def clean_batches(batches_dir: Path) -> None:

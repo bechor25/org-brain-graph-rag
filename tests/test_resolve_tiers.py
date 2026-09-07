@@ -268,9 +268,37 @@ def test_groups_are_connected_components():
     from brain.resolve.models import make_pair
 
     kw = dict(kind="person", block="person", tier=1, rule="email", score=1.0, reason="r")
-    assert groups(
+    found, refused = groups(
         [make_pair("a", "b", **kw), make_pair("b", "c", **kw), make_pair("x", "y", **kw)]
-    ) == [["a", "b", "c"], ["x", "y"]]
+    )
+    assert found == [["a", "b", "c"], ["x", "y"]]
+    assert refused == []
+
+
+def test_closure_will_not_cross_a_pair_a_reader_called_different():
+    """A=B and B=C, but a human already said A is not C. Merging anyway would overrule the
+    one judgement in the run that a person actually made."""
+    from brain.resolve.models import make_pair
+
+    kw = dict(kind="person", block="person", tier=3, rule="adjudicator_same", reason="r")
+    found, refused = groups(
+        [make_pair("a", "b", score=0.99, **kw), make_pair("b", "c", score=0.90, **kw)],
+        forbidden=[("a", "c")],
+    )
+    assert found == [["a", "b"]]  # the stronger pair survives, the weaker link is refused
+    assert refused == [{"pair": ["b", "c"], "would_merge": ["a", "c"], "rule": "adjudicator_same"}]
+
+
+def test_the_refusal_falls_on_the_weakest_link_not_an_arbitrary_one():
+    from brain.resolve.models import make_pair
+
+    kw = dict(kind="person", block="person", tier=3, rule="adjudicator_same", reason="r")
+    found, refused = groups(
+        [make_pair("a", "b", score=0.81, **kw), make_pair("b", "c", score=0.99, **kw)],
+        forbidden=[("a", "c")],
+    )
+    assert found == [["b", "c"]]
+    assert refused[0]["pair"] == ["a", "b"]
 
 
 def test_embed_text_is_the_name_plus_capped_evidence():

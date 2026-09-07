@@ -78,6 +78,40 @@ def apply_resolve_schema(ctx: GraphContext, label: str, dim: int) -> dict[str, A
     return {"index": INDEX_NAMES[label], "dim": dim}
 
 
+META_LABEL = "IndexMeta"
+
+
+def write_index_meta(ctx: GraphContext, label: str, *, model: str, dim: int, now: str) -> dict:
+    """Record what made the vectors in this index, beside the index itself.
+
+    `brain chunk` does the same for `chunk_embedding`, and for the same reason: a vector
+    index is unreadable without knowing which model produced it, and a query embedded by a
+    different model returns nonsense rather than an error. `live` is the count of nodes
+    actually carrying a vector right now, which is how a reader spots a half-built index.
+    """
+    live = ctx.read(
+        f"MATCH (n:{ctx.label(label)}) WHERE n.`{EMBEDDING_PROP}` IS NOT NULL "
+        "RETURN count(n) AS live"
+    )
+    props = {
+        "model": model,
+        "dim": dim,
+        "similarity": "cosine",
+        "label": label,
+        "live": int(live[0]["live"]) if live else 0,
+        "updated_at": now,
+    }
+    ctx.write(
+        f"MERGE (m:{ctx.label(META_LABEL)} {{`name`: $name}})\n"
+        "ON CREATE SET m.created_at = $now\n"
+        "SET m += $props",
+        name=INDEX_NAMES[label],
+        now=now,
+        props=props,
+    )
+    return {"name": INDEX_NAMES[label], **props}
+
+
 def drop_resolve_schema(ctx: GraphContext) -> None:
     """Tests only: remove what a scratch namespace created."""
     for name in INDEX_NAMES.values():
@@ -322,7 +356,10 @@ def census(ctx: GraphContext, label: str) -> dict[str, Any]:
         "nodes": nodes,
         "identities": identities,
         "identities_per_node": round(identities / nodes, 4) if nodes else 0.0,
-        "duplicate_rate": round(1 - nodes / identities, 4) if identities else 0.0,
+        # The share of identities that are no longer their own node. Named `folded_rate`
+        # and not `duplicate_rate` because it counts what resolution *did*, not what the
+        # corpus contains: duplicates it never found are not in it, so it is a floor.
+        "folded_rate": round(1 - nodes / identities, 4) if identities else 0.0,
         "resolved": int(row.get("resolved") or 0),
         "embedded": int(row.get("embedded") or 0),
         "key": key,

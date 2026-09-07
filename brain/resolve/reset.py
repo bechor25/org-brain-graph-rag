@@ -58,6 +58,7 @@ def run_reset(
 
     plan = {
         "kind": kind,
+        "recovery": "brain load" if kind == "person" else "brain extract merge",
         "label": label,
         "nodes_to_delete": nodes,
         "edges_to_delete": edge_count,
@@ -65,10 +66,18 @@ def run_reset(
         "ledger": str(canonical_dir / LEDGER_NAME),
         "confirmed": confirmed,
     }
+    # People are loaded from the canonical files; entities are extracted from chunks and
+    # have no canonical file at all. Naming the wrong command here would send a reader to
+    # `brain load`, watch it rebuild nothing, and leave the graph without its Entity layer.
+    recovery = (
+        f"`brain load` rebuilds them from {canonical_dir / 'persons.jsonl'}"
+        if kind == "person"
+        else "`brain extract merge` rebuilds them from the batch outputs in "
+        "data/batches/extract (they are extracted, not loaded — no canonical file holds them)"
+    )
     echo(
         f"reset {kind}: would delete {nodes} {label} nodes and {edge_count} edges into them, "
-        f"and drop {merged} ledger rows. `brain load` rebuilds them from "
-        f"{canonical_dir / (kind + 's.jsonl')}."
+        f"and drop {merged} ledger rows. {recovery}."
     )
     if not confirmed:
         echo("reset: nothing done — pass --yes to go ahead.")
@@ -95,7 +104,8 @@ def run_reset(
     remaining = int(after[0]["nodes"]) if after else 0
     if remaining:
         raise ResetError(f"{remaining} {label} nodes survived the reset; the graph is half-reset")
-    echo(f"reset {kind}: {nodes} nodes and {edge_count} edges gone. Run `brain load` next.")
+    next_step = "brain load" if kind == "person" else "brain extract merge"
+    echo(f"reset {kind}: {nodes} nodes and {edge_count} edges gone. Run `{next_step}` next.")
     return {
         **plan,
         "applied": True,
