@@ -23,9 +23,24 @@ def test_help_lists_every_pipeline_step(runner):
 
 
 def test_unimplemented_step_exits_2_and_names_plan(runner):
-    result = runner.invoke(app, ["communities"])
+    result = runner.invoke(app, ["index"])
     assert result.exit_code == NOT_IMPLEMENTED_EXIT
     assert "Plan 1" in result.output
+
+
+def test_communities_is_a_group_of_three_commands(runner):
+    """`communities` stopped being a stub in step 09: build -> batches -> merge."""
+    result = runner.invoke(app, ["communities", "--help"])
+    assert result.exit_code == 0
+    for command in ("build", "batches", "merge"):
+        assert command in result.output
+
+
+def test_communities_build_rejects_level_indices_that_are_not_numbers(runner):
+    result = runner.invoke(app, ["communities", "build", "--level-indices", "fine,coarse"])
+
+    assert result.exit_code == 2
+    assert "--level-indices" in result.output
 
 
 def test_resolve_is_a_group_of_four_commands(runner):

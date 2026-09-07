@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://org-brain.local/brain/community/schema.json",
+  "title": "community report batch output (NNN.out.json)",
+  "description": "The contract between `community-summarizer` and `brain communities merge`. One report per community in the matching `.in.json`, in the Microsoft GraphRAG community-report style: a theme title, a summary of what the cluster is about, and findings that each cite evidence. Merge applies this file in two halves: the ENVELOPE (`batch_id`, `reports` being an array, no unknown top-level field) decides whether the batch is readable at all, and each report under `$defs` is checked on its own — one bad report is rejected and counted, the rest of the batch merges. Three rules merge adds that a schema cannot state: `community_id` must be one of the communities in this batch's `.in.json`, every `evidence_chunk_ids` entry must be one of the `evidence[].chunk_id` values offered for THAT community (a chunk from another community is not evidence about this one), and every community in the input must be answered exactly once.",
+  "type": "object",
+  "required": ["batch_id", "reports"],
+  "additionalProperties": false,
+  "properties": {
+    "batch_id": {
+      "type": "string",
+      "description": "Exactly the `batch_id` of the .in.json this answers, e.g. \"shard-01/003\".",
+      "pattern": "^shard-[0-9]{2}/[0-9]{3}$"
+    },
+    "reports": {
+      "type": "array",
+      "description": "One entry per community in the input, in any order. Never a partial file: a community you cannot summarise is a `failed` entry in status.json, not a missing report.",
+      "items": { "$ref": "#/$defs/report" },
+      "minItems": 1
+    },
+    "notes": {
+      "type": "array",
+      "description": "Free-text remarks for the report — a community whose members look unrelated, evidence that contradicts itself. Never a place to hide a rule you could not follow.",
+      "items": { "type": "string", "maxLength": 500 },
+      "maxItems": 50
+    }
+  },
+  "$defs": {
+    "chunk_id": {
+      "type": "string",
+      "description": "The `chunk_id` of a chunk offered in this community's `evidence[]`, copied exactly (40 hex characters). Merge rejects the report if the id was not offered for this community.",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "report": {
+      "type": "object",
+      "required": ["community_id", "title", "summary", "findings", "rank", "rank_reason"],
+      "additionalProperties": false,
+      "properties": {
+        "community_id": {
+          "type": "string",
+          "description": "The `community_id` of a community in this batch, copied exactly, e.g. \"L0-217\".",
+          "pattern": "^L[0-9]+-[0-9]+$"
+        },
+        "title": {
+          "type": "string",
+          "description": "At most 10 words naming the THEME, not listing members. \"Consumer rebalance protocol migration\", not \"KIP-848, KAFKA-14048 and three entities\".",
+          "pattern": "\\S",
+          "minLength": 3,
+          "maxLength": 120
+        },
+        "summary": {
+          "type": "string",
+          "description": "100-250 words: what this cluster is about, the main tensions and decisions in it, and what is still open. Use only what the input gives you.",
+          "pattern": "\\S",
+          "minLength": 200,
+          "maxLength": 3000
+        },
+        "findings": {
+          "type": "array",
+          "description": "The specific claims a reader should take away, most important first. Each one cites at least one evidence chunk from THIS community.",
+          "items": { "$ref": "#/$defs/finding" },
+          "minItems": 1,
+          "maxItems": 10
+        },
+        "rank": {
+          "type": "number",
+          "description": "0-10: how much this community matters to someone running this organisation — impact, how open it still is, how broadly it reaches.",
+          "minimum": 0,
+          "maximum": 10
+        },
+        "rank_reason": {
+          "type": "string",
+          "description": "One sentence saying why that rank.",
+          "pattern": "\\S",
+          "minLength": 10,
+          "maxLength": 500
+        }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "required": ["statement", "evidence_chunk_ids"],
+      "additionalProperties": false,
+      "properties": {
+        "statement": {
+          "type": "string",
+          "description": "One claim, in your own words, that the cited chunks support.",
+          "pattern": "\\S",
+          "minLength": 10,
+          "maxLength": 600
+        },
+        "evidence_chunk_ids": {
+          "type": "array",
+          "description": "The chunks that support the statement. At least one; a finding with no evidence is rejected and counted in the report, and that count must be zero.",
+          "items": { "$ref": "#/$defs/chunk_id" },
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true
+        }
+      }
+    }
+  }
+}

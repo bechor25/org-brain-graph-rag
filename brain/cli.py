@@ -19,7 +19,6 @@ app = typer.Typer(
 NOT_IMPLEMENTED_EXIT = 2
 
 _PLANNED: dict[str, tuple[str, str]] = {
-    "communities": ("GDS Leiden communities + community reports by agents", "Plan 1"),
     "index": ("Final vector/fulltext indexes + graph stats report", "Plan 1"),
     "serve": ("Run the MCP server (stdio or HTTP)", "Plan 2"),
     "eval": ("Run the evaluation harness and generate the report", "Plan 3"),
@@ -682,6 +681,137 @@ def resolve_eval(
         )
     except (OSError, ValueError) as exc:
         typer.echo(f"resolve eval: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    raise typer.Exit(code=code)
+
+
+communities_app = typer.Typer(
+    help="GDS Leiden communities: build the partition, pack batches for the "
+    "community-summarizer agents, merge the reports they wrote [Plan 1]",
+    no_args_is_help=True,
+)
+app.add_typer(communities_app, name="communities")
+
+
+def _level_indices(value: str | None) -> list[int] | None:
+    if not value:
+        return None
+    try:
+        return [int(part) for part in value.split(",") if part.strip()]
+    except ValueError as exc:
+        raise typer.BadParameter(
+            f"{value!r} is not a comma-separated list of integers", param_hint="--level-indices"
+        ) from exc
+
+
+@communities_app.command("build")
+def communities_build(
+    levels: int = typer.Option(2, "--levels", min=1, help="How many Leiden levels to keep."),
+    level_indices: str | None = typer.Option(
+        None,
+        "--level-indices",
+        metavar="FINE,COARSE",
+        help="Name the GDS levels explicitly, fine first (e.g. `1,4`). Overrides --levels.",
+    ),
+    min_size: int = typer.Option(
+        5, "--min-size", min=1, help="Below this a community is `misc`: placed, never summarised."
+    ),
+    seed: int = typer.Option(42, "--seed", help="Leiden randomSeed; runs at concurrency 1."),
+    max_levels: int = typer.Option(10, "--max-levels", min=1, help="Leiden maxLevels."),
+    gamma: float = typer.Option(1.0, "--gamma", help="Leiden resolution; below 1 = coarser."),
+    include_synthetic: bool = typer.Option(
+        False, "--include-synthetic", help="Project synthetic=true nodes too (off by default)."
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Project, run Leiden, report, drop the projection — and write nothing to Neo4j.",
+    ),
+) -> None:
+    """Project the graph, run hierarchical Leiden, write Community + IN_COMMUNITY."""
+    from brain.community.build import BuildError
+    from brain.community.projection import ProjectionError
+    from brain.community.runner import build_from_settings
+    from brain.config import get_settings
+
+    settings = get_settings()
+    try:
+        _, code = build_from_settings(
+            settings.reports_dir,
+            levels=levels,
+            level_indices=_level_indices(level_indices),
+            min_size=min_size,
+            seed=seed,
+            max_levels=max_levels,
+            gamma=gamma,
+            include_synthetic=include_synthetic,
+            dry_run=dry_run,
+            echo=typer.echo,
+        )
+    except (BuildError, ProjectionError, OSError, ValueError) as exc:
+        typer.echo(f"communities build: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    raise typer.Exit(code=code)
+
+
+@communities_app.command("batches")
+def communities_batches(
+    shards: int = typer.Option(2, "--shards", min=1, help="How many agents work in parallel."),
+    top_members: int = typer.Option(
+        25, "--top-members", min=1, help="Members per community, by projected degree."
+    ),
+    evidence: int = typer.Option(
+        8, "--evidence", min=0, help="Evidence chunks per community, most connected first."
+    ),
+    evidence_chars: int = typer.Option(
+        600, "--evidence-chars", min=100, help="Characters kept from each evidence chunk."
+    ),
+    force: bool = typer.Option(
+        False, "--force", help="Repack even though a shard reports work against the old inputs."
+    ),
+    resummarize: bool = typer.Option(
+        False,
+        "--resummarize",
+        help="Include communities that already carry a report (by default they are skipped: "
+        "a community whose members did not change is not summarised twice).",
+    ),
+) -> None:
+    """Write data/batches/communities/<shard>/NNN.in.json for the summarizer agents."""
+    from brain.community.build import BuildError
+    from brain.community.runner import batches_from_settings
+    from brain.config import get_settings
+
+    settings = get_settings()
+    try:
+        _, code = batches_from_settings(
+            settings.batches_dir,
+            settings.reports_dir,
+            shards=shards,
+            top_members=top_members,
+            evidence=evidence,
+            evidence_chars=evidence_chars,
+            force=force,
+            resummarize=resummarize,
+            echo=typer.echo,
+        )
+    except (BuildError, OSError, ValueError) as exc:
+        typer.echo(f"communities batches: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    raise typer.Exit(code=code)
+
+
+@communities_app.command("merge")
+def communities_merge() -> None:
+    """Validate every NNN.out.json, write the reports with provenance, embed them."""
+    from brain.community.merge import MergeError
+    from brain.community.runner import merge_from_settings
+    from brain.config import get_settings
+
+    settings = get_settings()
+    try:
+        _, code = merge_from_settings(settings.batches_dir, settings.reports_dir, echo=typer.echo)
+    except (MergeError, OSError, ValueError, RuntimeError) as exc:
+        typer.echo(f"communities merge: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     raise typer.Exit(code=code)
 
