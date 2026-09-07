@@ -495,26 +495,30 @@ def _wipe_synthetic_graph(
 
 
 def _orphaned_chunks(ctx: GraphContext, *, apply: bool) -> int:
-    """Chunks whose parent record was just deleted.
+    """Chunks left parentless by the sweep and **not** themselves marked synthetic.
 
-    Two reasons this is not covered by `Chunk.synthetic`. First, the flag arrived after
-    the corpus was first chunked, so every chunk written before it is null and no
-    property-based sweep can find it. Second, `HAS_CHUNK` is the authoritative statement
-    of parentage — a chunk with no incoming one has no record behind it, and leaving it
-    would leave text in the vector index that retrieval can return and nothing can cite.
+    `HAS_CHUNK` is the authoritative statement of parentage, so a chunk with no incoming
+    one has no record behind it: leaving it would leave text in the vector index that
+    retrieval can return and nothing can cite. This is the *fallback*, though, not the
+    mechanism — the chunks of a synthetic record are deleted by the `Chunk` pass of the
+    label sweep, on their own `synthetic = true`, and appear in `nodes_by_label` where a
+    reader can see them. Anything this function finds is a chunk whose flag disagreed with
+    its parent, which is what `brain chunk --stamp-synthetic` exists to prevent.
 
     The two modes ask *different queries on purpose*. Applying, the parents are already
     gone, so "no incoming HAS_CHUNK" is the answer. On a dry run they are all still there
     and that query would return 0 — a manifest promising to delete nothing and then
     deleting thousands. So a dry run counts the chunks whose parent is *about to* go
-    instead, plus the ones already orphaned.
+    instead, plus the ones already orphaned, minus the ones the label sweep already
+    claimed — counting those twice is what made the manifest report 1,939 phantom orphans
+    against an unstamped graph.
     """
     if "Chunk" not in existing_labels(ctx):
         return 0
     label = ctx.label("Chunk")
     if not apply:
         rows = ctx.read(
-            f"MATCH (c:{label})\n"
+            f"MATCH (c:{label}) WHERE NOT coalesce(c.synthetic, false)\n"
             "OPTIONAL MATCH (p)-[:HAS_CHUNK]->(c)\n"
             "WITH c, collect(p) AS parents\n"
             "WHERE size(parents) = 0 OR all(p IN parents WHERE p.synthetic = true)\n"

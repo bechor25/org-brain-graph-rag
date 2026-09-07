@@ -215,10 +215,39 @@ def chunk(
         metavar="PATH",
         help="Read the canonical JSONL from here instead of data/canonical.",
     ),
+    stamp_synthetic: bool = typer.Option(
+        False,
+        "--stamp-synthetic",
+        help="Backfill only: re-derive Chunk.synthetic from each chunk's parent and "
+        "Entity.synthetic from its evidence chunks, then exit. Writes one boolean per "
+        "node, deletes nothing, needs no embedder, and a rerun stamps 0 (ADR-0005 §5).",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="With --stamp-synthetic: report what would be stamped and write nothing. "
+        "Exits 1 while anything is still unstamped.",
+    ),
 ) -> None:
     """Chunk texts, embed with local bge-m3, create :Chunk nodes + vector index [Plan 1]."""
     from brain.chunk.runner import chunk_from_settings, resolve_kinds
     from brain.config import get_settings
+
+    if dry_run and not stamp_synthetic:
+        raise typer.BadParameter(
+            "--dry-run only applies to --stamp-synthetic", param_hint="--dry-run"
+        )
+    if stamp_synthetic:
+        from brain.chunk.synthetic import stamp_from_settings
+
+        try:
+            _, code = stamp_from_settings(
+                get_settings().reports_dir, apply=not dry_run, echo=typer.echo
+            )
+        except (OSError, ValueError, RuntimeError) as exc:
+            typer.echo(f"chunk: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+        raise typer.Exit(code=code)
 
     try:
         selected = resolve_kinds(kinds)

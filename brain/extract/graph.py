@@ -117,6 +117,66 @@ def synthetic_chunk_ids(ctx: GraphContext, ids: Sequence[str]) -> set[str]:
     return {r["id"] for r in rows}
 
 
+#: `Entity.synthetic`, derived from the evidence chunks the entity itself names — the
+#: same rule `ExtractPlan.entity_rows` applies when merge writes the node, expressed
+#: against the graph. An entity with no surviving evidence derives `false`: conventions
+#: rule 3 makes that a provenance defect, and `brain reset --synthetic` says so rather
+#: than deleting it.
+_DERIVE_ENTITY_SYNTHETIC = (
+    "OPTIONAL MATCH (c:{chunk}) WHERE c.id IN coalesce(e.evidence_chunk_ids, [])\n"
+    "WITH e, collect(c) AS chunks\n"
+    "WITH e, (size(chunks) > 0 AND all(c IN chunks "
+    "WHERE coalesce(c.synthetic, false))) AS syn\n"
+)
+
+#: Nodes per stamping transaction. The same budget `brain reset` deletes with.
+STAMP_BATCH = 1000
+
+
+def synthetic_entity_drift(ctx: GraphContext) -> dict[str, int]:
+    """What :func:`stamp_entity_synthetic` would change, without changing anything."""
+    rows = ctx.read(
+        f"MATCH (e:{ctx.label(ENTITY_LABEL)})\n"
+        + _DERIVE_ENTITY_SYNTHETIC.format(chunk=ctx.label(CHUNK_LABEL))
+        + "RETURN count(e) AS total,\n"
+        "  count(CASE WHEN e.synthetic IS NULL THEN 1 END) AS null_flag,\n"
+        "  count(CASE WHEN e.synthetic IS NOT NULL AND e.synthetic <> syn THEN 1 END) AS wrong,\n"
+        "  count(CASE WHEN syn THEN 1 END) AS synthetic"
+    )
+    row = rows[0] if rows else {}
+    return {
+        "entities": int(row.get("total") or 0),
+        "null": int(row.get("null_flag") or 0),
+        "wrong": int(row.get("wrong") or 0),
+        "synthetic_after": int(row.get("synthetic") or 0),
+    }
+
+
+def stamp_entity_synthetic(ctx: GraphContext) -> int:
+    """Re-derive `Entity.synthetic` from the evidence chunks. Returns nodes stamped.
+
+    Needed because the flag is a *function of the chunks*: an extract merge that ran while
+    every `Chunk.synthetic` was still null wrote `false` on every entity, including the
+    ones whose only evidence is the synthetic layer. Re-running `brain extract merge` would
+    fix it too and would cost an LLM-free but full re-plan of every batch; this asks the
+    graph the same question directly, and is idempotent for the same reason
+    :func:`brain.chunk.graph.stamp_synthetic` is — only a differing flag is written.
+    """
+    cypher = (
+        f"MATCH (e:{ctx.label(ENTITY_LABEL)})\n"
+        + _DERIVE_ENTITY_SYNTHETIC.format(chunk=ctx.label(CHUNK_LABEL))
+        + "WHERE e.synthetic IS NULL OR e.synthetic <> syn\n"
+        f"WITH e, syn LIMIT {STAMP_BATCH}\n"
+        "SET e.synthetic = syn"
+    )
+    stamped = 0
+    while True:
+        written = ctx.write(cypher).get("properties_set", 0)
+        stamped += written
+        if not written:
+            return stamped
+
+
 def component_names(ctx: GraphContext) -> dict[str, str]:
     """`{casefolded name: real name}` — an extractor writes `Connect`, the node is `connect`."""
     rows = ctx.read(f"MATCH (n:{ctx.label('Component')}) RETURN n.name AS name")

@@ -211,6 +211,70 @@ def write_embeddings(ctx: GraphContext, rows: Sequence[dict[str, Any]]) -> int:
     return len(rows)
 
 
+#: How many nodes one stamping transaction touches. The same budget `brain reset` uses.
+STAMP_BATCH = 1000
+
+#: `Chunk.synthetic`, derived from the parents `HAS_CHUNK` names — the same rule
+#: `brain chunk` applies when it writes a chunk, expressed against the graph so a corpus
+#: chunked before the property existed can be brought up to date without re-chunking.
+#:
+#: A chunk with no parent derives `false`. It cannot be attributed to the synthetic layer,
+#: and guessing `true` would let `brain reset --synthetic` delete text that belongs to a
+#: reworded real page; `brain reset` already deletes it for being parentless, which is the
+#: honest reason.
+_DERIVE_SYNTHETIC = (
+    "OPTIONAL MATCH (p)-[:HAS_CHUNK]->(c)\n"
+    "WITH c, collect(p) AS parents\n"
+    "WITH c, (size(parents) > 0 AND all(p IN parents "
+    "WHERE coalesce(p.synthetic, false))) AS syn\n"
+)
+
+
+def synthetic_drift(ctx: GraphContext) -> dict[str, int]:
+    """What :func:`stamp_synthetic` would change, without changing anything.
+
+    `null` is counted apart from `wrong` because they are different failures: `null` is a
+    corpus chunked before the property existed — the case the backfill exists for — while
+    `wrong` is a chunk whose parent changed sides since, which means something re-ran.
+    """
+    rows = ctx.read(
+        f"MATCH (c:{ctx.label(LABEL)})\n" + _DERIVE_SYNTHETIC + "RETURN count(c) AS total,\n"
+        "  count(CASE WHEN c.synthetic IS NULL THEN 1 END) AS null_flag,\n"
+        "  count(CASE WHEN c.synthetic IS NOT NULL AND c.synthetic <> syn THEN 1 END) AS wrong,\n"
+        "  count(CASE WHEN syn THEN 1 END) AS synthetic"
+    )
+    row = rows[0] if rows else {}
+    return {
+        "chunks": int(row.get("total") or 0),
+        "null": int(row.get("null_flag") or 0),
+        "wrong": int(row.get("wrong") or 0),
+        "synthetic_after": int(row.get("synthetic") or 0),
+    }
+
+
+def stamp_synthetic(ctx: GraphContext) -> int:
+    """Copy `synthetic` from each chunk's parent onto the chunk. Returns nodes stamped.
+
+    Idempotent by construction: a chunk is selected only when its stored flag differs from
+    the derived one, so the second run selects nothing and reports 0. That is what makes
+    it safe against the live graph — it writes one boolean onto nodes whose value is
+    already wrong, and converges on exactly what the next `brain chunk` would write.
+    """
+    cypher = (
+        f"MATCH (c:{ctx.label(LABEL)})\n"
+        + _DERIVE_SYNTHETIC
+        + "WHERE c.synthetic IS NULL OR c.synthetic <> syn\n"
+        f"WITH c, syn LIMIT {STAMP_BATCH}\n"
+        "SET c.synthetic = syn"
+    )
+    stamped = 0
+    while True:
+        written = ctx.write(cypher).get("properties_set", 0)
+        stamped += written
+        if not written:
+            return stamped
+
+
 def mark_orphans(ctx: GraphContext, orphan_ids: Sequence[str]) -> int:
     """A chunk whose parent text changed keeps its node and gains `orphaned = true`.
 

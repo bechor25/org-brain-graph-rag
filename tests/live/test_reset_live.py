@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from brain.chunk.synthetic import stamp_synthetic
 from brain.config import Settings
 from brain.graph.client import GraphClient
 from brain.graph.context import GraphContext
@@ -143,3 +144,101 @@ def test_a_shared_container_survives_the_synthetic_reset(ctx, canonical, loaded)
         f"MATCH (n:{ctx.label('Component')} {{name: 'clients'}}) RETURN n.synthetic AS synthetic"
     )
     assert rows == [{"synthetic": False}], "a component a real record claims must survive"
+
+
+# ------------------------------------------------------- the synthetic backfill (11b)
+
+
+@pytest.fixture
+def chunked(ctx, loaded):
+    """Chunks with a null `synthetic`, hung off the mini corpus's real and synthetic items.
+
+    This is the state the live graph was in: `brain chunk` wrote these nodes before the
+    property existed, so no property-based sweep could find them and `brain reset
+    --synthetic` fell back to "the parent is gone".
+
+    Cleaned up here rather than by the `ctx` fixture, which calls `brain.graph.runner.wipe`
+    — that only knows `PRIMARY_LABELS`, so a `Chunk` left behind would arrive at the next
+    test already stamped and quietly prove nothing.
+    """
+    for label in ("Chunk", "Entity"):
+        ctx.write(f"MATCH (n:{ctx.label(label)}) DETACH DELETE n")
+    rows = ctx.read(
+        f"MATCH (w:{ctx.label('WorkItem')}) RETURN w.key AS key, w.synthetic AS synthetic "
+        "ORDER BY key"
+    )
+    for i, row in enumerate(rows):
+        ctx.write(
+            f"MATCH (w:{ctx.label('WorkItem')} {{key: $key}})\n"
+            f"MERGE (c:{ctx.label('Chunk')} {{id: $id}})\n"
+            "MERGE (w)-[:HAS_CHUNK]->(c)",
+            key=row["key"],
+            id=f"chunk-{i}",
+        )
+    # One entity per side, with the flag an extract merge against null chunks would write.
+    ctx.write(
+        f"MERGE (e:{ctx.label('Entity')} {{id: 'Feature|real'}}) "
+        "SET e.synthetic = false, e.evidence_chunk_ids = $ids",
+        ids=[f"chunk-{i}" for i, r in enumerate(rows) if not r["synthetic"]][:1],
+    )
+    ctx.write(
+        f"MERGE (e:{ctx.label('Entity')} {{id: 'Feature|syn'}}) "
+        "SET e.synthetic = false, e.evidence_chunk_ids = $ids",
+        ids=[f"chunk-{i}" for i, r in enumerate(rows) if r["synthetic"]][:1],
+    )
+    try:
+        yield {"chunks": len(rows), "synthetic": sum(1 for r in rows if r["synthetic"])}
+    finally:
+        for label in ("Chunk", "Entity"):
+            ctx.write(f"MATCH (n:{ctx.label(label)}) DETACH DELETE n")
+
+
+def nulls(ctx: GraphContext, label: str) -> int:
+    return ctx.read(f"MATCH (n:{ctx.label(label)}) WHERE n.synthetic IS NULL RETURN count(n) AS c")[
+        0
+    ]["c"]
+
+
+def test_the_backfill_leaves_no_chunk_with_a_null_flag_and_is_idempotent(ctx, chunked):
+    assert nulls(ctx, "Chunk") == chunked["chunks"], "the fixture is not reproducing the bug"
+
+    first = stamp_synthetic(ctx, echo=lambda _m: None)
+
+    assert nulls(ctx, "Chunk") == 0
+    assert first["stamped"]["chunks"] == chunked["chunks"]
+    assert first["after"]["chunks"]["synthetic_after"] == chunked["synthetic"]
+    # An entity whose only evidence is a synthetic chunk changes sides; the real one does not.
+    assert first["after"]["entities"]["synthetic_after"] == 1
+    assert (
+        ctx.read(f"MATCH (e:{ctx.label('Entity')} {{id: 'Feature|syn'}}) RETURN e.synthetic AS s")[
+            0
+        ]["s"]
+        is True
+    )
+
+    again = stamp_synthetic(ctx, echo=lambda _m: None)
+    assert again["stamped"] == {"chunks": 0, "entities": 0}
+
+
+def test_after_the_backfill_the_synthetic_reset_predicts_zero_orphans(ctx, canonical, chunked):
+    """The blocker, end to end: the chunks go by their own flag, not as unattributed orphans."""
+    before = wipe_synthetic(canonical, ctx=ctx, batches_dir=None, apply=False)
+    assert before["chunks_orphaned_by_parent"] == chunked["synthetic"]
+    assert "Chunk" not in before["nodes_by_label"]
+
+    stamp_synthetic(ctx, echo=lambda _m: None)
+
+    after = wipe_synthetic(canonical, ctx=ctx, batches_dir=None, apply=False)
+    assert after["chunks_orphaned_by_parent"] == 0
+    assert after["nodes_by_label"]["Chunk"] == chunked["synthetic"]
+
+
+def test_the_stamped_reset_deletes_exactly_the_synthetic_chunks(ctx, canonical, chunked):
+    stamp_synthetic(ctx, echo=lambda _m: None)
+    report = wipe_synthetic(canonical, ctx=ctx, batches_dir=None, apply=True)
+
+    assert report["nodes_by_label"]["Chunk"] == chunked["synthetic"]
+    assert report["chunks_orphaned_by_parent"] == 0
+    remaining = ctx.read(f"MATCH (c:{ctx.label('Chunk')}) RETURN count(c) AS c")[0]["c"]
+    assert remaining == chunked["chunks"] - chunked["synthetic"]
+    assert nulls(ctx, "Chunk") == 0

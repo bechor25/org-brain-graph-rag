@@ -64,10 +64,13 @@ class FakeGraph:
             return [{"labels": sorted({n["label"] for n in self._live()})}]
         if "all(p IN parents WHERE p.synthetic = true)" in cypher:
             # The dry-run prediction: chunks with no parent, or whose every parent is
-            # about to be deleted for being synthetic.
+            # about to be deleted for being synthetic — minus the ones the label sweep
+            # already claims on their own flag, which the query excludes up front.
             out = 0
             for i, node in enumerate(self.nodes):
                 if node.get("deleted") or node["label"] != "Chunk":
+                    continue
+                if "NOT coalesce(c.synthetic, false)" in cypher and node["props"].get("synthetic"):
                     continue
                 parents = [a for a, b, t in self.edges if b == i and t == "HAS_CHUNK"]
                 if not parents or all(

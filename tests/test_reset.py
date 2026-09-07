@@ -300,13 +300,34 @@ def test_chunks_lose_their_flagged_ones_and_then_their_orphans(data_dir, graph):
 
 def test_the_dry_run_predicts_the_orphans_instead_of_reporting_zero(data_dir, graph):
     """On a dry run the parents are all still there, so "no HAS_CHUNK" would say 0 —
-    a manifest promising nothing and then deleting thousands."""
+    a manifest promising nothing and then deleting thousands.
+
+    And it must not count a chunk twice. c2 carries `synthetic = true`, so the label sweep
+    already claims it and reports it under `nodes_by_label`; only c3 — flag null, parent
+    about to go — is an orphan. Counting c2 in both columns is what made the manifest
+    promise 1,939 orphans against a graph whose chunks were never stamped.
+    """
     report = wipe_synthetic(
         data_dir / "canonical", ctx=ctx(graph), batches_dir=data_dir / "batches", apply=False
     )
-    # c2 (synthetic parent) and c3 (synthetic parent, null flag); c1's parent is real.
-    assert report["chunks_orphaned_by_parent"] == 2
+    assert report["nodes_by_label"]["Chunk"] == 1  # c2, by its own flag
+    assert report["chunks_orphaned_by_parent"] == 1  # c3, by its vanished parent
     assert graph.labels()["Chunk"] == 3  # nothing was deleted
+
+
+def test_the_dry_run_predicts_exactly_what_the_apply_deletes(data_dir, graph):
+    """The manifest is a promise: the two chunk columns must add up the same either way."""
+    predicted = wipe_synthetic(
+        data_dir / "canonical", ctx=ctx(graph), batches_dir=data_dir / "batches", apply=False
+    )
+    applied = wipe_synthetic(
+        data_dir / "canonical", ctx=ctx(graph), batches_dir=data_dir / "batches", apply=True
+    )
+
+    def chunks(report):
+        return report["nodes_by_label"].get("Chunk", 0) + report["chunks_orphaned_by_parent"]
+
+    assert chunks(predicted) == chunks(applied) == 2
 
 
 def test_an_entity_left_without_evidence_is_reported_not_deleted(data_dir, graph):
