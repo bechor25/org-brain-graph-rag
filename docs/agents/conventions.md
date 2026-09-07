@@ -47,3 +47,4 @@ the current step brief is in `docs/planning/steps/`.
 - Run `make check` before every commit; `make smoke` before finishing a step that touches Neo4j/Ollama.
 - Idempotent steps: rerunning a step must not duplicate data (`MERGE`, hashes, checkpoints).
 - Never "fix" a failing acceptance criterion by weakening the test; report it instead.
+- Parallel agents share one working tree: stage only your own paths (`git add <paths>`), never `git add -A`, never `git stash`, never `ruff format .` outside your paths, and retry on `index.lock`. If a file you must edit carries another agent's uncommitted hunk, keep it and say so in your commit message.

@@ -26,7 +26,7 @@
 | 1 | 08 resolve | 🟡 **אנשים ✅**: 2,187→1,229 (958 מיזוגים: 268/408/282 לפי tier; 50% מהזוגות רק דרך closure) — **P=0.979 R=0.744 F1=0.846** (תקרת הband 0.851; ל-0.85 דרוש band לא-חסום, +78 batches — נדחה כאופציה). ישויות: tier 1 = 7 קישורי KIP, tier 2 = 4 auto (gate מילים-זהות אחרי dry-run שהראה 244 מיזוגי-שרשרת שגויים); **4 שופטי-ישויות רצים** על 1,200 זוגות / 68 batches | 79f75cc…21ac7e1 | 2,187→1,425 Persons (762 מיזוגים: 275 דטרמיניסטי, 487 embedding); P=0.847 R=0.263 לפני tier 3; תחום אפור 2,354 זוגות → מצמצמים ב-blocking + guard של ≥2 tokens בשם (P→0.955); embedding עם "מה עבד עליו" **הפך** את הסיגנל (true pairs 0.76→0.63) → display בלבד |
 | 1 | 09 communities | ⬜ | | |
 | 1 | 10 index + gate | ⬜ | | |
-| 1 | 11 modularity (registry, auth env, reset, guide) | ⬜ | | ADR-0005; אחרי chunk |
+| 1 | 11 modularity (registry, auth env, reset, guide) | 🟡 בוצע, בסקירה | 48cf7f8, d8ce2c0, c265047 | `sources.yaml` + registry (canon byte-identical), auth דרך env (ריק = שגיאה), `brain reset` (--synthetic מסיר בדיוק 2,442 רשומות), מדריך + שלדי ADO/Xray; `yaml_mini` במקום pyyaml |
 
 ## החלטת תהליך (2026-09-03, המשתמש)
 - מ-Plan 1 והלאה: התכנית = brief + חוזים + קריטריונים. **הסוכנים מתכננים וכותבים את הקוד**; המתכנן סוקר ומכריע. (ב-Plan 0 הקוד היה בתכנית והסוכנים הקלידו.)
