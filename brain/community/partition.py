@@ -223,6 +223,7 @@ def size_distribution(sizes: Sequence[int]) -> dict[str, Any]:
             "min": 0,
             "p50": 0,
             "p90": 0,
+            "p95": 0,
             "max": 0,
             "mean": 0.0,
             "buckets": {},
@@ -244,6 +245,7 @@ def size_distribution(sizes: Sequence[int]) -> dict[str, Any]:
         "min": ordered[0],
         "p50": pct(0.5),
         "p90": pct(0.9),
+        "p95": pct(0.95),
         "max": ordered[-1],
         "mean": round(sum(ordered) / len(ordered), 2),
         "buckets": dict(

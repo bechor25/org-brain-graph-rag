@@ -20,6 +20,10 @@ Everything is one `gds.graph.project` Cypher aggregation over a `UNION ALL`, inc
 branch that projects the nodes with no edges at all. Dropping isolated nodes would be the
 comfortable choice and the dishonest one: "how many entities are in no community" is a
 finding about the extraction, and a projection that cannot represent them cannot report it.
+
+Every edge branch collapses parallel relationships into one undirected edge — see `Branch`
+for how and for why it matters that it does not depend on the duplicate cleanup running
+elsewhere.
 """
 
 from __future__ import annotations
@@ -68,6 +72,14 @@ PROJECTED_TYPES: tuple[str, ...] = (*DIRECT_TYPES, *COLLAPSED_TYPES)
 #: costs, instead of the omission being invisible.
 NOT_PROJECTED_TYPES: tuple[str, ...] = ("INTRODUCES_RISK",)
 
+#: What the report says about parallel edges, in the report's own words.
+AGGREGATION_NOTE = (
+    "single: each branch orders its endpoints by elementId and returns DISTINCT pairs, so "
+    "duplicate relationships of one type between one pair — and reciprocal a->b/b->a pairs "
+    "— project one undirected edge of weight 1. Different relationship types between the "
+    "same pair stay separate edges: that is two reasons, not one edge counted twice."
+)
+
 GRAPH_NAME = "brain_communities"
 #: Leiden's random seed only makes a run reproducible at concurrency 1 (GDS docs).
 CONCURRENCY = 1
@@ -108,27 +120,56 @@ class Branch:
     The projection query and the per-type count query are generated from the same object,
     so "how many `MENTIONS_PARENT` edges the report claims" and "how many the projection
     got" cannot drift apart the way two hand-written queries would.
+
+    Every edge arm emits its endpoints **ordered by `elementId` and then `DISTINCT`**, so
+    one pair of nodes contributes exactly one row per relationship type. GDS keeps every
+    row it is handed, so a second row for the same pair is a second parallel relationship
+    and twice the weight Leiden sees on that edge. Two things produce those rows here:
+
+    * duplicate relationships of one type between one pair — extract merge left ~98 behind
+      after resolve merged their endpoints, and the resolve step is deleting them while
+      this runs, so the projection must not depend on when that finishes;
+    * reciprocal pairs, where `a→b` and `b→a` both exist. On the live graph that is 470
+      `REFERENCES` pairs and one `LINKS_TO` pair — invisible without the ordering, because
+      each direction is a perfectly valid distinct row.
+
+    Different relationship *types* between the same pair are still separate edges. That is
+    not a duplicate: a curated `DEPENDS_ON` and a mention in the same document are two
+    independent reasons to believe those two things belong together.
     """
 
     name: str
     match: str
     source: str
     target: str | None = None
-    distinct: bool = True
 
-    def project_return(self) -> str:
-        keyword = "RETURN DISTINCT " if self.distinct and self.target else "RETURN "
-        target = self.target or "null"
-        rel = f"'{self.name}'" if self.target else "null"
-        return f"{keyword}{self.source} AS source, {target} AS target, {rel} AS relType"
+    def canonical_pair(self) -> str:
+        """`WITH` that puts the pair in `elementId` order — direction is not a community."""
+        a, b = self.source, self.target
+        return (
+            f"WITH CASE WHEN elementId({a}) <= elementId({b}) THEN {a} ELSE {b} END AS source,\n"
+            f"     CASE WHEN elementId({a}) <= elementId({b}) THEN {b} ELSE {a} END AS target"
+        )
 
     def cypher(self) -> str:
-        return f"{self.match}\n{self.project_return()}"
+        if self.target is None:
+            return f"{self.match}\nRETURN {self.source} AS source, null AS target, null AS relType"
+        return (
+            f"{self.match}\n{self.canonical_pair()}\n"
+            f"RETURN DISTINCT source, target, '{self.name}' AS relType"
+        )
 
     def count_cypher(self) -> str:
-        pair = self.source if self.target is None else f"[{self.source}, {self.target}]"
-        counted = f"DISTINCT {pair}" if self.distinct else pair
-        return f"{self.match}\nRETURN count({counted}) AS n"
+        """Rows this branch hands the projection — one per canonical pair."""
+        if self.target is None:
+            return f"{self.match}\nRETURN count(DISTINCT {self.source}) AS n"
+        return (
+            f"{self.match}\n{self.canonical_pair()}\nRETURN count(DISTINCT [source, target]) AS n"
+        )
+
+    def raw_count_cypher(self) -> str:
+        """Relationships matched before the collapse. The difference is the receipt."""
+        return f"{self.match}\nRETURN count(*) AS n"
 
 
 def node_branch(ctx: GraphContext, *, include_synthetic: bool) -> Branch:
@@ -272,6 +313,7 @@ def project(ctx: GraphContext, *, include_synthetic: bool = False) -> dict[str, 
         "types": list(PROJECTED_TYPES),
         "types_not_projected": list(NOT_PROJECTED_TYPES),
         "undirected": True,
+        "parallel_relationship_aggregation": AGGREGATION_NOTE,
     }
 
 
@@ -280,6 +322,21 @@ def branch_counts(ctx: GraphContext, *, include_synthetic: bool = False) -> dict
     out: dict[str, int] = {}
     for branch in branches(ctx, include_synthetic=include_synthetic):
         rows = ctx.read(branch.count_cypher())
+        out[branch.name] = int(rows[0]["n"]) if rows else 0
+    return out
+
+
+def raw_branch_counts(ctx: GraphContext, *, include_synthetic: bool = False) -> dict[str, int]:
+    """Relationships each branch matched *before* the pair collapse.
+
+    Reported beside `branch_counts` so the number of duplicate and reciprocal edges the
+    projection aggregated away is a figure in the report, not a claim in a docstring.
+    """
+    out: dict[str, int] = {}
+    for branch in branches(ctx, include_synthetic=include_synthetic):
+        if branch.target is None:
+            continue
+        rows = ctx.read(branch.raw_count_cypher())
         out[branch.name] = int(rows[0]["n"]) if rows else 0
     return out
 

@@ -209,6 +209,40 @@ def test_the_projection_holds_only_the_four_labels_and_the_collapsed_edges(loade
     assert report["projection"]["nodes"] == expected
 
 
+def test_a_pair_of_nodes_carries_one_edge_per_type_however_many_relationships_join_them(
+    loaded, ctx, workdir
+):
+    """GDS keeps every row it is given, so a duplicate row is twice the weight."""
+    ctx.write_rows(
+        f"UNWIND $rows AS row\nMATCH (a:{ctx.label('Entity')} {{id: row.src}})\n"
+        f"MATCH (b:{ctx.label('Entity')} {{id: row.dst}})\n"
+        "CREATE (a)-[:MOTIVATED_BY]->(b)",
+        # the same edge again, and once more the other way round: the two shapes the
+        # projection has to aggregate (extract merge leaves both behind)
+        [
+            {"src": ENTITIES[0][0], "dst": ENTITIES[1][0]},
+            {"src": ENTITIES[1][0], "dst": ENTITIES[0][0]},
+        ],
+    )
+    try:
+        report = build(ctx, workdir, dry_run=True)
+        p = report["projection"]
+        assert p["rows_per_branch"]["MOTIVATED_BY"] == 1
+        assert p["relationships_per_branch"]["MOTIVATED_BY"] == 3
+        assert p["parallel_relationships_collapsed"]["MOTIVATED_BY"] == 2
+        # every branch's rows, and not one relationship more, reached the in-memory graph
+        assert p["edges"] == sum(n for name, n in p["rows_per_branch"].items() if name != "nodes")
+    finally:
+        # back to the one edge the fixture wrote, so the rest of the module sees it
+        ctx.write(f"MATCH (:{ctx.label('Entity')})-[r:MOTIVATED_BY]->() DELETE r")
+        ctx.write_rows(
+            f"UNWIND $rows AS row\nMATCH (a:{ctx.label('Entity')} {{id: row.src}})\n"
+            f"MATCH (b:{ctx.label('Entity')} {{id: row.dst}})\n"
+            "MERGE (a)-[:MOTIVATED_BY]->(b)",
+            [{"src": ENTITIES[0][0], "dst": ENTITIES[1][0]}],
+        )
+
+
 # ------------------------------------------------------------------------------ the build
 
 

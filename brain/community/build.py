@@ -173,6 +173,7 @@ def run_build(
     try:
         projected = proj.project(ctx, include_synthetic=include_synthetic)
         branch = proj.branch_counts(ctx, include_synthetic=include_synthetic)
+        raw_branch = proj.raw_branch_counts(ctx, include_synthetic=include_synthetic)
         unprojected = proj.unprojected_edge_counts(ctx)
         stats = proj.leiden_stats(ctx, config)
         rows, stream_ms = proj.leiden_stream(ctx, config)
@@ -220,6 +221,7 @@ def run_build(
         per_level=per_level,
         projected=projected,
         branch=branch,
+        raw_branch=raw_branch,
         unprojected=unprojected,
         stats=stats,
         stream_ms=stream_ms,
@@ -252,6 +254,7 @@ def build_report(
     per_level: dict[str, Any],
     projected: dict[str, Any],
     branch: dict[str, int],
+    raw_branch: dict[str, int],
     unprojected: dict[str, int],
     stats: dict[str, Any],
     stream_ms: int,
@@ -271,6 +274,11 @@ def build_report(
     duration_ms: int,
 ) -> dict[str, Any]:
     summarized = [c for c in communities if c.summarized]
+    collapsed = {
+        name: raw_branch[name] - branch.get(name, 0)
+        for name in sorted(raw_branch)
+        if raw_branch[name] - branch.get(name, 0)
+    }
     return {
         "step": "communities.build",
         "generated_at": built_at,
@@ -280,6 +288,11 @@ def build_report(
         "projection": {
             **projected,
             "rows_per_branch": branch,
+            "relationships_per_branch": raw_branch,
+            # raw relationships minus canonical pairs: the duplicate and reciprocal edges
+            # that would otherwise have weighted one edge twice (see projection.Branch)
+            "parallel_relationships_collapsed": collapsed,
+            "parallel_relationships_collapsed_total": sum(collapsed.values()),
             "edges_left_out_by_type": unprojected,
             "collapse": {
                 proj.MENTIONS_PARENT: "(parent)-[:HAS_CHUNK]->(:Chunk)-[:MENTIONS]->(thing)",
@@ -347,12 +360,17 @@ def summarize(report: dict[str, Any]) -> str:
         f"leiden: {le['ran_levels']} levels, modularity {le['modularity']}, "
         f"{le['compute_ms']} ms compute; kept gds levels {le['gds_levels_used']}",
     ]
+    if p["parallel_relationships_collapsed_total"]:
+        lines.append(
+            f"aggregated {p['parallel_relationships_collapsed_total']} parallel/reciprocal "
+            f"relationships into single edges: {p['parallel_relationships_collapsed']}"
+        )
     for level, data in sorted(report["levels"].items()):
         s = data["sizes"]
         lines.append(
             f"  level {level} ({data['name']}): {data['communities']} communities, "
             f"{data['summarized']} summarizable, {data['misc']} misc; sizes "
-            f"min {s['min']} / p50 {s['p50']} / p90 {s['p90']} / max {s['max']}"
+            f"min {s['min']} / p50 {s['p50']} / p90 {s['p90']} / p95 {s['p95']} / max {s['max']}"
         )
     lines.append(
         f"total: {t['communities']} communities, {t['summarized']} to summarise "

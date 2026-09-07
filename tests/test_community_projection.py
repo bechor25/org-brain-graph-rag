@@ -58,7 +58,32 @@ def test_chunk_person_and_commit_are_not_projected_nodes():
         assert f"n:`{label}`" not in text
     # Chunk and Commit appear only inside a collapse, never as a projected endpoint
     assert "(c:`Chunk`)" in text and "(x:`Commit`)" in text
-    assert "p AS source, t AS target" in text
+    # the collapse projects the chunk's *parent* against the entity, never the chunk
+    assert "elementId(p) <= elementId(t)" in text
+
+
+def test_an_edge_is_projected_once_however_many_relationships_carry_it():
+    """Parallel duplicates and reciprocal pairs must not weight one edge twice."""
+    text = proj.direct_branch(ctx(), "REFERENCES", include_synthetic=False).cypher()
+    assert "CASE WHEN elementId(a) <= elementId(b) THEN a ELSE b END AS source" in text
+    assert "CASE WHEN elementId(a) <= elementId(b) THEN b ELSE a END AS target" in text
+    assert text.rstrip().endswith("RETURN DISTINCT source, target, 'REFERENCES' AS relType")
+
+
+def test_every_edge_branch_canonicalises_its_pair_and_not_only_the_direct_ones():
+    for branch in proj.branches(ctx(), include_synthetic=False):
+        if branch.target is None:
+            continue
+        text = branch.cypher()
+        assert f"elementId({branch.source}) <= elementId({branch.target})" in text, branch.name
+        assert "RETURN DISTINCT source, target" in text, branch.name
+
+
+def test_the_raw_receipt_counts_relationships_and_the_projected_one_counts_pairs():
+    """The report subtracts the two to say how many duplicates the projection collapsed."""
+    branch = proj.direct_branch(ctx(), "DECIDES", include_synthetic=False)
+    assert branch.raw_count_cypher().endswith("RETURN count(*) AS n")
+    assert branch.count_cypher().endswith("RETURN count(DISTINCT [source, target]) AS n")
 
 
 def test_the_mentions_collapse_goes_through_the_chunks_parent():
@@ -72,7 +97,9 @@ def test_the_mentions_collapse_goes_through_the_chunks_parent():
 def test_the_kip_collapse_goes_through_the_commit_that_resolved_the_item():
     text = proj.delivers_kip_branch(ctx(), include_synthetic=False).cypher()
     assert "<-[:RESOLVES]-(x:`Commit`)-[:IMPLEMENTS_KIP]->" in text
-    assert "w AS source, d AS target" in text
+    # 6,107 commits between the two: many produce the same work-item/document pair, and
+    # DISTINCT over the canonical pair is what keeps that one edge rather than dozens
+    assert "elementId(w) <= elementId(d)" in text
 
 
 def test_synthetic_nodes_are_excluded_by_default_on_both_endpoints():
@@ -111,7 +138,7 @@ def test_a_count_query_is_generated_from_the_same_branch_as_the_projection():
     branch = proj.direct_branch(ctx(), "LINKS_TO", include_synthetic=False)
     count = branch.count_cypher()
     assert count.startswith(branch.match)
-    assert count.endswith("RETURN count(DISTINCT [a, b]) AS n")
+    assert count.endswith("RETURN count(DISTINCT [source, target]) AS n")
     nodes = proj.node_branch(ctx(), include_synthetic=False).count_cypher()
     assert nodes.endswith("RETURN count(DISTINCT n) AS n")
 

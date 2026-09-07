@@ -163,6 +163,12 @@ def test_size_distribution_buckets_and_percentiles():
     assert d["buckets"] == {"1-1": 2, "2-4": 1, "5-9": 1, "25-49": 1, "250+": 1}
 
 
+def test_the_percentiles_a_report_quotes_are_all_there_and_ordered():
+    d = size_distribution(list(range(1, 101)))
+    assert d["p50"] <= d["p90"] <= d["p95"] <= d["max"]
+    assert (d["p50"], d["p90"], d["p95"]) == (51, 90, 95)
+
+
 def test_an_empty_distribution_is_zeroes_not_a_crash():
     assert size_distribution([])["communities"] == 0
 
