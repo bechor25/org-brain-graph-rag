@@ -52,7 +52,7 @@ make smoke    # doctor + בדיקות live מול Neo4j ו-Ollama
 כל המקורות יושבים ב-`sources.yaml` בשורש — כתובת, שאילתה (JQL/CQL/WIQL/חלון commits), `project_keys` ושם משתנה הסביבה של הטוקן. **אין כתובת, שאילתה או מפתח פרויקט בקוד.**
 
 ```bash
-uv run brain harvest --source <name>   # רק המקור החדש
+uv run brain harvest --source <id>   # רק המקור החדש
 uv run brain canon && uv run brain load
 ```
 
