@@ -8,6 +8,7 @@ the server; the server is an adapter.
 
 from brain.retrieve.context import RetrieveContext
 from brain.retrieve.explain import explain_edge
+from brain.retrieve.global_search import global_search
 from brain.retrieve.graph_vector import search_with_context
 from brain.retrieve.hybrid import search_chunks
 from brain.retrieve.impact import impact
@@ -28,6 +29,7 @@ __all__ = [
     "assignees_over_time",
     "changes_between",
     "explain_edge",
+    "global_search",
     "impact",
     "local_search",
     "lookup",

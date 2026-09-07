@@ -18,9 +18,28 @@ the reasons hang off the `Feature`, not off the decision. Walking only the "prop
 rationale edges would answer 19% of the rationale questions. Walking `MENTIONS` too brings
 back the chunk that says why, with its quote.
 
-Ranking is degree × edge weight, where *degree is inside the anchored neighbourhood*, not
-in the graph. Global degree would rank `Technology|kafka` first for every question ever
-asked; local degree ranks the node the anchors actually agree on.
+Ranking is degree × edge weight × (1 + cos(question, entity)), where *degree is inside the
+anchored neighbourhood*, not in the graph. Global degree would rank `Technology|kafka` first
+for every question ever asked; local degree ranks the node the anchors actually agree on.
+
+The third factor arrived after a measurement (planner decision, Plan 2 Task 3): with only
+the first two, these two questions returned byte-identical lists —
+
+    "Why was the design in KIP-848 chosen?"
+    "Which commits fixed the bug behind KIP-848 rollout issues?"
+
+— because the key picked the neighbourhood and nothing after that read the question. A
+retrieval whose output does not depend on what was asked cannot be ranked, evaluated or
+trusted. So the *subgraph* is still chosen by the anchor and the edges, which is what keeps
+the Hebrew and English forms of one question on the same nodes, and the question's embedding
+decides only the order inside it. The cosine spread over real `bge-m3` vectors is roughly
+[1.3, 1.7], much narrower than the edge-weight spread ([0.35, 1.0] per hop and summed over
+degree), so this breaks ties between comparable nodes rather than overturning the graph.
+
+`vector.similarity.cosine` is computed *in the database*, not by shipping 1,024 floats per
+neighbour back to Python. A node with no embedding — every `WorkItem`, `Document`, `Person`
+and `Component` — gets the neutral factor 1.0 rather than a zero, because "no vector" is an
+absence of evidence, not evidence of irrelevance.
 """
 
 from __future__ import annotations
@@ -33,7 +52,7 @@ from brain.retrieve.envelope import Timer, finish
 from brain.retrieve.evidence import as_provenance, own_chunks
 from brain.retrieve.keys import find_keys
 from brain.retrieve.nodes import key_case, label_case, to_item
-from brain.retrieve.types import Item, Provenance, Result
+from brain.retrieve.types import EmbedModelMismatch, Item, Provenance, Result
 from brain.retrieve.vector import search_entity_vectors
 
 #: The rationale/impact edges (spec §4.1 S3) and what each is worth in the ranking.
@@ -58,6 +77,13 @@ PER_ANCHOR = 250
 ENTITY_ANCHORS = 6
 #: Labels a local-search result may be.
 RESULT_LABELS = ("Entity", "WorkItem", "Document", "Component", "Person")
+#: What a node with no embedding is worth in the semantic factor — the neighbourhood's own
+#: average, which is what `1.0` means once the factor is re-centred (see `semantic_factor`).
+NEUTRAL_FACTOR = 1.0
+#: Neo4j's normalised cosine for two orthogonal vectors, i.e. the plain `cos = 0` zero point.
+NEUTRAL_SIMILARITY = 0.5
+#: A question may demote a node the graph found, but not erase it.
+MIN_FACTOR = 0.05
 
 
 def _anchor_from_keys(ctx: RetrieveContext, question: str) -> tuple[list[dict[str, Any]], str]:
@@ -80,10 +106,30 @@ def _anchor_from_keys(ctx: RetrieveContext, question: str) -> tuple[list[dict[st
     return rows, cypher
 
 
+def _question_vector(ctx: RetrieveContext, question: str) -> list[float] | None:
+    """The question's embedding, or `None` when the embedder is unreachable.
+
+    A model *mismatch* stays fatal — cosine over two unrelated spaces is not a worse ranking,
+    it is a meaningless one — but Ollama being down should cost S3 its ordering, not its
+    answer: the anchor and the edges still know what the neighbourhood is. Which happened is
+    visible per item as `props.semantic == 1.0` on every result.
+    """
+    try:
+        return ctx.embed_query(question, ENTITY_INDEX)
+    except EmbedModelMismatch:
+        raise
+    except Exception:  # noqa: BLE001 - a dead embedder degrades the rank, not the answer
+        return None
+
+
 def _anchor_from_vector(
-    ctx: RetrieveContext, question: str, kinds: list[str] | None, k: int
+    ctx: RetrieveContext,
+    question: str,
+    kinds: list[str] | None,
+    k: int,
+    vector: list[float] | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
-    vector = ctx.embed_query(question, ENTITY_INDEX)
+    vector = vector if vector is not None else ctx.embed_query(question, ENTITY_INDEX)
     rows = search_entity_vectors(ctx, vector, k=k, kinds=kinds)
     out = [
         {
@@ -95,6 +141,9 @@ def _anchor_from_vector(
             "weak": r["node"].get("weak"),
             "synthetic": r["node"].get("synthetic"),
             "score": float(r["score"]),
+            # The index already measured this anchor against the question; reusing it is the
+            # same number `vector.similarity.cosine` would return for it.
+            "sim": float(r["score"]),
         }
         for r in rows
     ]
@@ -102,7 +151,11 @@ def _anchor_from_vector(
 
 
 def _expand(
-    ctx: RetrieveContext, anchors: list[str], depth: int, kinds: list[str] | None
+    ctx: RetrieveContext,
+    anchors: list[str],
+    depth: int,
+    kinds: list[str] | None,
+    vector: list[float] | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
     if not anchors:
         return [], ""
@@ -110,6 +163,12 @@ def _expand(
     rels = "|".join(f"`{r}`" for r in RELATION_WEIGHTS)
     result_pred = " OR ".join(f"n:{ctx.label(x)}" for x in RESULT_LABELS)
     kind_pred = f" AND (NOT n:{ctx.label('Entity')} OR n.kind IN $kinds)" if kinds else ""
+    # Cosine in the database. The alternative — returning `n.embedding` and comparing in
+    # Python — ships 1,024 floats for each of up to 250 neighbours per anchor to rank them.
+    similarity = (
+        "CASE WHEN $vector IS NOT NULL AND n.`embedding` IS NOT NULL\n"
+        "    THEN vector.similarity.cosine(n.`embedding`, $vector) END AS sim"
+    )
     cypher = (
         f"MATCH (a) WHERE {key_case('a', ctx.prefix)} IN $anchors\n"
         f"  AND ({' OR '.join(f'a:{ctx.label(x)}' for x in RESULT_LABELS)})\n"
@@ -125,9 +184,10 @@ def _expand(
         "  n.type AS type, n.description AS description, n.weak AS weak,\n"
         "  coalesce(n.synthetic, false) AS synthetic,\n"
         "  coalesce(n.evidence_chunk_ids, []) AS evidence_chunk_ids,\n"
-        "  n.batch_id AS batch_id, n.model AS model"
+        "  n.batch_id AS batch_id, n.model AS model,\n"
+        f"  {similarity}"
     )
-    rows = ctx.read(cypher, anchors=anchors, per_anchor=PER_ANCHOR, kinds=kinds)
+    rows = ctx.read(cypher, anchors=anchors, per_anchor=PER_ANCHOR, kinds=kinds, vector=vector)
     return rows, cypher
 
 
@@ -161,6 +221,78 @@ def _path_weight(path: list[str]) -> float:
     return weight
 
 
+def semantic_factor(similarity: float | None, center: float = NEUTRAL_SIMILARITY) -> float:
+    """`1 + cos(question, node)`, re-centred on this neighbourhood's own average cosine.
+
+    `vector.similarity.cosine` returns `(1 + cos) / 2` in `[0, 1]` — verified against
+    2026.06.0, which answers 1.0, 0.5 and 0.0 for identical, orthogonal and opposite vectors
+    — so `1 + cos` is `2 × similarity`, and `center` is where that product is worth exactly
+    1.0. At the default `center = 0.5` this *is* the plan's formula: `1 + cos`, neutral at
+    `cos = 0`.
+
+    `rank_neighbourhood` passes the neighbourhood's mean instead, and that is a deliberate
+    deviation with two measurements behind it:
+
+    * `bge-m3` cosines live in a narrow band well above zero (0.45–0.60 raw for a related
+      pair here), so the literal formula multiplies every embedded node by ~1.5 and every
+      node that *has* no embedding — each `WorkItem`, `Document`, `Person`, `Component` — by
+      exactly 1.0. That is not a ranking signal, it is a 50% bonus for being an `Entity`,
+      and it pushed the anchor document itself out of its own top-5.
+    * A Hebrew question sits systematically lower on that band than its English twin, so the
+      absolute level moves with the language while the *order* barely does. Keeping the
+      literal zero point broke the cross-lingual criterion S3 exists to satisfy (identical
+      anchors for all four translated pairs); re-centring restores it, because a constant
+      subtracted from every node of one question changes no comparison inside it.
+
+    The floor keeps a distant node demoted rather than annihilated: the graph found it
+    through a real edge, and the question is not entitled to overrule that entirely.
+    """
+    if similarity is None:
+        return NEUTRAL_FACTOR
+    return max(MIN_FACTOR, 1.0 + 2.0 * (float(similarity) - center))
+
+
+def rank_neighbourhood(
+    anchors: list[dict[str, Any]], rows: list[dict[str, Any]], k: int
+) -> list[tuple[str, dict[str, Any]]]:
+    """degree × edge weight × (1 + cos), highest first. Pure: the graph is already read.
+
+    Both halves of the product are kept on the entry (`degree_score`, `semantic`) because a
+    ranking whose numbers cannot be read back is a ranking nobody can debug — and Plan 3 has
+    to explain, per question type, *why* one strategy beat another.
+    """
+    scored: dict[str, dict[str, Any]] = {}
+    anchor_keys = {a["key"] for a in anchors}
+    for anchor in anchors:
+        scored[anchor["key"]] = {
+            "row": anchor,
+            "degree_score": 1.0 + float(anchor.get("score") or 0.0),
+            "paths": [],
+        }
+    for row in rows:
+        key = row["key"]
+        if key is None or key in anchor_keys:
+            continue
+        entry = scored.setdefault(key, {"row": row, "degree_score": 0.0, "paths": []})
+        entry["degree_score"] += _path_weight(row["path"])
+        entry["paths"].append({"anchor": row["anchor"], "path": row["path"], "hops": row["hops"]})
+
+    center = _center([e["row"].get("sim") for e in scored.values()])
+    for entry in scored.values():
+        entry["semantic"] = semantic_factor(entry["row"].get("sim"), center)
+        entry["score"] = entry["degree_score"] * entry["semantic"]
+        entry["path_count"] = len(entry["paths"])
+    # The key breaks ties, so two runs over the same graph return the same order even though
+    # Neo4j promises no row order.
+    return sorted(scored.items(), key=lambda kv: (-kv[1]["score"], kv[0]))[:k]
+
+
+def _center(similarities: list[float | None]) -> float:
+    """Where `1 + cos` is worth 1.0: this neighbourhood's mean cosine, or the plain zero."""
+    values = [float(s) for s in similarities if s is not None]
+    return sum(values) / len(values) if values else NEUTRAL_SIMILARITY
+
+
 def local_search(
     ctx: RetrieveContext,
     query: str,
@@ -181,9 +313,13 @@ def local_search(
     anchored_by = "keys"
     if cypher:
         cyphers.append(cypher)
+    # The question is embedded even when the anchor was free, because the third ranking
+    # factor needs it. A key-anchored search used to skip Ollama entirely; the round trip is
+    # ~70 ms and it is what makes two questions about one key different answers.
+    vector = _question_vector(ctx, query)
     if not anchors:
         anchored_by = "entity-vector"
-        anchors, cypher = _anchor_from_vector(ctx, query, kinds, ENTITY_ANCHORS)
+        anchors, cypher = _anchor_from_vector(ctx, query, kinds, ENTITY_ANCHORS, vector)
         if cypher:
             cyphers.append(cypher)
     if not anchors:
@@ -200,22 +336,11 @@ def local_search(
         )
 
     anchor_keys = [a["key"] for a in anchors]
-    rows, cypher = _expand(ctx, anchor_keys, depth, kinds)
+    rows, cypher = _expand(ctx, anchor_keys, depth, kinds, vector)
     if cypher:
         cyphers.append(cypher)
 
-    scored: dict[str, dict[str, Any]] = {}
-    for a in anchors:
-        scored[a["key"]] = {"row": a, "score": 1.0 + float(a.get("score") or 0.0), "paths": []}
-    for row in rows:
-        key = row["key"]
-        if key is None or key in anchor_keys:
-            continue
-        entry = scored.setdefault(key, {"row": row, "score": 0.0, "paths": []})
-        entry["score"] += _path_weight(row["path"])
-        entry["paths"].append({"anchor": row["anchor"], "path": row["path"], "hops": row["hops"]})
-
-    top = sorted(scored.items(), key=lambda kv: -kv[1]["score"])[:k]
+    top = rank_neighbourhood(anchors, rows, k)
     evidence, cypher = _evidence(ctx, [key for key, _ in top])
     if cypher:
         cyphers.append(cypher)
@@ -234,6 +359,10 @@ def local_search(
         else:
             item.props["anchor"] = True
         item.props["anchored_by"] = anchored_by
+        # The two factors behind `score`, so a reader (and Plan 3) can see whether this item
+        # is here because the graph agrees or because the question does.
+        item.props["degree_score"] = round(entry["degree_score"], 4)
+        item.props["semantic"] = round(entry["semantic"], 4)
         for ev in evidence.get(key, []):
             item.provenance.append(
                 Provenance(

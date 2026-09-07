@@ -6,8 +6,8 @@ in the same words. Plan decision 1: no dispatch logic that exists only in the se
 
 Two things this file does that `route()` deliberately does not:
 
-* **Fallback.** The router is faithful to spec §4.2 and will suggest S4 (Text2Cypher) and
-  S5 (global) for aggregation and thematic questions. Neither exists until Tasks 2 and 3.
+* **Fallback.** The router is faithful to spec §4.2 and will suggest S4 (Text2Cypher) for an
+  aggregation question, which needs a Cypher author rather than a retrieval.
   Rather than weaken the router so today's questions land on today's strategies — which
   would make the router a report of what is implemented instead of what is right — an
   unimplemented suggestion is executed by its nearest neighbour and *both* are recorded.
@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from brain.retrieve.context import RetrieveContext
+from brain.retrieve.global_search import global_search
 from brain.retrieve.graph_vector import search_with_context
 from brain.retrieve.hybrid import search_chunks
 from brain.retrieve.impact import impact
@@ -34,13 +35,14 @@ from brain.retrieve.temporal import assignees_over_time, changes_between, status
 from brain.retrieve.types import Result, RetrieveError
 
 #: What runs when the router suggests a strategy this plan step has not built yet.
-#: S5 (thematic) falls back to the hybrid baseline. S4 (aggregation) falls back to
-#: `impact` when the question names a node the graph holds and to S3 otherwise — because
-#: the aggregation questions in this corpus are about a component or a KIP, and S3's
-#: relation set (`MENTIONS/DECIDES/…`) does not include `IN_COMPONENT`, so a component
-#: anchor walks nowhere. Every fallback is recorded in `route.fallback_from`, never silent.
-FALLBACKS: dict[str, str] = {"s4": "s3", "s5": "s1"}
-IMPLEMENTED: tuple[str, ...] = ("s1", "s2", "s3", "s6", "lookup", "impact")
+#: S4 (aggregation) falls back to `impact` when the question names a node the graph holds
+#: and to S3 otherwise — because the aggregation questions in this corpus are about a
+#: component or a KIP, and S3's relation set (`MENTIONS/DECIDES/…`) does not include
+#: `IN_COMPONENT`, so a component anchor walks nowhere. Every fallback is recorded in
+#: `route.fallback_from`, never silent. S5 was here until Task 3 built `global_search`; a
+#: thematic question now reaches the community reports instead of the hybrid baseline.
+FALLBACKS: dict[str, str] = {"s4": "s3"}
+IMPLEMENTED: tuple[str, ...] = ("s1", "s2", "s3", "s5", "s6", "lookup", "impact")
 
 
 def ask(
@@ -73,6 +75,10 @@ def ask(
         return search_with_context(ctx, question, k=min(k, 8), hops=hops, **common)
     if executed == "s3":
         return local_search(ctx, question, depth=depth, k=k, **common)
+    if executed == "s5":
+        # Five reports is what a reduce can hold inside the 4k ceiling; `--k 10` on a
+        # thematic question asks for more themes than the budget can carry.
+        return global_search(ctx, question, k=min(k, 5), **common)
     if executed == "lookup":
         keys = find_keys(question).all_keys()
         if not keys:
