@@ -24,6 +24,7 @@ from typing import Any
 import httpx
 
 from brain.graph.context import GraphContext
+from brain.index import schema as index_schema
 from brain.index.schema import strip_prefix
 
 #: Labels `brain load` writes, counted once each.
@@ -63,6 +64,52 @@ SYNTHETIC_FLAGGED: tuple[str, ...] = (
     "File",
     "Chunk",
     "Entity",
+)
+
+#: The closed node-label set of spec §2.4, verbatim. Conventions rule 4 makes this a
+#: contract, not a suggestion: a label outside it is a kind nobody agreed to, and the
+#: census names it instead of printing it as one more ordinary count.
+SPEC_NODE_LABELS: frozenset[str] = frozenset(
+    {
+        "WorkItem",
+        "Test",
+        "TestExecution",
+        "TestRun",
+        "Document",
+        "Person",
+        "Component",
+        "Version",
+        "Sprint",
+        "Commit",
+        "PullRequest",
+        "File",
+        "Chunk",
+        "IndexMeta",
+        "StatusChange",
+        # "צמתים מובנים נוספים: PullRequest, File, Space" — §2.4, the edges paragraph.
+        "Space",
+        # LLM-derived (§2.4) and GDS-derived (§2.4 "קהילות").
+        "Entity",
+        "Community",
+    }
+)
+
+#: Second labels a `WorkItem` may legitimately carry. `WorkItem{type: Issue|Story|Bug|Epic|
+#: Task}` from §2.4, the Xray types beside it, and `TestPlan`/`TestSet`, which §2.4 states
+#: explicitly are WorkItems ("TestPlan/TestSet הם WorkItems, מפתחות XP/XS").
+SPEC_WORKITEM_TYPES: frozenset[str] = frozenset(
+    {
+        "Issue",
+        "Story",
+        "Bug",
+        "Epic",
+        "Task",
+        "Test",
+        "TestExecution",
+        "TestRun",
+        "TestPlan",
+        "TestSet",
+    }
 )
 
 #: The four properties conventions rule 3 requires on every LLM-derived node and edge.
@@ -187,6 +234,59 @@ def node_census(ctx: GraphContext, present: set[str]) -> dict[str, Any]:
             "workitem_sublabels are second labels on the same nodes as WorkItem; adding "
             "them to the structural counts double-counts. `total` counts each node once."
         ),
+    }
+
+
+def schema_deviations(nodes: dict[str, Any]) -> dict[str, Any]:
+    """Labels the graph holds that spec §2.4 does not declare.
+
+    Not a crash and not a silent count. Schema-first (conventions rule 4) means the closed
+    set is the agreement; a label outside it is either a kind that should be written into
+    the spec or data that should not be in the graph, and only a human can say which. So
+    the census puts each one in its own row, with what it is and where it came from, rather
+    than letting it ride along in the label table looking like it was always meant to
+    be there.
+    """
+    rows: list[dict[str, Any]] = []
+    for label, info in (nodes.get("structural") or {}).items():
+        if info.get("present") and label not in SPEC_NODE_LABELS:
+            rows.append(
+                {
+                    "label": label,
+                    "count": info.get("count", 0),
+                    "kind": "node label",
+                    "note": (
+                        "loaded as a container but not declared in spec §2.4's structured "
+                        "node list — the synthetic ADO layer emits area paths."
+                    ),
+                }
+            )
+    for label, count in (nodes.get("workitem_sublabels") or {}).items():
+        if label not in SPEC_WORKITEM_TYPES:
+            rows.append(
+                {
+                    "label": label,
+                    "count": count,
+                    "kind": "WorkItem sub-label",
+                    "note": "a Jira/ADO issue type §2.4 does not enumerate",
+                }
+            )
+    for label, count in (nodes.get("other_labels") or {}).items():
+        if label not in SPEC_NODE_LABELS:
+            rows.append(
+                {"label": label, "count": count, "kind": "node label", "note": "unexpected"}
+            )
+    return {
+        "rule": "spec §2.4 declares a closed node-label set; conventions rule 4 makes it binding.",
+        "workitem_types_in_spec": sorted(SPEC_WORKITEM_TYPES),
+        "sublabel_note": (
+            "A sub-label is a second label on a node that is already a WorkItem, so no node "
+            "escapes the closed set — only the type vocabulary is wider than the spec wrote "
+            "down. A new *node* label is the heavier finding."
+        ),
+        "total": len(rows),
+        "nodes_outside_the_closed_set": sum(r["count"] for r in rows if r["kind"] == "node label"),
+        "rows": sorted(rows, key=lambda r: (-r["count"], r["label"])),
     }
 
 
@@ -575,11 +675,13 @@ def community_census(ctx: GraphContext, present: set[str]) -> dict[str, Any]:
 
 
 def index_meta_census(ctx: GraphContext, present: set[str], status: list[dict]) -> dict[str, Any]:
-    """`IndexMeta` beside a **live** count of the nodes that actually carry a vector.
+    """`IndexMeta` beside the counts of what each vector index can actually return.
 
-    Decision 5, from the chunk review: the stored `chunk_count` counts orphaned chunks too,
-    so the census recomputes it. Both numbers are printed — the stored one is what a reader
-    of the graph sees, the live one is what the index can actually return.
+    Decision 5: the count an `IndexMeta` row advertises is the **live** one.
+    `brain index` writes it (see `schema.refresh_index_meta`), and this reads it back —
+    `stored_live` is what the row now says, `stored_total` keeps the orphaned vectors
+    visible, and `live_vectors` is this step's own count of the same thing. The three
+    agreeing is the check; a disagreement is a warning, not a silent correction.
     """
     stored: dict[str, dict[str, Any]] = {}
     if "IndexMeta" in present:
@@ -595,15 +697,23 @@ def index_meta_census(ctx: GraphContext, present: set[str], status: list[dict]) 
         name = row["name"]
         raw_label = (row.get("labels") or [None])[0]
         label = strip_prefix(ctx, raw_label) if raw_label else None
-        live = None
+        live = total = None
         if label and label in present:
-            live = _one(
+            orphan_clause = (
+                " AND NOT coalesce(n.orphaned, false)"
+                if label in index_schema.ORPHAN_FLAGGED_LABELS
+                else ""
+            )
+            counted = _one(
                 ctx.read(
                     f"MATCH (n:{ctx.label(label)}) WHERE n.embedding IS NOT NULL "
-                    "RETURN count(n) AS c"
+                    f"RETURN count(n) AS total, count(CASE WHEN true{orphan_clause} "
+                    "THEN 1 END) AS live"
                 ),
-                c=0,
-            )["c"]
+                total=0,
+                live=0,
+            )
+            live, total = counted["live"], counted["total"]
         meta = stored.get(name)
         entry: dict[str, Any] = {
             "index": name,
@@ -612,6 +722,8 @@ def index_meta_census(ctx: GraphContext, present: set[str], status: list[dict]) 
             "index_dim": row.get("dim"),
             "has_index_meta": meta is not None,
             "live_vectors": live,
+            "total_vectors": total,
+            "orphaned_vectors": (total - live) if live is not None and total is not None else None,
         }
         if meta:
             entry.update(
@@ -621,7 +733,9 @@ def index_meta_census(ctx: GraphContext, present: set[str], status: list[dict]) 
                     "similarity": meta.get("similarity"),
                     "created_at": str(meta.get("created_at")) if meta.get("created_at") else None,
                     "updated_at": str(meta.get("updated_at")) if meta.get("updated_at") else None,
-                    "stored_count": meta.get("live", meta.get("chunk_count")),
+                    "stored_live": meta.get("live", meta.get("chunk_count")),
+                    "stored_total": meta.get("total"),
+                    "counted_by": meta.get("counted_by"),
                 }
             )
         out.append(entry)
@@ -629,10 +743,25 @@ def index_meta_census(ctx: GraphContext, present: set[str], status: list[dict]) 
         "rows": out,
         "missing_meta": [e["index"] for e in out if not e["has_index_meta"]],
         "note": (
-            "live_vectors is counted by this step (`n.embedding IS NOT NULL`); stored_count "
-            "is whatever the owning step last wrote onto the IndexMeta node. For "
-            "chunk_embedding the stored count includes orphaned chunks — decision 5."
+            "Decision 5: an IndexMeta row advertises the LIVE count — what the index can "
+            "actually return. `brain index` writes it, so for chunk_embedding "
+            "`stored_live` now excludes the orphaned chunks (superseded text whose vectors "
+            "stay indexed because `brain extract` cites them as evidence); `stored_total` "
+            "keeps those visible. `live_vectors`/`total_vectors` are this step's own count "
+            "of the same two things, so a drift between them and the stored pair is a bug "
+            "the census can see."
         ),
+        "disagreements": [
+            {
+                "index": e["index"],
+                "stored_live": e.get("stored_live"),
+                "live_vectors": e.get("live_vectors"),
+            }
+            for e in out
+            if e.get("has_index_meta")
+            and e.get("live_vectors") is not None
+            and e.get("stored_live") != e.get("live_vectors")
+        ],
     }
 
 

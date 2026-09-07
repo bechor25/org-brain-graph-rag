@@ -301,3 +301,69 @@ def test_a_label_with_no_synthetic_property_is_its_own_bucket():
 def test_the_census_never_writes():
     with pytest.raises(AssertionError):
         ctx().write("CREATE (n)")
+
+
+# ------------------------------------------------------------- schema deviations (§2.4)
+
+
+def test_a_node_label_outside_the_closed_set_is_a_deviation_row_not_a_count():
+    """Conventions rule 4: §2.4's node set is closed. `Area` is real data the spec never
+    declared, so it gets named rather than printed as one more ordinary label."""
+    nodes = {
+        "structural": {
+            "WorkItem": {"present": True, "count": 3265},
+            "Area": {"present": True, "count": 24},
+        },
+        "workitem_sublabels": {},
+        "other_labels": {},
+    }
+    out = cen.schema_deviations(nodes)
+    assert [r["label"] for r in out["rows"]] == ["Area"]
+    assert out["rows"][0]["kind"] == "node label"
+    assert out["nodes_outside_the_closed_set"] == 24
+    assert "§2.4" in out["rule"]
+
+
+def test_a_work_item_type_beyond_the_spec_is_a_deviation_of_a_different_kind():
+    """No node escapes the closed set — `Improvement` is a second label on a WorkItem — so
+    it counts as a wider type vocabulary, not as a new node kind."""
+    nodes = {
+        "structural": {},
+        "workitem_sublabels": {"Improvement": 314, "Bug": 774, "TestPlan": 13},
+        "other_labels": {},
+    }
+    out = cen.schema_deviations(nodes)
+    assert [r["label"] for r in out["rows"]] == ["Improvement"]
+    assert out["rows"][0]["kind"] == "WorkItem sub-label"
+    assert out["nodes_outside_the_closed_set"] == 0
+
+
+def test_the_types_the_spec_named_are_never_flagged():
+    nodes = {
+        "structural": {},
+        "workitem_sublabels": dict.fromkeys(cen.SPEC_WORKITEM_TYPES, 1),
+        "other_labels": {},
+    }
+    assert cen.schema_deviations(nodes)["rows"] == []
+
+
+def test_test_plan_and_test_set_are_sanctioned_by_the_spec_itself():
+    """§2.4: 'TestPlan/TestSet הם WorkItems (מפתחות XP/XS)'."""
+    assert {"TestPlan", "TestSet"} <= cen.SPEC_WORKITEM_TYPES
+
+
+def test_the_closed_set_holds_every_label_the_pipeline_legitimately_writes():
+    for label in ("WorkItem", "Document", "Person", "Chunk", "Entity", "Community", "Space"):
+        assert label in cen.SPEC_NODE_LABELS
+    assert "Area" not in cen.SPEC_NODE_LABELS
+
+
+def test_a_graph_inside_the_closed_set_reports_no_deviation():
+    nodes = {
+        "structural": {"WorkItem": {"present": True, "count": 1}},
+        "workitem_sublabels": {"Bug": 1},
+        "other_labels": {},
+    }
+    out = cen.schema_deviations(nodes)
+    assert out["total"] == 0
+    assert out["rows"] == []

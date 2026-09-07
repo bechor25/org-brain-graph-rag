@@ -54,6 +54,7 @@ def test_every_index_the_planner_asked_for_is_declared():
         "chunk_embedding",
         "entity_embedding",
         "community_embedding",
+        "person_embedding",
         "workitem_text",
         "document_text",
         "entity_text",
@@ -83,10 +84,13 @@ def test_range_specs_reuse_the_names_brain_load_already_created():
         assert any(s.name == _index_name(label, prop) for s in index_schema.MANAGED)
 
 
-def test_person_embedding_is_observed_but_never_created_here():
-    """Decision 1 does not list it; `brain resolve` owns it. The census still reports it."""
-    assert "person_embedding" not in {s.name for s in index_schema.MANAGED}
-    assert "person_embedding" in {s.name for s in index_schema.OBSERVED}
+def test_person_embedding_is_managed_so_the_gate_covers_it():
+    """Planner amendment: it is a live vector index with an IndexMeta row, and an index the
+    gate does not cover is an index nobody promises anything about."""
+    managed = {s.name for s in index_schema.MANAGED}
+    assert "person_embedding" in managed
+    assert index_schema.OBSERVED == ()
+    assert len(managed) == 12
 
 
 # ------------------------------------------------------------------------------- the DDL
@@ -284,3 +288,66 @@ def test_offline_indexes_are_what_the_gate_reads():
     assert "chunk_text" in offline
     # every managed index that is MISSING counts as not-online too
     assert "workitem_text" in offline
+
+
+# ----------------------------------------------------------------- IndexMeta (decision 5)
+
+
+def test_the_stored_chunk_count_becomes_the_live_one():
+    """Decision 5. `brain chunk` stored 13,846 — the 931 orphans included. A search cannot
+    return an orphan, so the number an IndexMeta row advertises is the live one."""
+
+    class Counting(FakeClient):
+        def read(self, cypher: str, **params: Any):
+            self.reads_seen.append(cypher)
+            if "RETURN count(n) AS total" in cypher:
+                return [{"total": 13846, "live": 12915}]
+            return []
+
+    c = GraphContext(Counting())
+    c.client.added = 0
+    out = index_schema.refresh_index_meta(c, present={"Chunk"})
+    row = next(r for r in out["rows"] if r["index"] == "chunk_embedding")
+    assert row["live"] == 12915
+    assert row["total"] == 13846
+    assert row["orphaned"] == 931
+    cypher, params = c.client.writes[0]
+    assert params["live"] == 12915
+    assert "m.chunk_count = $live" in cypher
+
+
+def test_only_chunk_is_orphan_aware():
+    """`orphaned` is a Chunk property. Everywhere else live == total, and the query must
+    not invent a filter on a property the label does not have."""
+    assert index_schema.ORPHAN_FLAGGED_LABELS == frozenset({"Chunk"})
+
+    class Counting(FakeClient):
+        def read(self, cypher: str, **params: Any):
+            self.reads_seen.append(cypher)
+            return [{"total": 9038, "live": 9038}] if "count(n) AS total" in cypher else []
+
+    c = GraphContext(Counting())
+    index_schema.refresh_index_meta(c, present={"Entity"})
+    assert not any("orphaned" in q for q in c.client.reads_seen)
+
+
+def test_the_refresh_never_creates_an_index_meta_row():
+    """A row invented for an index whose owning step never ran would be metadata claiming a
+    model nobody used. Missing stays missing; the census reports it under missing_meta."""
+
+    class Counting(FakeClient):
+        def read(self, cypher: str, **params: Any):
+            return [{"total": 1, "live": 1}] if "count(n) AS total" in cypher else []
+
+    c = GraphContext(Counting())
+    index_schema.refresh_index_meta(c, present={"Chunk"})
+    for cypher, _params in c.client.writes:
+        assert cypher.startswith("MATCH")
+        assert "MERGE" not in cypher
+        assert "CREATE" not in cypher
+
+
+def test_a_label_that_is_absent_is_not_counted_at_all():
+    c = ctx()
+    assert index_schema.refresh_index_meta(c, present=set())["rows"] == []
+    assert c.client.writes == []

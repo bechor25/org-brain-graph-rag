@@ -242,3 +242,27 @@ def test_the_stamped_reset_deletes_exactly_the_synthetic_chunks(ctx, canonical, 
     remaining = ctx.read(f"MATCH (c:{ctx.label('Chunk')}) RETURN count(c) AS c")[0]["c"]
     assert remaining == chunked["chunks"] - chunked["synthetic"]
     assert nulls(ctx, "Chunk") == 0
+
+
+def test_the_report_s_backfill_check_measures_a_real_transition_and_cleans_up(ctx):
+    """`data/reports/modularity.json` carries a stamp run, not a claim that one happened.
+
+    The live graph is settled, so the numbers there are all zero and prove nothing about
+    the transition. This puts a graph into the pre-backfill state, runs the real
+    `stamp_synthetic`, and reports what moved — inside `_ModCheck`, never a real label.
+    """
+    from brain.modularity import MECHANISM_PREFIX, stamp_mechanism_check
+
+    section = stamp_mechanism_check(ctx)
+
+    assert section["prefix"] == MECHANISM_PREFIX
+    assert section["before"]["chunks"] == {"null": 3, "true": 0}
+    assert section["after"]["chunks"] == {"null": 0, "true": 2}
+    assert section["stamped"] == {"chunks": 3, "entities": 1}
+    assert section["rerun_stamped"] == {"chunks": 0, "entities": 0}
+    assert section["after"]["entities"]["true"] == 1
+
+    scratch = GraphContext(ctx.client, prefix=MECHANISM_PREFIX)
+    for label in ("WorkItem", "Chunk", "Entity"):
+        left = scratch.read(f"MATCH (n:{scratch.label(label)}) RETURN count(n) AS c")[0]["c"]
+        assert left == 0, f"{label} nodes left behind in {MECHANISM_PREFIX}"

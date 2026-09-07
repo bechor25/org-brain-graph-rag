@@ -303,17 +303,28 @@ def _indexes(report: dict[str, Any]) -> list[str]:
     out += _h(3, "IndexMeta")
     out += _p(str(meta.get("note")))
     out += _table(
-        ["אינדקס", "label", "מודל", "מימד", "similarity", "וקטורים חיים", "ספירה שמורה", "עודכן"],
+        [
+            "אינדקס",
+            "label",
+            "מודל",
+            "מימד",
+            "וקטורים חיים",
+            'סה"כ וקטורים',
+            "יתומים",
+            "שמור: live",
+            "שמור: total",
+        ],
         [
             [
                 r["index"],
                 r.get("label"),
                 r.get("model"),
                 r.get("dim") or r.get("index_dim"),
-                r.get("similarity"),
                 r.get("live_vectors"),
-                r.get("stored_count"),
-                r.get("updated_at"),
+                r.get("total_vectors"),
+                r.get("orphaned_vectors"),
+                r.get("stored_live"),
+                r.get("stored_total"),
             ]
             for r in meta.get("rows", [])
         ],
@@ -438,6 +449,30 @@ def _smoke(report: dict[str, Any]) -> list[str]:
     return out
 
 
+def _deviations(report: dict[str, Any]) -> list[str]:
+    dev = report.get("schema_deviations") or {}
+    out = _h(2, "חריגות סכמה")
+    out += _p(f"הכלל: {dev.get('rule')}")
+    rows = dev.get("rows") or []
+    if not rows:
+        return out + _p("*אין — כל התוויות בתוך הסט הסגור של §2.4.*")
+    out += _p(
+        f"**{_fmt(dev.get('total'))}** תוויות מחוץ למה ש-§2.4 הכריז, מהן "
+        f"{_fmt(dev.get('nodes_outside_the_closed_set'))} צמתים בתוויות-צומת חדשות. "
+        "זה לא נספר כאן כטור רגיל: או שהתווית צריכה להיכנס ל-spec, או שהנתון לא אמור "
+        "להיות בגרף — ורק אדם יכול להכריע."
+    )
+    out += _p(f"{dev.get('sublabel_note')}")
+    out += _p(
+        f"טיפוסי ה-WorkItem ש-§2.4 מונה: `{'` · `'.join(dev.get('workitem_types_in_spec') or [])}`."
+    )
+    out += _table(
+        ["תווית", "סוג", "צמתים", "הערה"],
+        [[r["label"], r["kind"], r["count"], r["note"]] for r in rows],
+    )
+    return out
+
+
 def _warnings(report: dict[str, Any]) -> list[str]:
     warns = report.get("warnings") or []
     kips = (report.get("sanity") or {}).get("kip_entity_coverage") or {}
@@ -483,6 +518,7 @@ def render(report: dict[str, Any]) -> str:
         _gate,
         _corpus,
         _nodes,
+        _deviations,
         _edges,
         _provenance,
         _resolution,

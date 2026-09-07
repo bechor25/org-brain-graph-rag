@@ -39,8 +39,9 @@ SMOKE_TAIL_LINES = 40
 
 #: Things a reader of `data/reports/index.json` should know that are not counts.
 NOTES = [
-    "This step creates indexes and reads. It writes no nodes, no edges and no properties, "
-    "so `brain load` run after it still reports 0 created / 0 deleted.",
+    "This step creates indexes and reads. The only data it writes is the live/total count "
+    "on the `IndexMeta` rows that already exist (decision 5) — it creates no node, no edge "
+    "and no label, so `brain load` run after it still reports 0 created / 0 deleted.",
     "Every count under `nodes`, `edges`, `provenance`, `orphans`, `chunks`, `communities` "
     "and `corpus` is read back from Neo4j. `resolution` and `dangling_refs` are the two "
     "exceptions and name their source file: precision/recall is measured against a gold "
@@ -108,16 +109,16 @@ def sanity_warnings(ctx: GraphContext, report: dict[str, Any], present: set[str]
             "which model produced its vectors, and a query embedded by another model "
             "returns nonsense rather than an error.",
         )
-    for row in meta.get("rows", []):
-        live, stored = row.get("live_vectors"), row.get("stored_count")
-        if live is not None and stored is not None and live != stored:
-            _warn(
-                warnings,
-                "info",
-                "index_meta_count_differs_from_live",
-                f"{row['index']}: IndexMeta says {stored}, live count is {live} "
-                "(decision 5 — the stored chunk count includes orphaned chunks).",
-            )
+    # After `refresh_index_meta` these must agree; a gap means the write did not take.
+    for row in meta.get("disagreements", []):
+        _warn(
+            warnings,
+            "warn",
+            "index_meta_count_differs_from_live",
+            f"{row['index']}: the IndexMeta row says {row['stored_live']} live vectors, this "
+            f"step counted {row['live_vectors']}. `brain index` writes that number "
+            "(decision 5), so a difference means the refresh did not reach the row.",
+        )
 
     com = report.get("communities") or {}
     if not com.get("present"):
@@ -202,6 +203,22 @@ def kip_entity_coverage(ctx: GraphContext, present: set[str]) -> dict[str, Any]:
     }
 
 
+def head_sha(repo: Path) -> str | None:
+    """The commit `make smoke` was measured on, so a later report can spot a stale result."""
+    try:
+        proc = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    sha = proc.stdout.strip()
+    return sha if proc.returncode == 0 and sha else None
+
+
 def run_smoke(repo_root: Path, echo: Callable[[str], None] = print) -> dict[str, Any]:
     """Shell out to `make smoke` and record what happened, so the gate has a measured value.
 
@@ -213,6 +230,7 @@ def run_smoke(repo_root: Path, echo: Callable[[str], None] = print) -> dict[str,
             "ok": False,
             "status": "SKIPPED",
             "at": utc_now_iso(),
+            "head_sha": head_sha(repo_root),
             "note": "already inside a `make smoke` run — refusing to recurse",
         }
     env = {**os.environ, SMOKE_GUARD: "1"}
@@ -242,6 +260,7 @@ def run_smoke(repo_root: Path, echo: Callable[[str], None] = print) -> dict[str,
         "duration_s": round(time.perf_counter() - started, 1),
         "failures": failures,
         "failing_files": sorted({ln.split("::")[0].split(" ", 1)[-1] for ln in failures}),
+        "head_sha": head_sha(repo_root),
         "tail": tail,
     }
 
@@ -299,6 +318,10 @@ def run_index(
 
     t0 = time.perf_counter()
     present = set(cen.present_labels(ctx))
+    # Decision 5, before the census reads the rows back: an IndexMeta row advertises the
+    # live count. This is the only write this step makes, and it is metadata about an
+    # index, not corpus.
+    meta_refresh = index_schema.refresh_index_meta(ctx, present)
     report: dict[str, Any] = {
         "step": "index",
         "generated_at": utc_now_iso(),
@@ -314,13 +337,14 @@ def run_index(
         "orphans": cen.orphan_census(ctx, present),
         "chunks": cen.chunk_census(ctx, present),
         "communities": cen.community_census(ctx, present),
-        "index_meta": cen.index_meta_census(ctx, present, status),
+        "index_meta": {**cen.index_meta_census(ctx, present, status), "refresh": meta_refresh},
         "resolution": cen.resolution_census(reports_dir),
         "dangling_refs": cen.dangling_census(reports_dir),
         "canonical": cen.canonical_fingerprint(canonical_dir),
         "versions": cen.versions(ctx, ollama_url, embed_model),
         "notes": NOTES,
     }
+    report["schema_deviations"] = cen.schema_deviations(report["nodes"])
     report["sanity"] = {"kip_entity_coverage": kip_entity_coverage(ctx, present)}
     durations["census"] = round(time.perf_counter() - t0, 2)
     echo(
@@ -342,6 +366,7 @@ def run_index(
         indexes=indexes,
         docs_dir=docs_dir,
         smoke=smoke_result,
+        current_sha=head_sha(repo_root()),
     )
     durations["total"] = round(time.perf_counter() - started, 2)
     report["last_run"] = {

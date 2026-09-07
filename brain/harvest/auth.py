@@ -51,9 +51,27 @@ class Credentials:
         return bool(self.token)
 
     @property
+    def basic_blob(self) -> str:
+        """`base64(user:token)` — the `basic` credential as it goes on the wire.
+
+        Empty for every other scheme. For `bearer` and `url_token` the token appears
+        verbatim in the header or the URL, so redacting the token covers them; `basic`
+        encodes it, and an encoded credential is still a credential. A library that
+        echoes the `Authorization` header it was handed would print this string and no
+        substring of `token` would match it.
+        """
+        if self.scheme != "basic" or not self.token:
+            return ""
+        raw = f"{self.user or ''}:{self.token}".encode()
+        return base64.b64encode(raw).decode("ascii")
+
+    @property
     def secrets(self) -> tuple[str, ...]:
         """Every substring that must never appear in output."""
-        return (self.token,) if self.token else ()
+        if not self.token:
+            return ()
+        blob = self.basic_blob
+        return (self.token, blob) if blob else (self.token,)
 
     def headers(self) -> dict[str, str]:
         """The `Authorization` header, or `{}` for anonymous / URL-carried credentials."""
@@ -64,8 +82,7 @@ class Credentials:
         if self.scheme == "basic":
             # An empty user is the Azure DevOps PAT form (`:<pat>`), and Atlassian Cloud
             # wants `<email>:<api token>` — both are the same encoding.
-            raw = f"{self.user or ''}:{self.token}".encode()
-            return {"Authorization": "Basic " + base64.b64encode(raw).decode("ascii")}
+            return {"Authorization": "Basic " + self.basic_blob}
         raise AuthError(f"unknown auth scheme {self.scheme!r}")
 
     def clone_url(self, url: str) -> str:

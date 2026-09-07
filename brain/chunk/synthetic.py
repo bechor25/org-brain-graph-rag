@@ -37,6 +37,8 @@ from brain.graph.context import GraphContext
 from brain.harvest.base import utc_now_iso
 
 REPORT_KEY = "synthetic_stamp"
+#: Every run, applying or not. `REPORT_KEY` keeps the last one that changed something.
+HISTORY_KEY = "synthetic_stamp_history"
 
 
 def plan(ctx: GraphContext) -> dict[str, Any]:
@@ -102,7 +104,7 @@ def stamp_from_settings(
     No embedder is opened: this step reads and writes one property and never touches
     Ollama, so it must work on a machine where the model is not pulled.
     """
-    from brain.chunk.runner import REPORT_NAME, _merge_report
+    from brain.chunk.runner import HISTORY_LIMIT, REPORT_NAME, _merge_report, _read_report
     from brain.config import get_settings
     from brain.graph.client import GraphClient
     from brain.harvest.base import write_json_atomic
@@ -113,7 +115,17 @@ def stamp_from_settings(
 
     path = reports_dir / REPORT_NAME
     reports_dir.mkdir(parents=True, exist_ok=True)
-    write_json_atomic(path, _merge_report(path, {REPORT_KEY: section}))
+    # `synthetic_stamp` keeps the run that did work; every run lands in the history. A dry
+    # run reports 0 by construction once the backfill has happened, and letting it
+    # overwrite the section would erase the only record of the 13,846 chunks the first
+    # run stamped — the number the whole fix is judged on.
+    previous = _read_report(path)
+    history = [*(previous.get(HISTORY_KEY) or []), section][-HISTORY_LIMIT:]
+    kept = previous.get(REPORT_KEY)
+    current = section
+    if not apply and kept and kept.get("stamped", {}).get("chunks", 0):
+        current = {**kept, "superseded_by_a_dry_run_at": section["at"]}
+    write_json_atomic(path, _merge_report(path, {REPORT_KEY: current, HISTORY_KEY: history}))
     echo(f"report: {path}")
     # A dry run that found work left to do is a failure the way `brain reset` without
     # `--yes` is: nothing was written, and a script must not read that as "already clean".

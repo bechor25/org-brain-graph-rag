@@ -1,12 +1,12 @@
 # מפקד הגרף — שער Plan 1
 
-נוצר אוטומטית ע"י `brain index` ב-2026-09-07T18:05:39+00:00 מתוך `data/reports/index.json`. **אין כאן מספר שהוקלד ביד** — כל טבלה נגזרת מה-JSON, כך שריצה חוזרת של השלב מעדכנת את המסמך במקום להשאיר אותו מיושן.
+נוצר אוטומטית ע"י `brain index` ב-2026-09-07T18:31:00+00:00 מתוך `data/reports/index.json`. **אין כאן מספר שהוקלד ביד** — כל טבלה נגזרת מה-JSON, כך שריצה חוזרת של השלב מעדכנת את המסמך במקום להשאיר אותו מיושן.
 
-**מצב השער:** לא עבר — 9/13 קריטריונים.
+**מצב השער:** לא עבר — 11/13 קריטריונים.
 
 ## שער היציאה של Plan 1
 
-מקור הקריטריונים: `docs/superpowers/plans/2026-09-03-plan1-corpus-to-graph.md, Task 9 'Plan 1 exit gate'`. עברו 9 מתוך 13. טבלת ה-roadmap מחזיקה טיוטה מוקדמת יותר של שני ספים (issues: 1,500, kips: 80), שנכתבה לפני שה-probe מדד את הקורפוס; שניהם מדווחים ולא נבחר אחד בשקט.
+מקור הקריטריונים: `docs/superpowers/plans/2026-09-03-plan1-corpus-to-graph.md, Task 9 'Plan 1 exit gate'`. עברו 11 מתוך 13. טבלת ה-roadmap מחזיקה טיוטה מוקדמת יותר של שני ספים (issues: 1,500, kips: 80), שנכתבה לפני שה-probe מדד את הקורפוס; שניהם מדווחים ולא נבחר אחד בשקט.
 
 | קריטריון | דרישה | ערך שנמדד | תוצאה |
 |---|---|---|---|
@@ -19,10 +19,10 @@
 | entity_resolution_precision | >= 0.85 | 1.0 | PASS |
 | entity_resolution_recall | >= 0.85 | 0.98 | PASS |
 | llm_edges_without_provenance | == 0 | 0 | PASS |
-| all_indexes_online | every managed index ONLINE | 11/11 ONLINE | PASS |
-| make_smoke_green | `make smoke` exits 0 | FAIL | FAIL |
-| lessons_01_09 | docs/lessons/01..09 present | 7/9 | FAIL |
-| progress_complete | every Plan 1 row in progress.md is done | 7/11 rows done | FAIL |
+| all_indexes_online | every managed index ONLINE | 12/12 ONLINE | PASS |
+| make_smoke_green | `make smoke` exits 0 on this commit | STALE (FAIL) | STALE |
+| lessons_01_09 | docs/lessons/01..09 present | 9/9 | PASS |
+| progress_complete | every Plan 1 row in progress.md is done | 11/11 rows done | PASS |
 
 ### הערות לקריטריונים
 
@@ -31,9 +31,7 @@
 - **kips_referenced_all_embedded** (PASS): the 'all referenced' half of the Task 9 criterion.
 - **person_resolution_recall** (FAIL): known and accepted by the planner (progress.md, 'הכרעות מתכנן — resolve'): the road to 0.85 is a wider adjudication band (~3,133 pairs, ~78 more batches), not a better judge. Reported as FAIL because the criterion is the criterion.
 - **llm_edges_without_provenance** (PASS): counted over 14762 LLM-derived edges plus the adjudicated SAME_AS links, read back from the graph.
-- **make_smoke_green** (FAIL): recorded 2026-09-07T15:05:15+00:00 in 1290.2s
-- **lessons_01_09** (FAIL): missing: [8, 9]
-- **progress_complete** (FAIL): still open: ['08 resolve [🟡 fix-required (blocker: כלל `username_…]', '09 communities [🟡 build ✅ (4d0f06e, ce0138b) · summariz…]', '10 index + gate [⬜]', '11 modularity (registry, auth env, reset [🟡 fix-required (3 blockers: `synthetic`…]']
+- **make_smoke_green** (STALE): the recorded result is from 2026-09-07T15:05:15+00:00, before this step recorded which commit it measured; HEAD is now a26869f. It says nothing about this tree — re-run `brain index --smoke`.
 
 ## הקורפוס
 
@@ -95,6 +93,26 @@
 | TestSet | 44 |
 | TestPlan | 13 |
 | Wish | 9 |
+
+## חריגות סכמה
+
+הכלל: spec §2.4 declares a closed node-label set; conventions rule 4 makes it binding.
+
+**7** תוויות מחוץ למה ש-§2.4 הכריז, מהן 24 צמתים בתוויות-צומת חדשות. זה לא נספר כאן כטור רגיל: או שהתווית צריכה להיכנס ל-spec, או שהנתון לא אמור להיות בגרף — ורק אדם יכול להכריע.
+
+A sub-label is a second label on a node that is already a WorkItem, so no node escapes the closed set — only the type vocabulary is wider than the spec wrote down. A new *node* label is the heavier finding.
+
+טיפוסי ה-WorkItem ש-§2.4 מונה: `Bug` · `Epic` · `Issue` · `Story` · `Task` · `Test` · `TestExecution` · `TestPlan` · `TestRun` · `TestSet`.
+
+| תווית | סוג | צמתים | הערה |
+|---|---|---|---|
+| Improvement | WorkItem sub-label | 314 | a Jira/ADO issue type §2.4 does not enumerate |
+| SubTask | WorkItem sub-label | 250 | a Jira/ADO issue type §2.4 does not enumerate |
+| JiraTest | WorkItem sub-label | 123 | a Jira/ADO issue type §2.4 does not enumerate |
+| Feature | WorkItem sub-label | 121 | a Jira/ADO issue type §2.4 does not enumerate |
+| NewFeature | WorkItem sub-label | 45 | a Jira/ADO issue type §2.4 does not enumerate |
+| Area | node label | 24 | loaded as a container but not declared in spec §2.4's structured node list — the synthetic ADO layer emits area paths. |
+| Wish | WorkItem sub-label | 9 | a Jira/ADO issue type §2.4 does not enumerate |
 
 ## קשתות
 
@@ -176,7 +194,7 @@ tiers 1-2 are deterministic (name rules, cosine) and carry rule/score instead of
 
 ## איחוד ישויות (resolution)
 
-מקור: `data/reports/resolve.json` (נוצר 2026-09-07T18:04:50+00:00); יעד 0.85.
+מקור: `data/reports/resolve.json` (נוצר 2026-09-07T18:26:35+00:00); יעד 0.85.
 
 | סוג | צמתים לפני | צמתים אחרי | זהויות | זהויות/צומת | שיעור כפילות | זוגות זהב | P | R | F1 |
 |---|---|---|---|---|---|---|---|---|---|
@@ -224,13 +242,14 @@ tiers 1-2 are deterministic (name rules, cosine) and carry rule/score instead of
 
 ## אינדקסים
 
-`brain index` מנהל 11 אינדקסים; 11 מהם ONLINE. בריצה הזו נוצרו 0 חדשים (11 כבר היו). עמודת `מנוהל` מבדילה בין מה שהשלב הזה יוצר לבין אינדקסים של שלבים אחרים.
+`brain index` מנהל 12 אינדקסים; 12 מהם ONLINE. בריצה הזו נוצרו 0 חדשים (12 כבר היו). עמודת `מנוהל` מבדילה בין מה שהשלב הזה יוצר לבין אינדקסים של שלבים אחרים.
 
 | שם | סוג | מצב | populationPercent | בעלים | מנוהל | labels | properties |
 |---|---|---|---|---|---|---|---|
 | chunk_embedding | VECTOR | ONLINE | 100.0 | chunk | כן | Chunk | embedding |
 | entity_embedding | VECTOR | ONLINE | 100.0 | resolve | כן | Entity | embedding |
 | community_embedding | VECTOR | ONLINE | 100.0 | communities | כן | Community | embedding |
+| person_embedding | VECTOR | ONLINE | 100.0 | resolve | כן | Person | embedding |
 | workitem_text | FULLTEXT | ONLINE | 100.0 | index | כן | WorkItem | title, description |
 | document_text | FULLTEXT | ONLINE | 100.0 | index | כן | Document | title, body_md |
 | entity_text | FULLTEXT | ONLINE | 100.0 | index | כן | Entity | name, description |
@@ -268,18 +287,17 @@ tiers 1-2 are deterministic (name rules, cosine) and carry rule/score instead of
 | brain_workitem_status_idx | RANGE | ONLINE | 100.0 | other | לא | WorkItem | status |
 | index_1b9dcc97 | LOOKUP | ONLINE | 100.0 | other | לא | — | — |
 | index_460996c0 | LOOKUP | ONLINE | 100.0 | other | לא | — | — |
-| person_embedding | VECTOR | ONLINE | 100.0 | resolve | לא | Person | embedding |
 
 ### IndexMeta
 
-live_vectors is counted by this step (`n.embedding IS NOT NULL`); stored_count is whatever the owning step last wrote onto the IndexMeta node. For chunk_embedding the stored count includes orphaned chunks — decision 5.
+Decision 5: an IndexMeta row advertises the LIVE count — what the index can actually return. `brain index` writes it, so for chunk_embedding `stored_live` now excludes the orphaned chunks (superseded text whose vectors stay indexed because `brain extract` cites them as evidence); `stored_total` keeps those visible. `live_vectors`/`total_vectors` are this step's own count of the same two things, so a drift between them and the stored pair is a bug the census can see.
 
-| אינדקס | label | מודל | מימד | similarity | וקטורים חיים | ספירה שמורה | עודכן |
-|---|---|---|---|---|---|---|---|
-| chunk_embedding | Chunk | bge-m3 | 1,024 | cosine | 13,846 | 13,846 | 2026-09-06T14:55:31+00:00 |
-| entity_embedding | Entity | bge-m3 | 1,024 | cosine | 9,038 | 9,038 | 2026-09-07T18:04:50+00:00 |
-| community_embedding | Community | bge-m3 | 1,024 | cosine | 186 | 186 | 2026-09-07T18:04:57+00:00 |
-| person_embedding | Person | bge-m3 | 1,024 | cosine | 1,214 | 1,214 | 2026-09-07T18:04:50+00:00 |
+| אינדקס | label | מודל | מימד | וקטורים חיים | סה"כ וקטורים | יתומים | שמור: live | שמור: total |
+|---|---|---|---|---|---|---|---|---|
+| chunk_embedding | Chunk | bge-m3 | 1,024 | 12,915 | 13,846 | 931 | 12,915 | 13,846 |
+| entity_embedding | Entity | bge-m3 | 1,024 | 9,038 | 9,038 | 0 | 9,038 | 9,038 |
+| community_embedding | Community | bge-m3 | 1,024 | 186 | 186 | 0 | 186 | 186 |
+| person_embedding | Person | bge-m3 | 1,024 | 1,214 | 1,214 | 0 | 1,214 | 1,214 |
 
 ## יתומים והפניות מתות
 

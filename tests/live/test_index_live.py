@@ -105,7 +105,10 @@ def test_the_fulltext_indexes_actually_answer_a_query(scratch, settings):
     assert rows, "workitem_text returned nothing for a term the mini corpus contains"
 
 
-def test_the_index_step_writes_no_data(scratch, settings, tmp_path):
+def test_the_index_step_creates_no_data(scratch, settings, tmp_path):
+    """It writes exactly one kind of thing: the live/total counts on `IndexMeta` rows that
+    already exist (decision 5). No node, no edge, no label — which is what keeps
+    `brain load` reporting 0 created when it runs next."""
     ctx, reports = scratch
     before = ctx.read(f"MATCH (n) WHERE {cen.node_filter(ctx, 'n')} RETURN count(n) AS c")[0]["c"]
     report, _code = run_index(
@@ -125,8 +128,11 @@ def test_the_index_step_writes_no_data(scratch, settings, tmp_path):
     assert after == before
     counters = report["last_run"]["counters"]
     assert counters["nodes_created"] == 0
+    assert counters["nodes_deleted"] == 0
     assert counters["relationships_created"] == 0
-    assert counters["properties_set"] == 0
+    assert counters["relationships_deleted"] == 0
+    assert counters["labels_added"] == 0
+    assert counters["labels_removed"] == 0
 
 
 def test_the_census_of_a_namespace_ignores_the_production_graph(scratch, settings, tmp_path):
@@ -211,13 +217,20 @@ def test_the_vector_indexes_all_carry_the_configured_dimension(production, setti
             assert row["dim"] == settings.embed_dim, row["name"]
 
 
-def test_the_index_meta_live_count_is_read_from_the_graph_not_the_node(production):
-    """Decision 5: the stored chunk count includes orphans, the census recomputes it."""
+def test_the_index_meta_counts_are_read_from_the_graph_not_the_node(production):
+    """The census counts both numbers itself rather than trusting the row: `live_vectors`
+    is what a search can return, `total_vectors` includes the orphaned chunks."""
     ctx, present = production
     meta = cen.index_meta_census(ctx, present, index_schema.index_status(ctx))
     chunk_row = next(r for r in meta["rows"] if r["index"] == "chunk_embedding")
-    live = ctx.read("MATCH (c:Chunk) WHERE c.embedding IS NOT NULL RETURN count(c) AS c")[0]["c"]
-    assert chunk_row["live_vectors"] == live
+    counted = ctx.read(
+        "MATCH (c:Chunk) WHERE c.embedding IS NOT NULL "
+        "RETURN count(c) AS total, "
+        "count(CASE WHEN NOT coalesce(c.orphaned, false) THEN 1 END) AS live"
+    )[0]
+    assert chunk_row["live_vectors"] == counted["live"]
+    assert chunk_row["total_vectors"] == counted["total"]
+    assert chunk_row["orphaned_vectors"] == counted["total"] - counted["live"]
 
 
 def test_person_text_finds_a_person_by_an_alias_resolve_merged_away(production):
@@ -245,3 +258,27 @@ def test_person_text_finds_a_person_by_an_alias_resolve_merged_away(production):
         q=f'"{alias}"',
     )
     assert display in [h["display"] for h in hits], f"{alias!r} did not find {display!r}"
+
+
+def test_the_stored_chunk_count_matches_the_live_one_after_a_run(production):
+    """Decision 5, end to end: `brain index` has written the live count onto the row, so
+    the number a reader of the graph sees is the number a search can return."""
+    ctx, present = production
+    meta = cen.index_meta_census(ctx, present, index_schema.index_status(ctx))
+    assert meta["disagreements"] == []
+    chunk_row = next(r for r in meta["rows"] if r["index"] == "chunk_embedding")
+    live = ctx.read(
+        "MATCH (c:Chunk) WHERE c.embedding IS NOT NULL AND NOT coalesce(c.orphaned, false) "
+        "RETURN count(c) AS c"
+    )[0]["c"]
+    assert chunk_row["stored_live"] == live
+    assert chunk_row["stored_total"] >= live  # the orphaned vectors stay visible
+
+
+def test_the_graph_reports_its_schema_deviations(production):
+    """`Area` is real data spec §2.4 never declared. The census must name it."""
+    ctx, present = production
+    dev = cen.schema_deviations(cen.node_census(ctx, present))
+    labels = {r["label"] for r in dev["rows"]}
+    assert "Area" in labels
+    assert all(r["kind"] in ("node label", "WorkItem sub-label") for r in dev["rows"])

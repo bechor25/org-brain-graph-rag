@@ -220,3 +220,68 @@ def test_the_table_prints_a_line_per_criterion_with_its_value(tmp_path):
     assert "0.7439" in table
     assert "FAIL" in table
     assert "person_resolution_recall" in table.split("PASS —")[-1]
+
+
+# -------------------------------------------------------------------- smoke staleness (1)
+
+SHA_OLD = "1111111111111111111111111111111111111111"
+SHA_NEW = "2222222222222222222222222222222222222222"
+
+
+def smoke(ok=True, sha=SHA_OLD, **kw):
+    base = {
+        "ok": ok,
+        "status": "PASS" if ok else "FAIL",
+        "at": "2026-09-07T15:05:15+00:00",
+        "duration_s": 1290.2,
+        "head_sha": sha,
+        "exit_code": 0 if ok else 2,
+        "failing_files": [] if ok else ["tests/live/test_resolve_live.py"],
+    }
+    return {**base, **kw}
+
+
+def test_a_smoke_result_from_another_commit_is_stale_not_green(tmp_path):
+    """The blocker: carrying a result forward republishes a verdict about code that no
+    longer exists — the 15:05Z run predates the commit that removed its cause."""
+    gate = evaluate(full_docs(tmp_path), smoke=smoke(ok=True, sha=SHA_OLD), current_sha=SHA_NEW)
+    row = by_name(gate["criteria"])["make_smoke_green"]
+    assert row["status"] == "STALE"
+    assert row["ok"] is False
+    assert "1111111" in row["value"]
+    assert "2222222" in row["note"]
+    assert "make_smoke_green" in gate["failed_names"]
+
+
+def test_a_stale_pass_is_still_a_failure_the_gate_counts(tmp_path):
+    gate = evaluate(full_docs(tmp_path), smoke=smoke(ok=True, sha=SHA_OLD), current_sha=SHA_NEW)
+    assert gate["ok"] is False
+
+
+def test_a_smoke_result_measured_on_this_commit_is_taken_at_face_value(tmp_path):
+    gate = evaluate(full_docs(tmp_path), smoke=smoke(ok=True, sha=SHA_NEW), current_sha=SHA_NEW)
+    row = by_name(gate["criteria"])["make_smoke_green"]
+    assert row["status"] == "PASS"
+    assert "2222222" in row["note"]
+
+
+def test_a_failure_on_this_commit_names_the_failing_files(tmp_path):
+    gate = evaluate(full_docs(tmp_path), smoke=smoke(ok=False, sha=SHA_NEW), current_sha=SHA_NEW)
+    row = by_name(gate["criteria"])["make_smoke_green"]
+    assert row["status"] == "FAIL"
+    assert "test_resolve_live.py" in row["note"]
+
+
+def test_a_result_with_no_sha_is_stale_because_nobody_can_attribute_it(tmp_path):
+    """A record written before this step tracked the commit — exactly the 15:05Z result the
+    review flagged. Unattributable is not the same as green."""
+    gate = evaluate(full_docs(tmp_path), smoke=smoke(ok=True, sha=None), current_sha=SHA_NEW)
+    row = by_name(gate["criteria"])["make_smoke_green"]
+    assert row["status"] == "STALE"
+    assert row["ok"] is False
+    assert "before this step recorded which commit" in row["note"]
+
+
+def test_with_no_current_sha_the_recorded_result_stands(tmp_path):
+    gate = evaluate(full_docs(tmp_path), smoke=smoke(ok=True, sha=SHA_OLD), current_sha=None)
+    assert by_name(gate["criteria"])["make_smoke_green"]["status"] == "PASS"

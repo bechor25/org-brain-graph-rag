@@ -46,13 +46,16 @@ class Criterion:
     ok: bool
     note: str = ""
     detail: dict[str, Any] = field(default_factory=dict)
+    #: A status word other than PASS/FAIL. Never makes a failing criterion pass — `ok` is
+    #: still what the gate counts — it only says *why* it is not passing.
+    status: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "requirement": self.requirement,
             "value": self.value,
-            "status": "PASS" if self.ok else "FAIL",
+            "status": self.status or ("PASS" if self.ok else "FAIL"),
             "ok": self.ok,
             "note": self.note,
             **({"detail": self.detail} if self.detail else {}),
@@ -184,25 +187,74 @@ def graph_criteria(provenance: dict[str, Any], indexes: dict[str, Any]) -> list[
     ]
 
 
-def process_criteria(*, docs_dir: Path, smoke: dict[str, Any] | None) -> list[Criterion]:
+def smoke_criterion(smoke: dict[str, Any] | None, current_sha: str | None) -> Criterion:
+    """`make smoke`, and whether the recorded result still describes this working tree.
+
+    A smoke result is a measurement of one commit. Carrying it forward into every later
+    report — which is what `previous.get("smoke")` does — republishes a verdict about code
+    that no longer exists: the run recorded at 15:05Z was measured *before* the commit that
+    removed the cause of its failures, and reprinting it as the current state is the kind of
+    stale green (or stale red) a gate exists to prevent. So the sha is recorded with the
+    result, and a result measured on another commit is STALE, which counts as a failure —
+    "we do not know" is not "it passed".
+    """
+    smoke = smoke or {}
+    if not smoke:
+        return Criterion(
+            "make_smoke_green",
+            "`make smoke` exits 0 on this commit",
+            "NOT RECORDED",
+            False,
+            note="run `brain index --smoke` so the gate has a measured value.",
+        )
+    measured_on = smoke.get("head_sha")
+    short = (measured_on or "unknown")[:7]
+    detail = {
+        k: v
+        for k, v in smoke.items()
+        if k in ("exit_code", "command", "head_sha", "failing_files", "failures")
+    }
+    if current_sha and measured_on != current_sha:
+        # Includes the case where the result carries no sha at all. A result nobody can
+        # attribute to a commit is not evidence about this tree either — "we do not know"
+        # and "it passed" are the same word only to a gate that has stopped being one.
+        where = (
+            f"on commit {short}"
+            if measured_on
+            else "before this step recorded which commit it measured"
+        )
+        return Criterion(
+            "make_smoke_green",
+            "`make smoke` exits 0 on this commit",
+            f"STALE ({smoke.get('status')}{' on ' + short if measured_on else ''})",
+            False,
+            note=(
+                f"the recorded result is from {smoke.get('at')}, {where}; HEAD is now "
+                f"{current_sha[:7]}. It says nothing about this tree — re-run "
+                "`brain index --smoke`."
+            ),
+            detail=detail,
+            status="STALE",
+        )
+    smoke_ok = bool(smoke.get("ok"))
+    return Criterion(
+        "make_smoke_green",
+        "`make smoke` exits 0 on this commit",
+        "PASS" if smoke_ok else smoke.get("status", "FAIL"),
+        smoke_ok,
+        note=f"recorded {smoke.get('at')} on {short} in {smoke.get('duration_s')}s"
+        + ("" if smoke_ok else f"; failing files: {smoke.get('failing_files')}"),
+        detail=detail,
+    )
+
+
+def process_criteria(
+    *, docs_dir: Path, smoke: dict[str, Any] | None, current_sha: str | None = None
+) -> list[Criterion]:
     lessons = lesson_status(docs_dir / "lessons")
     progress = progress_status(docs_dir / "planning" / "progress.md")
-    smoke = smoke or {}
-    smoke_ok = bool(smoke.get("ok"))
     return [
-        Criterion(
-            "make_smoke_green",
-            "`make smoke` exits 0",
-            ("PASS" if smoke_ok else smoke.get("status", "NOT RECORDED")),
-            smoke_ok,
-            note=(
-                f"recorded {smoke.get('at')} in {smoke.get('duration_s')}s"
-                if smoke
-                else "run `brain index --smoke` (or `make smoke`, then re-run with --smoke) "
-                "so the gate has a measured value instead of an assertion."
-            ),
-            detail={k: v for k, v in smoke.items() if k in ("exit_code", "command", "tail")},
-        ),
+        smoke_criterion(smoke, current_sha),
         Criterion(
             "lessons_01_09",
             "docs/lessons/01..09 present",
@@ -281,12 +333,13 @@ def evaluate(
     indexes: dict[str, Any],
     docs_dir: Path,
     smoke: dict[str, Any] | None = None,
+    current_sha: str | None = None,
 ) -> dict[str, Any]:
     criteria = [
         *corpus_criteria(corpus),
         *resolution_criteria(resolution),
         *graph_criteria(provenance, indexes),
-        *process_criteria(docs_dir=docs_dir, smoke=smoke),
+        *process_criteria(docs_dir=docs_dir, smoke=smoke, current_sha=current_sha),
     ]
     failed = [c.name for c in criteria if not c.ok]
     return {

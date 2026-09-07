@@ -15,8 +15,9 @@ that happened to run is a promise nobody checks. `IF NOT EXISTS` makes the repea
 also be a no-op — but it would be a no-op that the census then reports as a missing
 index forever. Reusing the name means the census reads the index that actually exists.
 
-`person_embedding` is deliberately *not* managed: decision 1 does not list it. It is in
-`OBSERVED` so the census names its owner instead of filing it under "other".
+`person_embedding` joined the managed set when the planner amended decision 1: it is a
+live vector index with an `IndexMeta` row, so leaving it out meant `all_indexes_online`
+promised nothing about an index Plan 2 will query.
 """
 
 from __future__ import annotations
@@ -77,6 +78,14 @@ VECTOR: tuple[IndexSpec, ...] = (
         ("embedding",),
         "communities",
         "global community search over report summaries (S5)",
+    ),
+    IndexSpec(
+        "person_embedding",
+        "vector",
+        "Person",
+        ("embedding",),
+        "resolve",
+        "person blocking for resolution; who-is retrieval",
     ),
 )
 
@@ -155,17 +164,11 @@ RANGE: tuple[IndexSpec, ...] = (
 #: Everything `brain index` creates, in creation order.
 MANAGED: tuple[IndexSpec, ...] = (*VECTOR, *FULLTEXT, *RANGE)
 
-#: Indexes another step owns. Reported by the census, never created here.
-OBSERVED: tuple[IndexSpec, ...] = (
-    IndexSpec(
-        "person_embedding",
-        "vector",
-        "Person",
-        ("embedding",),
-        "resolve",
-        "person blocking for resolution (not in decision 1's list)",
-    ),
-)
+#: Indexes another step owns that this one only reports on. Empty since the planner
+#: amended decision 1 to bring `person_embedding` into the managed set: it is a live vector
+#: index with an `IndexMeta` row, and an index the gate does not cover is an index nobody
+#: promises anything about.
+OBSERVED: tuple[IndexSpec, ...] = ()
 
 
 def _vector_cypher(ctx: GraphContext, spec: IndexSpec, dim: int) -> str:
@@ -266,6 +269,73 @@ def apply_indexes(ctx: GraphContext, dim: int, **wait_kw: Any) -> dict[str, Any]
         "dim": dim,
         "similarity": "cosine",
         "await": waited,
+    }
+
+
+META_LABEL = "IndexMeta"
+
+#: Vector indexes whose label carries an `orphaned` flag. Everywhere else live == total.
+ORPHAN_FLAGGED_LABELS: frozenset[str] = frozenset({"Chunk"})
+
+
+def refresh_index_meta(ctx: GraphContext, present: set[str]) -> dict[str, Any]:
+    """Correct the count each vector index's `IndexMeta` row advertises. Decision 5.
+
+    `brain chunk` stored `chunk_count = 13,846`, which counts the 931 orphaned chunks —
+    text that was superseded and whose vectors are still in the index because
+    `brain extract` cites them as evidence. As a description of what a search can *return*
+    that number is wrong: `query_similar` filters orphans out, so the index answers from
+    12,915. Decision 5 says the stored count is the live one, and this is where it is made
+    true, because this is the step that reads every index back anyway.
+
+    `MATCH`, never `MERGE`: a row this step invented for an index whose owning step has not
+    run would be metadata claiming a model nobody used. A missing row stays missing and the
+    census reports it under `missing_meta`.
+
+    Both numbers are written — `live` and `total` — so the orphaned vectors stay visible
+    rather than being silently subtracted.
+    """
+    rows: list[dict[str, Any]] = []
+    for spec in MANAGED:
+        if spec.kind != "vector" or spec.label not in present:
+            continue
+        prop = spec.properties[0]
+        orphan_clause = (
+            " AND NOT coalesce(n.orphaned, false)" if spec.label in ORPHAN_FLAGGED_LABELS else ""
+        )
+        counts = ctx.read(
+            f"MATCH (n:{ctx.label(spec.label)}) WHERE n.`{prop}` IS NOT NULL "
+            f"RETURN count(n) AS total, count(CASE WHEN true{orphan_clause} THEN 1 END) AS live"
+        )
+        total = counts[0]["total"] if counts else 0
+        live = counts[0]["live"] if counts else 0
+        # `chunk_count` is the property `brain chunk` writes; correcting it in place is what
+        # makes decision 5 true for a reader of the graph, not only for a reader of the JSON.
+        extra = ", m.chunk_count = $live" if spec.name == "chunk_embedding" else ""
+        written = ctx.write(
+            f"MATCH (m:{ctx.label(META_LABEL)} {{`name`: $name}}) "
+            f"SET m.live = $live, m.total = $total, m.counted_by = 'brain index'{extra}",
+            name=spec.name,
+            live=live,
+            total=total,
+        )
+        rows.append(
+            {
+                "index": spec.name,
+                "label": spec.label,
+                "live": live,
+                "total": total,
+                "orphaned": total - live,
+                "updated": bool(written.get("properties_set", 0)),
+            }
+        )
+    return {
+        "rows": rows,
+        "updated": sum(1 for r in rows if r["updated"]),
+        "rule": (
+            "decision 5: the count an IndexMeta row advertises is the live one — what the "
+            "index can actually return. `total` keeps the orphaned vectors visible."
+        ),
     }
 
 

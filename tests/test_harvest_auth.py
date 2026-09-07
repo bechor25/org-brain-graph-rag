@@ -156,6 +156,27 @@ def test_credentials_describe_never_contains_the_value():
     assert creds.secrets == (TOKEN,)
 
 
+def test_the_basic_scheme_redacts_the_encoded_credential_too():
+    """`base64(user:token)` shares no substring with the token; redacting one is not the
+    other, and the encoded form is what a library echoing the header would print."""
+    creds = credentials_for(
+        replace(source("jira"), auth_scheme="basic"),
+        {"JIRA_TOKEN": TOKEN, "JIRA_USER": "a@b.test"},
+    )
+    blob = base64.b64encode(f"a@b.test:{TOKEN}".encode()).decode()
+    assert blob not in TOKEN and TOKEN not in blob
+    assert creds.secrets == (TOKEN, blob)
+    assert creds.redact(f"Authorization: Basic {blob}") == "Authorization: Basic ***"
+    # the header still carries the real thing
+    assert creds.headers() == {"Authorization": f"Basic {blob}"}
+
+
+def test_a_bearer_or_url_token_needs_no_second_secret():
+    """The token is verbatim in both, so one entry covers them and two would be noise."""
+    assert credentials_for(source("jira"), {"JIRA_TOKEN": TOKEN}).secrets == (TOKEN,)
+    assert credentials_for(source("git"), {"GIT_TOKEN": TOKEN}).secrets == (TOKEN,)
+
+
 def test_a_clone_timeout_does_not_print_the_token(tmp_path, monkeypatch):
     """`TimeoutExpired.__str__` prints the whole command — including the remote URL."""
     import subprocess

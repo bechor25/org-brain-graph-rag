@@ -91,17 +91,28 @@ def test_an_unflagged_label_is_named_because_reset_decides_by_that_flag():
     assert "'File': 8594" in warns["synthetic_flag_missing"]["detail"]
 
 
-def test_index_meta_that_disagrees_with_the_live_count_is_reported_as_info():
+def test_index_meta_that_disagrees_with_the_live_count_is_a_warning():
+    """`brain index` writes that number, so a gap means the write did not reach the row."""
     report = {
         "index_meta": {
-            "rows": [{"index": "chunk_embedding", "live_vectors": 12915, "stored_count": 13846}],
+            "rows": [],
             "missing_meta": [],
+            "disagreements": [
+                {"index": "chunk_embedding", "stored_live": 13846, "live_vectors": 12915}
+            ],
         }
     }
     warns = {w["name"]: w for w in runner_mod.sanity_warnings(ctx(), report, set())}
-    detail = warns["index_meta_count_differs_from_live"]["detail"]
-    assert "13846" in detail and "12915" in detail
-    assert "decision 5" in detail
+    row = warns["index_meta_count_differs_from_live"]
+    assert row["severity"] == "warn"
+    assert "13846" in row["detail"] and "12915" in row["detail"]
+    assert "decision 5" in row["detail"]
+
+
+def test_index_meta_rows_that_agree_raise_nothing():
+    report = {"index_meta": {"rows": [], "missing_meta": [], "disagreements": []}}
+    warns = {w["name"] for w in runner_mod.sanity_warnings(ctx(), report, set())}
+    assert "index_meta_count_differs_from_live" not in warns
 
 
 def test_absent_communities_are_a_warning_with_the_census_note():
@@ -266,10 +277,19 @@ FAKE_REPORT: dict[str, Any] = {
                 "dim": 1024,
                 "similarity": "cosine",
                 "live_vectors": 12915,
-                "stored_count": 13846,
+                "total_vectors": 13846,
+                "orphaned_vectors": 931,
+                "stored_live": 12915,
+                "stored_total": 13846,
                 "updated_at": "y",
             }
         ],
+    },
+    "schema_deviations": {
+        "rule": "spec §2.4 declares a closed node-label set",
+        "total": 1,
+        "nodes_outside_the_closed_set": 24,
+        "rows": [{"label": "Area", "count": 24, "kind": "node label", "note": "ADO area paths"}],
     },
     "orphans": {
         "total": 180,
@@ -324,6 +344,8 @@ def test_every_number_in_the_document_comes_from_the_report():
         "162,098",  # edge total
         "13,846",  # chunks
         "8,217",  # dangling issue refs
+        "12,915",  # the live vector count decision 5 asks for
+        "931",  # the orphaned vectors, still visible beside it
         "2026.06.0",  # neo4j
         "790764642607",  # the embedding model digest
         "abc123",  # the canonical fingerprint
@@ -439,3 +461,37 @@ def test_a_corrupt_previous_report_is_replaced_not_raised(tmp_path):
 def test_the_context_never_writes_during_a_census():
     with pytest.raises(AssertionError):
         ctx().write("CREATE (n)")
+
+
+def test_the_document_names_a_schema_deviation_as_a_deviation():
+    md = render_mod.render(FAKE_REPORT)
+    assert "## חריגות סכמה" in md
+    assert "Area" in md.split("## חריגות סכמה")[1].split("##")[0]
+
+
+def test_the_head_sha_helper_returns_none_outside_a_repo(tmp_path):
+    assert runner_mod.head_sha(tmp_path / "nowhere") is None
+
+
+def test_the_head_sha_helper_reads_the_commit(monkeypatch, tmp_path):
+    class Done:
+        returncode = 0
+        stdout = "abc123def456\n"
+        stderr = ""
+
+    monkeypatch.setattr(runner_mod.subprocess, "run", lambda *a, **k: Done())
+    assert runner_mod.head_sha(tmp_path) == "abc123def456"
+
+
+def test_a_smoke_result_records_the_commit_it_was_measured_on(monkeypatch, tmp_path):
+    """Without this the gate cannot tell a fresh result from a republished one."""
+
+    class Done:
+        returncode = 0
+        stdout = "1 passed"
+        stderr = ""
+
+    monkeypatch.delenv(runner_mod.SMOKE_GUARD, raising=False)
+    monkeypatch.setattr(runner_mod.subprocess, "run", lambda *a, **k: Done())
+    monkeypatch.setattr(runner_mod, "head_sha", lambda _repo: "deadbeef")
+    assert runner_mod.run_smoke(tmp_path, echo=lambda _m: None)["head_sha"] == "deadbeef"

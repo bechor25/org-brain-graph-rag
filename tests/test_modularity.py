@@ -1,14 +1,22 @@
 """The Task 10 acceptance, as a test: config moved, corpus did not.
 
-Two digests are pinned, for two different reasons.
+Three digests are pinned, and only one of them is a claim about canon.
 
-`MINI_SHA1` is the committed mini fixture. It runs anywhere — a fresh clone, CI, another
-machine — and it is what fails if a mapper, the allowlist or the title pattern quietly
-changes what canon produces.
+`GOLDEN_SHA1` is the real one. It runs `brain canon` end to end on the raw fixtures in
+`tests/fixtures/canon/` — planted the way harvest writes them — and digests the five files
+that come out. That is what fails when a mapper, the issue-key allowlist, the title
+pattern, the sort order or the record model changes what canon produces, and it runs on a
+fresh clone with no database and no harvest.
+
+`MINI_SHA1` is **not** that. `data/fixtures/mini` is a hand-written canonical corpus, not
+canon output: comparing it to a constant proves only that nobody edited the committed
+file. That still matters — it is what `make smoke` and the live load tests run on, so a
+silent edit would move every live assertion — but it says nothing about the mappers.
 
 The real corpus lives in `data/`, which is not committed, so its digests are pinned in
 `brain/modularity.BASELINE_SHA1` and checked here only when the directory exists. That is
-a weaker test in exchange for covering 45 MB of real records instead of 20 lines.
+a weaker test in exchange for covering 45 MB of real records instead of 20 lines, and the
+report's `rerun` section is what turns it into a statement about today's code.
 """
 
 from __future__ import annotations
@@ -18,21 +26,25 @@ from pathlib import Path
 
 import pytest
 
+from brain.canon.runner import run_canon
 from brain.modularity import (
     BASELINE_SHA1,
     build_report,
     canonical_digests,
+    redaction_check,
     registry_facts,
+    same_type_check,
     synthetic_counts,
     write_report,
 )
+from tests.canon_helpers import load_fixture, plant_commits, plant_pages
 
 MINI = Path("data/fixtures/mini")
 REAL = Path("data/canonical")
 
-#: sha1 of every file in `data/fixtures/mini`, recorded 2026-09-07 with the registry in
-#: place. These are committed data: a change here is a change to the fixture, and any
-#: change to the fixture must be deliberate.
+#: sha1 of every file in `data/fixtures/mini`, recorded 2026-09-07. These are committed
+#: *data*, not canon output: a change here is a change to the fixture, and any change to
+#: the fixture must be deliberate because `make smoke` asserts against its contents.
 MINI_SHA1: dict[str, str] = {
     "workitems.jsonl": "418c8cf10ecb8ece933a87f70a0b0dfa9501e195",
     "documents.jsonl": "3a8e9fe021a9a4bd40acfc4cf05a9f9551a53fb0",
@@ -52,7 +64,7 @@ SIGNATURES = {
 
 
 def test_the_mini_fixture_has_not_moved():
-    """The corpus a fresh clone can check. Update only with a deliberate fixture change."""
+    """The committed load corpus, unchanged. Not a canon check — see the golden test."""
     got = {name: entry["sha1"] for name, entry in canonical_digests(MINI).items()}
     assert set(got) == set(MINI_SHA1)
     assert got == MINI_SHA1
@@ -99,7 +111,15 @@ def test_the_report_is_written_where_every_other_step_reports(tmp_path):
     path, report = write_report(MINI, tmp_path)
     assert path == tmp_path / "modularity.json"
     assert json.loads(path.read_text(encoding="utf-8"))["step"] == "modularity"
-    assert set(report) == {"step", "generated_at", "canonical", "synthetic", "registry"}
+    assert set(report) == {
+        "step",
+        "generated_at",
+        "canonical",
+        "synthetic",
+        "redaction",
+        "same_type_sources",
+        "registry",
+    }
 
 
 @pytest.mark.skipif(not REAL.is_dir(), reason="no harvested corpus on this machine")
@@ -112,3 +132,104 @@ def test_the_real_corpus_still_matches_the_pre_refactor_digests():
     report = build_report(REAL)
     assert report["canonical"]["drift"] == {}
     assert report["canonical"]["matches_baseline"] is True
+
+
+# ---------------------------------------------------------------- the real canon golden
+
+#: sha1 of the five files `run_canon` writes from the raw fixtures in
+#: `tests/fixtures/canon/`. Unlike `MINI_SHA1` these are *produced*, so they move when the
+#: mappers, the allowlist, the title pattern, the sort order or the record model move —
+#: which is the whole point. Regenerate deliberately, and read the diff before pinning.
+GOLDEN_SHA1: dict[str, str] = {
+    "workitems.jsonl": "4870a4cb877373a96ad324fedd3a4c025b1de91f",  # KAFKA-17725
+    "documents.jsonl": "87b499c6450c69147fb8092acf5e60899165d40e",  # KIP-752
+    "persons.jsonl": "771e94c26bda302bacc1a0fdf1459946d258b7f8",  # 5 identities
+    "changes.jsonl": "44d5964ea810c1c2f43b98f4ae49305cfbd8adc7",  # a commit and its PR
+    "containers.jsonl": "d00cb9d4e8a8c735b0af59e360a8d5e65750eaae",  # component, space, version
+}
+
+
+@pytest.fixture
+def golden_raw(tmp_path):
+    """The three committed raw samples, planted the way `brain harvest` writes them."""
+    raw = tmp_path / "raw"
+    plant_pages(raw, "jira", [load_fixture("jira", "raw_issue.json")])
+    plant_pages(raw, "confluence", [load_fixture("confluence", "raw_page.json")])
+    plant_commits(raw, [load_fixture("git", "raw_commit.json")])
+    return tmp_path
+
+
+def test_canon_still_produces_the_golden_bytes(golden_raw):
+    """`brain canon` end to end on real raw responses, digested.
+
+    This is the check the mini-fixture digest was mistaken for: it runs the pipeline, so
+    a changed mapper or a changed `sources.yaml` policy fails here rather than silently
+    producing a different corpus on the next harvest.
+    """
+    _report, code = run_canon(
+        ["jira", "confluence", "git"],
+        raw_dir=golden_raw / "raw",
+        canonical_dir=golden_raw / "canonical",
+        reports_dir=golden_raw / "reports",
+        echo=lambda _m: None,
+    )
+    assert code == 0
+    got = {
+        name: entry["sha1"] for name, entry in canonical_digests(golden_raw / "canonical").items()
+    }
+    assert set(got) == set(GOLDEN_SHA1)
+    assert got == GOLDEN_SHA1
+
+
+def test_the_golden_run_writes_no_source_id(golden_raw):
+    """A single-instance registry says nothing new with it, so the field is absent.
+
+    Pinned separately from the digests because it is the reason they did not move when
+    `source_id` was added: the byte-identity of the real corpus rests on this.
+    """
+    run_canon(
+        ["jira", "confluence", "git"],
+        raw_dir=golden_raw / "raw",
+        canonical_dir=golden_raw / "canonical",
+        reports_dir=golden_raw / "reports",
+        echo=lambda _m: None,
+    )
+    for path in sorted((golden_raw / "canonical").glob("*.jsonl")):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                assert "source_id" not in json.loads(line), path.name
+
+
+# ------------------------------------------------------- the three blockers, as sections
+
+
+def test_the_redaction_section_harvests_a_leaky_connector_and_finds_nothing(tmp_path):
+    """The evidence in the report is a measurement, not a claim that a test passed."""
+    section = redaction_check()
+    assert section["ran"] is True
+    assert section["token_in_report_bytes"] is False
+    assert section["token_in_report_object"] is False
+    assert section["token_in_echoed_lines"] is False
+    assert section["redaction_marker_in_report"] is True
+    assert section["exit_code"] == 1  # a fatal error is still a failure
+    # the `basic` scheme encodes the credential, so redacting the token alone is not enough
+    assert section["basic_scheme_secrets"] == 2
+    assert section["basic_encoded_is_redacted"] is True
+
+
+def test_the_redaction_section_never_writes_into_the_real_reports():
+    before = Path("data/reports/harvest.json")
+    stamp = before.stat().st_mtime if before.exists() else None
+    redaction_check()
+    assert (before.stat().st_mtime if before.exists() else None) == stamp
+
+
+def test_the_same_type_section_proves_both_halves_of_the_decision():
+    section = same_type_check()
+    assert section["duplicate_id_rejected"] is True
+    assert "duplicate source id 'jira-eu'" in section["duplicate_id_message"]
+    assert section["two_of_one_type_accepted"] is True
+    assert section["two_of_one_type_ids"] == ["jira-eu", "jira-us"]
+    assert section["same_type_ids"] == {"jira": ["jira-eu", "jira-us"]}
+    assert section["raw_dirs_distinct"] is True
+    assert section["live_registry_same_type_ids"] == {}
