@@ -949,6 +949,94 @@ def index(
     raise typer.Exit(code=code)
 
 
+# ----------------------------------------------------------------- retrieval (Plan 2)
+
+
+@app.command()
+def ask(
+    question: str = typer.Argument(..., help="The question, in English or Hebrew."),
+    strategy: str = typer.Option(
+        "auto",
+        "--strategy",
+        help="auto (deterministic router) | s1 hybrid | s2 graph-vector | s3 entity-local "
+        "| s6 temporal | lookup | impact.",
+    ),
+    k: int = typer.Option(10, "--k", help="How many items to return before packing."),
+    hops: int = typer.Option(1, "--hops", help="S2 only: neighbourhood depth (1-2)."),
+    depth: int = typer.Option(2, "--depth", help="S3/impact only: traversal depth (1-2)."),
+    mode: str = typer.Option("hybrid", "--mode", help="S1 only: hybrid | vector | fulltext."),
+    rerank: bool = typer.Option(
+        False, "--rerank", help="Cross-encoder rerank if the local model is installed."
+    ),
+    include_synthetic: bool = typer.Option(
+        True, "--synthetic/--no-synthetic", help="Include the synthetic Xray/ADO layer."
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Print the raw Result envelope."),
+) -> None:
+    """Ask the graph a question and print the cited answer [Plan 2]."""
+    import json as _json
+
+    from brain.config import get_settings
+    from brain.retrieve.context import RetrieveContext
+    from brain.retrieve.runner import ask as run_ask
+    from brain.retrieve.runner import render
+    from brain.retrieve.types import RetrieveError
+
+    settings = get_settings()
+    try:
+        with RetrieveContext.open(settings, include_synthetic=include_synthetic) as ctx:
+            result = run_ask(
+                ctx,
+                question,
+                strategy=strategy,
+                k=k,
+                hops=hops,
+                depth=depth,
+                rerank=rerank,
+                mode=mode,
+                log_mode="cli",
+            )
+    except RetrieveError as exc:
+        typer.echo(f"ask: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    if as_json:
+        typer.echo(_json.dumps(result.model_dump(), ensure_ascii=False, indent=2))
+    else:
+        typer.echo(render(result, question))
+    raise typer.Exit(code=0 if result.items else 3)
+
+
+@app.command()
+def competency(
+    rebuild: bool = typer.Option(
+        True,
+        "--rebuild/--reuse",
+        help="Re-select the anchors from the graph, or reuse data/eval/competency.jsonl.",
+    ),
+    repeats: int = typer.Option(3, "--repeats", help="Latency samples per question."),
+) -> None:
+    """Build the competency questions from the graph and measure retrieval on them [Plan 2]."""
+    from brain.config import get_settings
+    from brain.retrieve.context import RetrieveContext
+    from brain.retrieve.report import run as run_report
+
+    settings = get_settings()
+    with RetrieveContext.open(settings) as ctx:
+        report, path = run_report(ctx, rebuild_questions=rebuild, repeats=repeats)
+    summary = report["summary"]
+    typer.echo(f"questions: {summary['questions']} ({summary['evidence_questions']} with evidence)")
+    typer.echo(
+        f"valid provenance: {summary['with_valid_provenance']}/{summary['evidence_questions']}"
+        f" · invalid chunk ids: {summary['invalid_chunk_ids']}"
+    )
+    for name, stats in report["latency"].items():
+        typer.echo(f"  {name:<12} p50 {stats['p50_ms']:>5} ms   p90 {stats['p90_ms']:>5} ms")
+    for check in report["checks"]:
+        typer.echo(f"  [{'ok' if check['ok'] else 'FAIL'}] {check['name']}: {check['detail']}")
+    typer.echo(f"report: {path}")
+    raise typer.Exit(code=0 if all(c["ok"] for c in report["checks"]) else 1)
+
+
 @app.command()
 def doctor() -> None:
     """Check Neo4j, plugins, read-mode guard, Ollama and the embedding model."""
