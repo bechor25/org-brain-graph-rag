@@ -43,6 +43,10 @@ def default_space() -> str:
     From `sources.yaml` (`options.space`), not a constant: it is the organisation's wiki
     space, and the CQL in `query` already names it. Empty when nothing is configured —
     `Document.space` is optional, and inventing a space name is worse than leaving it out.
+
+    The *first* enabled wiki, which is only right when there is one. `map_pages` is handed
+    the space of the source it is mapping (`brain.canon.runner.mapper_kwargs`); this
+    remains the answer for a caller that has no source in hand, such as a golden test.
     """
     for source in get_registry().enabled():
         if source.type == "confluence":
@@ -133,12 +137,12 @@ def page_url(page: dict[str, Any]) -> str | None:
     return f"{self_url.split('/rest/', 1)[0]}{webui}"
 
 
-def page_space(page: dict[str, Any]) -> str:
+def page_space(page: dict[str, Any], fallback: str | None = None) -> str:
     webui = str((page.get("_links") or {}).get("webui") or "")
     if m := re.search(r"/spaces/([^/]+)/", webui):
         return m.group(1)
     expandable = str((page.get("_expandable") or {}).get("space") or "")
-    return expandable.rsplit("/", 1)[-1] or default_space()
+    return expandable.rsplit("/", 1)[-1] or (default_space() if fallback is None else fallback)
 
 
 def body_of(page: dict[str, Any]) -> str:
@@ -215,10 +219,15 @@ def decide_keys(pages: Iterable[dict[str, Any]]) -> tuple[dict[str, str], list[d
 
 
 def map_pages(
-    pages: Iterable[dict[str, Any]], *, document: DocumentKeySpec | None = None
+    pages: Iterable[dict[str, Any]],
+    *,
+    document: DocumentKeySpec | None = None,
+    space: str | None = None,
 ) -> Bundle:
-    # Resolved once per run: the title→key rule and therefore the test for "is this key
-    # one we minted" (`KIP-848`) versus "this page has no key of its own" (a page id).
+    # Resolved once per run, and from *this* source's registry entry: the title→key rule
+    # (and therefore the test for "is this key one we minted", `KIP-848`, versus "this page
+    # has no key of its own", a page id), and the space a page falls back to. Two wikis in
+    # `sources.yaml` are two different answers, so neither may be looked up globally.
     spec = document or default_document_spec()
     bundle = Bundle(source=SOURCE)
     tracker = FieldTracker(mapped=MAPPED)
@@ -279,7 +288,7 @@ def map_pages(
                 user.get("userKey") or user.get("username"),
                 display=user.get("displayName"),
             )
-        space = page_space(page)
+        space = page_space(page, space)
         bundle.container(SOURCE, "space", space)
 
         bundle.documents.append(

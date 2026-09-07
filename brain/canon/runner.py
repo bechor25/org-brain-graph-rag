@@ -107,7 +107,7 @@ def mapper_kwargs(config: SourceConfig) -> dict[str, Any]:
     each page gets the key its own entry describes.
     """
     if config.type in DOCUMENT_TYPES:
-        return {"document": config.document}
+        return {"document": config.document, "space": str(config.option("space", "") or "")}
     return {}
 
 
