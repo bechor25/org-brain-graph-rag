@@ -115,8 +115,30 @@ def test_the_envelope_is_the_model_the_agent_parses():
         schema_sha="deadbeef",
     )
     parsed = BatchInput.model_validate(payload)
-    assert parsed.pair_count == 1 and parsed.band == [0.80, 0.92]
+    assert parsed.pair_count == 1
+    # `band` is what is in the batch, not the tier's nominal window: the guard puts pairs
+    # above 0.92 in here, and a label that said otherwise would teach the agent to distrust
+    # the similarity it is given.
+    assert parsed.band == [parsed.pairs[0].similarity] * 2
+    assert "refused" in parsed.band_note
     assert parsed.schema_path == "brain/resolve/schema.json"
+
+
+def test_the_band_of_a_batch_spans_its_own_pairs_even_above_the_window():
+    cands = candidates(3)
+    by_id = {c.id: c for c in cands}
+    pairs = [to_batch_pair(p, by_id) for p in grey_pairs(cands)]
+    pairs[0].similarity = 1.0
+    payload = envelope(
+        batch_id="shard-01/001",
+        shard="shard-01",
+        index=1,
+        kind="person",
+        pairs=pairs,
+        generated_at="",
+        schema_sha="x",
+    )
+    assert payload["band"] == [min(p.similarity for p in pairs), 1.0]
 
 
 def test_shards_are_balanced_and_each_gets_the_hard_pairs():

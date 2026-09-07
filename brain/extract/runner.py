@@ -54,11 +54,18 @@ def merge_from_settings(
     batches_dir: Path,
     reports_dir: Path,
     *,
+    canonical_dir: Path | None = None,
     echo: Callable[[str], None] = print,
 ) -> tuple[dict[str, Any], int]:
     client, ctx = _context()
     with client:
-        return run_merge(ctx=ctx, batches_dir=batches_dir, reports_dir=reports_dir, echo=echo)
+        return run_merge(
+            ctx=ctx,
+            batches_dir=batches_dir,
+            reports_dir=reports_dir,
+            canonical_dir=canonical_dir,
+            echo=echo,
+        )
 
 
 def sample_from_settings(

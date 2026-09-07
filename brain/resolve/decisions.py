@@ -61,6 +61,17 @@ class Batch:
 
 
 def discover(root: Path) -> list[Batch]:
+    """Every `<shard>/NNN.out.json` under `root`, at either depth.
+
+    `data/batches/resolve/<kind>/shard-NN/` is the layout `build-batches` writes now that
+    two kinds exist; `data/batches/resolve/shard-NN/` is where the first person run put
+    them. Both are read, so a completed round of adjudication is never orphaned by a
+    layout change.
+    """
+    found = [
+        *sorted(root.glob("shard-[0-9][0-9]/[0-9][0-9][0-9].out.json")),
+        *sorted(root.glob("*/shard-[0-9][0-9]/[0-9][0-9][0-9].out.json")),
+    ]
     return [
         Batch(
             batch_id=f"{p.parent.name}/{int(p.name.split('.', 1)[0]):03d}",
@@ -68,7 +79,7 @@ def discover(root: Path) -> list[Batch]:
             index=int(p.name.split(".", 1)[0]),
             path=p,
         )
-        for p in sorted(root.glob("shard-[0-9][0-9]/[0-9][0-9][0-9].out.json"))
+        for p in found
     ]
 
 
@@ -156,11 +167,14 @@ def clear_failure_files(batch: Batch) -> None:
 
 
 def read_shard_status(root: Path) -> dict[str, dict[str, Any]]:
+    """Keyed by the path under the task root, so `person/shard-01` and `entity/shard-01`
+    are two rows in the report rather than one overwriting the other."""
     out: dict[str, dict[str, Any]] = {}
-    for path in sorted(root.glob(f"shard-[0-9][0-9]/{STATUS_NAME}")):
-        raw = _read_json(path)
-        if raw is not None:
-            out[path.parent.name] = raw
+    for pattern in (f"shard-[0-9][0-9]/{STATUS_NAME}", f"*/shard-[0-9][0-9]/{STATUS_NAME}"):
+        for path in sorted(root.glob(pattern)):
+            raw = _read_json(path)
+            if raw is not None:
+                out[str(path.parent.relative_to(root))] = raw
     return out
 
 

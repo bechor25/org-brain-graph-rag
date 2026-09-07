@@ -108,7 +108,7 @@ def load(ctx, split_corpus, workdir):
     return report
 
 
-def resolve(ctx, split_corpus, workdir, *, tiers, dry_run=False, embedder=None):
+def resolve(ctx, split_corpus, workdir, *, tiers, kinds=("person",), dry_run=False, embedder=None):
     """`canonical_dir` is the corpus directory, exactly as in production: the ledger has to
     land beside the canonical files, because that is where the next `brain load` reads it."""
     report, code = run_resolve(
@@ -116,7 +116,7 @@ def resolve(ctx, split_corpus, workdir, *, tiers, dry_run=False, embedder=None):
         canonical_dir=split_corpus,
         reports_dir=workdir["reports"],
         batches_dir=workdir["batches"],
-        kinds=["person"],
+        kinds=list(kinds),
         tiers=tiers,
         embedder=embedder,
         prefix=PREFIX,
@@ -163,7 +163,9 @@ def test_a_dry_run_proposes_the_merge_and_writes_nothing(loaded, ctx, split_corp
     assert tier1["pairs"] >= 1 and tier1["applied"] is False
     assert len(persons(ctx)) == 6
     assert not (split_corpus / LEDGER_NAME).exists()
-    assert ctx.read("MATCH ()-[r:SAME_AS]->() WHERE r.tier IS NOT NULL RETURN count(r) AS n") == [
+    # Relationship types are not namespaced, so this has to reach SAME_AS through a
+    # prefixed label or it counts the production graph's links too.
+    assert ctx.read(f"MATCH (:{ctx.label('Person')})-[r:SAME_AS]->() RETURN count(r) AS n") == [
         {"n": 0}
     ]
 
@@ -262,7 +264,7 @@ def built(ctx, workdir, embedder, after_tier2):
 
 
 def test_every_batch_is_indented_within_budget_and_at_most_25_pairs(built, workdir):
-    root = workdir["batches"] / TASK
+    root = workdir["batches"] / TASK / "person"
     files = sorted(root.glob("shard-*/[0-9][0-9][0-9].in.json"))
     assert files, built
     for path in files:
@@ -280,14 +282,14 @@ def test_every_batch_is_indented_within_budget_and_at_most_25_pairs(built, workd
 
 def test_each_shard_gets_a_status_file(built, workdir):
     for shard in built["shards"]:
-        assert (workdir["batches"] / TASK / shard / "status.json").is_file()
+        assert (workdir["batches"] / TASK / "person" / shard / "status.json").is_file()
 
 
 def test_a_rebuild_over_a_working_shard_is_refused_not_raced(built, workdir, ctx, embedder):
     from brain.resolve.build import BuildError
 
     shard = built["shards"][0]
-    status = workdir["batches"] / TASK / shard / "status.json"
+    status = workdir["batches"] / TASK / "person" / shard / "status.json"
     status.write_text(json.dumps({"done": [f"{shard}/001"], "failed": []}), encoding="utf-8")
     with pytest.raises(BuildError, match="already reports finished batches"):
         run_build(
@@ -304,7 +306,8 @@ def test_a_rebuild_over_a_working_shard_is_refused_not_raced(built, workdir, ctx
 def answer(workdir, verdicts: dict[tuple[str, str], str]) -> int:
     """Play `entity-adjudicator`: answer every pair of every batch on disk."""
     written = 0
-    for path in sorted((workdir["batches"] / TASK).glob("shard-*/[0-9][0-9][0-9].in.json")):
+    root = workdir["batches"] / TASK / "person"
+    for path in sorted(root.glob("shard-*/[0-9][0-9][0-9].in.json")):
         payload = json.loads(path.read_text(encoding="utf-8"))
         decisions = []
         for pair in payload["pairs"]:
@@ -378,7 +381,7 @@ def test_a_batch_that_breaks_the_contract_is_quarantined_after_two_retries(
 ):
     from brain.resolve.decisions import MAX_RETRIES, QUARANTINE_DIR
 
-    root = workdir["batches"] / TASK
+    root = workdir["batches"] / TASK / "person"
     target = sorted(root.glob("shard-*/[0-9][0-9][0-9].in.json"))[0]
     out = target.with_name(target.name.replace(".in.", ".out."))
     broken = {
@@ -473,3 +476,101 @@ def test_reset_drops_the_person_layer_and_load_rebuilds_it(ctx, split_corpus, wo
     assert [c["name"] for c in report["checks"] if not c["ok"]] == ["second_run_creates_nothing"]
     assert report["census"]["nodes_by_label"]["Person"] == 6
     assert report["resolution"]["identities_folded"] == 0
+
+
+# ------------------------------------------------------------------------------ entities
+
+
+@pytest.fixture(scope="module")
+def entities(ctx):
+    """Three `Feature`s in one KIP: two phrasings of one thing, and a different thing."""
+    rows = [
+        {
+            "id": "Feature|versioned state store",
+            "name": "Versioned State Stores",
+            "description": "A store that keeps history.",
+            "kind": "Feature",
+        },
+        {
+            "id": "Feature|the versioned state store",
+            "name": "The versioned state stores",
+            "description": "A store that keeps history for a retention period.",
+            "kind": "Feature",
+        },
+        {
+            "id": "Feature|versioned state store upgrade path",
+            "name": "Versioned state store upgrade path",
+            "description": "How an existing store becomes versioned.",
+            "kind": "Feature",
+        },
+        {
+            "id": "Problem|versioned state store",
+            "name": "Versioned state stores",
+            "description": "A store that keeps history.",
+            "kind": "Problem",
+        },
+    ]
+    ctx.write_rows(
+        f"UNWIND $rows AS row MERGE (e:{ctx.label('Entity')} {{id: row.id}}) SET e += row", rows
+    )
+    yield rows
+    ctx.client.write(f"MATCH (e:{ctx.label('Entity')}) DETACH DELETE e")
+
+
+def test_a_feature_named_after_a_kip_gets_a_link_and_stays_a_separate_node(
+    ctx, entities, split_corpus, workdir
+):
+    ctx.write_rows(
+        f"UNWIND $rows AS row MATCH (d:{ctx.label('Document')} {{key: row.key}})\n"
+        "SET d.title = row.title",
+        [{"key": "KIP-5", "title": "KIP-5: Versioned State Stores"}],
+    )
+    report = resolve(ctx, split_corpus, workdir, tiers=[1], kinds=["entity"])
+    links = report["entity"]["tier1"]["kip_title_links"]
+
+    assert links["count"] >= 1
+    assert ("Feature|versioned state store", "KIP-5") in {
+        (r["entity"], r["document"]) for r in links["sample"]
+    }
+    # a link, never a merge: both nodes are still there
+    assert ctx.read(
+        f"MATCH (e:{ctx.label('Entity')})-[:SAME_AS]->(d:{ctx.label('Document')}) "
+        "RETURN e.id AS entity, d.key AS document ORDER BY entity"
+    )
+    assert ctx.read(f"MATCH (e:{ctx.label('Entity')}) RETURN count(e) AS n") == [{"n": 4}]
+    # …and a Problem of the same name is not a Feature, so it is not linked
+    assert "Problem|versioned state store" not in {r["entity"] for r in links["sample"]}
+
+
+def test_entity_tier_two_stays_inside_the_kind_and_merges_only_the_same_words(
+    ctx, entities, split_corpus, workdir, embedder
+):
+    report = resolve(ctx, split_corpus, workdir, tiers=[2], kinds=["entity"], embedder=embedder)
+    tier2 = report["entity"]["tier2"]
+    merged = {(p["a"], p["b"]) for p in tier2["auto_pairs"]}
+
+    # "versioned state stores" and "the versioned state stores" differ by an article
+    assert ("Feature|the versioned state store", "Feature|versioned state store") in merged
+    # a different Feature is not merged, however close it reads
+    assert "Feature|versioned state store upgrade path" not in {i for p in merged for i in p}
+    # and the same name under another kind is never even a candidate
+    assert all(a.split("|")[0] == b.split("|")[0] for a, b in merged), (
+        "a merge crossed an Entity kind"
+    )
+    survivors = ctx.read(f"MATCH (e:{ctx.label('Entity')}) RETURN e.id AS id ORDER BY id")
+    assert "Problem|versioned state store" in {r["id"] for r in survivors}
+
+
+def test_the_entity_survivor_is_the_one_with_the_most_evidence(ctx, entities):
+    from brain.resolve.models import Evidence
+    from brain.resolve.names import survivor
+    from brain.resolve.runner import evidence_weight
+    from tests.resolve_helpers import entity as make_entity
+
+    thin = make_entity("Feature|a", "a")
+    fat = make_entity("Feature|the a", "the a")
+    fat.evidence = [Evidence(role="MENTIONS", key=f"{i:040d}", title="q") for i in range(3)]
+    by_id = {c.id: c for c in (thin, fat)}
+    # without evidence the shorter name wins; with it, the better-evidenced node does
+    assert survivor("entity", by_id) == "Feature|a"
+    assert survivor("entity", by_id, evidence_weight(by_id)) == "Feature|the a"

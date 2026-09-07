@@ -50,6 +50,7 @@ ROLE_RANK: dict[str, int] = {
     "REPORTED_BY": 2,
     "COMMENTED": 3,
     "MENTIONS": 4,
+    "PARENT": 6,
     "WORKED_ON": 5,
 }
 #: How much attached context to read per candidate. Five reach the embedding and three the
@@ -176,11 +177,17 @@ def read_person_candidates(ctx: GraphContext) -> list[Candidate]:
 
 
 def read_entity_candidates(ctx: GraphContext) -> list[Candidate]:
-    """Every `Entity`, blocked by its kind, with up to `MAX_EVIDENCE` mention quotes."""
+    """Every `Entity`, blocked by its kind, with its mention quotes and its parents.
+
+    The parent is the document or work item the chunk that mentions the entity belongs to.
+    It is the entity's answer to a person's "what did they touch": two `Decision`s stated
+    in the same KIP are far more likely to be one decision than two that share only a
+    phrasing, and `entity_auto_ok` will not merge on similarity without one of the two.
+    """
     rows = ctx.read(
         f"MATCH (e:{ctx.label(ENTITY_LABEL)})\n"
         "RETURN e.id AS id, e.kind AS kind, e.name AS name, e.description AS description, "
-        "e.aliases AS aliases, e.merged_from AS merged_from, "
+        "e.descriptions AS descriptions, e.aliases AS aliases, e.merged_from AS merged_from, "
         "e.resolution_tier AS resolution_tier\n"
         "ORDER BY e.id"
     )
@@ -189,14 +196,26 @@ def read_entity_candidates(ctx: GraphContext) -> list[Candidate]:
         "RETURN e.id AS pid, 'MENTIONS' AS role, c.id AS key, false AS synthetic, "
         f"left(coalesce(m.quote, ''), {TITLE_CHARS}) AS title"
     )
-    evidence = _attach(quotes)
+    parents = ctx.read(
+        f"MATCH (c:{ctx.label('Chunk')})-[:MENTIONS]->(e:{ctx.label(ENTITY_LABEL)})\n"
+        "WITH DISTINCT e, c.parent_key AS parent_key, c.parent_kind AS parent_kind\n"
+        "WHERE parent_key IS NOT NULL\n"
+        "OPTIONAL MATCH (d) WHERE (d:"
+        f"{ctx.label('Document')} OR d:{ctx.label('WorkItem')}) AND d.key = parent_key\n"
+        "RETURN e.id AS pid, 'PARENT' AS role, parent_key AS key, "
+        "coalesce(d.synthetic, false) AS synthetic, "
+        f"left(coalesce(d.title, parent_key), {TITLE_CHARS}) AS title"
+    )
+    evidence = _attach([*quotes, *parents])
     return [
         Candidate(
             id=row["id"],
             kind="entity",
             block=row.get("kind") or "Entity",
             name=row.get("name") or row["id"],
-            description=row.get("description") or None,
+            # The longest description says the most; the rest live on in `descriptions[]`.
+            description=longest(row.get("descriptions"), row.get("description")),
+            descriptions=sorted({d for d in (row.get("descriptions") or []) if d}),
             identities=[row["id"]],
             aliases=sorted(row.get("aliases") or []),
             merged_from=sorted(row.get("merged_from") or []),
@@ -205,6 +224,14 @@ def read_entity_candidates(ctx: GraphContext) -> list[Candidate]:
         )
         for row in rows
     ]
+
+
+def longest(values: Any, fallback: Any) -> str | None:
+    """The longest of the stored descriptions, or the single one, or nothing."""
+    pool = [v for v in (list(values) if isinstance(values, list) else []) if v]
+    if fallback:
+        pool.append(fallback)
+    return max(pool, key=len) if pool else None
 
 
 def read_candidates(ctx: GraphContext, kind: str) -> list[Candidate]:
@@ -220,20 +247,53 @@ def embed_hashes(ctx: GraphContext, label: str) -> dict[str, str]:
     return {r["id"]: r["hash"] for r in rows}
 
 
-def knn(ctx: GraphContext, label: str, *, k: int, floor: float) -> list[tuple[str, str, float]]:
+#: How many extra neighbours to ask the index for when the answer has to be filtered.
+#: `Entity` holds six kinds in one index and only same-kind neighbours are candidates, so
+#: the top-k of the index is not the top-k of the kind. Five times k is enough on this
+#: corpus (the largest kind is 42% of the label) and still one probe per node.
+KIND_OVERSAMPLE = 5
+
+
+def knn(
+    ctx: GraphContext,
+    label: str,
+    *,
+    k: int,
+    floor: float,
+    within_kind: bool = False,
+) -> list[tuple[str, str, float]]:
     """Top-`k` neighbours of every embedded node, scored by cosine, above `floor`.
 
     `k + 1` is asked for because the nearest neighbour of a node is always itself.
+
+    `within_kind` restricts neighbours to nodes sharing the node's `kind` property and
+    then re-truncates to `k`, so "ten candidates per entity, inside its kind" means ten
+    Decisions for a Decision — not ten nodes of which three happen to be Decisions.
     """
     key = KEY_PROPS[label]
+    probe = k * KIND_OVERSAMPLE + 1 if within_kind else k + 1
+    same_kind = " AND node.kind = n.kind" if within_kind else ""
+    truncate = (
+        "\nWITH n, node, score ORDER BY score DESC, node.`" + key + "`"
+        "\nWITH n, collect({b: node.`" + key + "`, s: score})[..$k] AS top"
+        "\nUNWIND top AS t"
+        f"\nRETURN n.`{key}` AS a, t.b AS b, t.s AS score ORDER BY score DESC, a, b"
+    )
+    tail = (
+        truncate
+        if within_kind
+        else (f"\nRETURN n.`{key}` AS a, node.`{key}` AS b, score ORDER BY score DESC, a, b")
+    )
     rows = ctx.read(
         f"MATCH (n:{ctx.label(label)}) WHERE n.`{EMBEDDING_PROP}` IS NOT NULL\n"
-        f"CALL db.index.vector.queryNodes($index, $k, n.`{EMBEDDING_PROP}`) "
+        f"CALL db.index.vector.queryNodes($index, $probe, n.`{EMBEDDING_PROP}`) "
         "YIELD node, score\n"
-        f"WITH n, node, score WHERE node <> n AND score >= $floor AND node:{ctx.label(label)}\n"
-        f"RETURN n.`{key}` AS a, node.`{key}` AS b, score ORDER BY score DESC, a, b",
+        f"WITH n, node, score WHERE node <> n AND score >= $floor "
+        f"AND node:{ctx.label(label)}{same_kind}"
+        f"{tail}",
         index=ctx.name(INDEX_NAMES[label]).strip("`"),
-        k=k + 1,
+        probe=probe,
+        k=k,
         floor=floor,
     )
     return [(r["a"], r["b"], float(r["score"])) for r in rows]
@@ -356,6 +416,36 @@ def merge_groups(ctx: GraphContext, label: str, groups: Sequence[Sequence[str]])
         "deleted": counters.get("nodes_deleted", 0),
         "failed": [],
     }
+
+
+def write_document_links(ctx: GraphContext, rows: Sequence[dict[str, Any]]) -> int:
+    """`(Entity)-[:SAME_AS]->(Document)` — a link, never a merge (brief 08 decision 2).
+
+    A Feature named exactly after a KIP is not the KIP: the KIP is a document that proposes
+    it. Merging them would put a page's body on a capability and lose both. The edge says
+    they are the same *thing under two names* and leaves two nodes.
+    """
+    if not rows:
+        return 0
+    ctx.write_rows(
+        "UNWIND $rows AS row\n"
+        f"MATCH (e:{ctx.label(ENTITY_LABEL)} {{`id`: row.src}})\n"
+        f"MATCH (d:{ctx.label('Document')} {{`key`: row.dst}})\n"
+        f"MERGE (e)-[r:{SAME_AS}]->(d)\n"
+        "SET r += row.props",
+        rows,
+    )
+    return len(rows)
+
+
+def document_titles(ctx: GraphContext, kinds: Sequence[str] = ("KIP",)) -> dict[str, str]:
+    """`{normalised title: key}` for the documents entity tier 1 aliases against."""
+    rows = ctx.read(
+        f"MATCH (d:{ctx.label('Document')}) WHERE d.kind IN $kinds AND d.title IS NOT NULL "
+        "RETURN d.key AS key, d.title AS title",
+        kinds=list(kinds),
+    )
+    return {r["title"]: r["key"] for r in rows}
 
 
 def set_resolved(ctx: GraphContext, label: str, rows: Sequence[dict[str, Any]]) -> int:

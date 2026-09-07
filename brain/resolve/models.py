@@ -43,6 +43,8 @@ class Candidate(BaseModel):
     name: str
     source: str = ""
     description: str | None = None
+    #: Every surface description a merge has collected, longest first in `description`.
+    descriptions: list[str] = Field(default_factory=list)
     identities: list[str] = Field(default_factory=list)
     aliases: list[str] = Field(default_factory=list)
     #: Ids an *earlier* tier already merged into this node. Carried so tier 3 adds to the
@@ -59,6 +61,11 @@ class Candidate(BaseModel):
     def touched(self) -> frozenset[str]:
         """Every item key this candidate is attached to."""
         return frozenset(e.key for e in self.evidence if e.key)
+
+    @property
+    def parents(self) -> frozenset[str]:
+        """The documents and work items this candidate was found in."""
+        return frozenset(e.key for e in self.evidence if e.role == "PARENT" and e.key)
 
     @property
     def touched_real(self) -> frozenset[str]:
@@ -87,6 +94,8 @@ class PairSide(BaseModel):
     name: str
     source: str = ""
     description: str | None = None
+    #: Every surface description a merge has collected, longest first in `description`.
+    descriptions: list[str] = Field(default_factory=list)
     identities: list[str] = Field(default_factory=list)
     aliases: list[str] = Field(default_factory=list)
     evidence: list[Evidence] = Field(default_factory=list)
@@ -117,6 +126,7 @@ class BatchInput(BaseModel):
     schema_path: str
     schema_sha256: str
     band: list[float]
+    band_note: str = ""
     pair_count: int
     pairs: list[BatchPair]
 

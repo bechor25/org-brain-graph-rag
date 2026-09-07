@@ -43,7 +43,10 @@ for _name, (_help, _plan) in _PLANNED.items():
 @app.command()
 def harvest(
     source: str = typer.Option(
-        "all", "--source", help="Which connector to run: jira | confluence | git | all"
+        "all",
+        "--source",
+        help="Which source to run: a `name` from sources.yaml, or `all` for every "
+        "enabled one.",
     ),
     since: str | None = typer.Option(
         None,
@@ -57,11 +60,13 @@ def harvest(
     from datetime import date as _date
 
     from brain.config import get_settings
+    from brain.harvest.auth import AuthError
+    from brain.harvest.registry import RegistryError
     from brain.harvest.runner import resolve_sources, run_harvest
 
     try:
         sources = resolve_sources(source)
-    except ValueError as exc:
+    except RegistryError as exc:
         raise typer.BadParameter(str(exc), param_hint="--source") from exc
 
     since_date: _date | None = None
@@ -72,29 +77,38 @@ def harvest(
             raise typer.BadParameter(f"{since!r} is not YYYY-MM-DD", param_hint="--since") from exc
 
     settings = get_settings()
-    _, code = run_harvest(
-        sources,
-        raw_dir=settings.raw_dir,
-        reports_dir=settings.reports_dir,
-        since=since_date,
-        echo=typer.echo,
-    )
+    try:
+        _, code = run_harvest(
+            sources,
+            raw_dir=settings.raw_dir,
+            reports_dir=settings.reports_dir,
+            since=since_date,
+            echo=typer.echo,
+        )
+    except (RegistryError, AuthError) as exc:
+        # A misconfigured source or a broken token: say what to fix, not a traceback.
+        typer.echo(f"harvest: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
     raise typer.Exit(code=code)
 
 
 @app.command()
 def canon(
     source: str = typer.Option(
-        "all", "--source", help="Which mapper to run: jira | confluence | git | all"
+        "all",
+        "--source",
+        help="Which source to map: a `name` from sources.yaml, or `all` for every "
+        "enabled one.",
     ),
 ) -> None:
     """Normalize raw data into the canonical model (data/canonical/*.jsonl) [Plan 1]."""
     from brain.canon.runner import CanonError, resolve_sources, run_canon
     from brain.config import get_settings
+    from brain.harvest.registry import RegistryError
 
     try:
         sources = resolve_sources(source)
-    except ValueError as exc:
+    except RegistryError as exc:
         raise typer.BadParameter(str(exc), param_hint="--source") from exc
 
     settings = get_settings()
@@ -353,7 +367,14 @@ def extract_merge() -> None:
 
     settings = get_settings()
     try:
-        _, code = merge_from_settings(settings.batches_dir, settings.reports_dir, echo=typer.echo)
+        _, code = merge_from_settings(
+            settings.batches_dir,
+            settings.reports_dir,
+            # A re-merge must land on the entities `brain resolve` kept, not recreate the
+            # ones it merged away — the ledger is what says which is which.
+            canonical_dir=settings.canonical_dir,
+            echo=typer.echo,
+        )
     except (MergeError, OSError, ValueError) as exc:
         typer.echo(f"extract merge: {exc}", err=True)
         raise typer.Exit(code=1) from exc
@@ -664,6 +685,71 @@ def resolve_eval(
     except (OSError, ValueError) as exc:
         typer.echo(f"resolve eval: {exc}", err=True)
         raise typer.Exit(code=1) from exc
+    raise typer.Exit(code=code)
+
+
+@app.command()
+def reset(
+    graph: bool = typer.Option(
+        False, "--graph", help="Delete every node; keep constraints/indexes."
+    ),
+    data: bool = typer.Option(
+        False,
+        "--data",
+        help="Empty data/raw, canonical, batches, reports, eval. Never data/fixtures.",
+    ),
+    synthetic: bool = typer.Option(
+        False,
+        "--synthetic",
+        help="Remove only the synthetic Xray/ADO layer: synthetic=true records and nodes, "
+        "the merge ledger, the truth file and the synthetic batches. The real corpus stays.",
+    ),
+    all_: bool = typer.Option(False, "--all", help="--graph and --data together."),
+    yes: bool = typer.Option(
+        False, "--yes", help="Actually delete. Without it the command only prints the manifest."
+    ),
+) -> None:
+    """Delete the POC's data so real systems can be connected (ADR-0005) [Plan 1]."""
+    from brain.config import get_settings
+    from brain.reset import ResetError, run_reset
+
+    if all_:
+        graph = data = True
+    if not (graph or data or synthetic):
+        raise typer.BadParameter(
+            "pick a scope: --graph, --data, --synthetic or --all", param_hint="brain reset"
+        )
+
+    s = get_settings()
+    needs_graph = graph or synthetic
+    client = None
+    try:
+        if needs_graph:
+            from brain.graph.client import GraphClient
+            from brain.graph.context import GraphContext
+
+            client = GraphClient(s.neo4j_uri, s.neo4j_user, s.neo4j_password, s.neo4j_database)
+            ctx = GraphContext(client)
+        else:
+            ctx = None
+        _, code = run_reset(
+            data_dir=s.data_dir,
+            canonical_dir=s.canonical_dir,
+            batches_dir=s.batches_dir,
+            reports_dir=s.reports_dir,
+            ctx=ctx,
+            graph=graph,
+            data=data,
+            synthetic=synthetic,
+            confirmed=yes,
+            echo=typer.echo,
+        )
+    except (ResetError, OSError, ValueError, RuntimeError) as exc:
+        typer.echo(f"reset: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    finally:
+        if client is not None:
+            client.close()
     raise typer.Exit(code=code)
 
 

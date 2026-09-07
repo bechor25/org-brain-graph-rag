@@ -33,8 +33,12 @@ from brain.resolve.tiers import (
     AUTO_THRESHOLD,
     MIN_SUBSTANTIVE_TOKENS,
     band_table,
+    cap_band,
     dedupe,
+    entity_auto_ok,
     entity_tier1,
+    generic_stems_seen,
+    kip_title_links,
     person_tier1,
     tier2_pairs,
 )
@@ -51,6 +55,11 @@ TIERS: tuple[int, ...] = (1, 2, 3)
 #: Neighbours per candidate the vector index returns. 25 is well past the largest merge
 #: group this corpus can produce (4 identities) and still one cheap probe per node.
 DEFAULT_K = 25
+#: Neighbours per entity (coordinator's decision (a)). Ten inside the kind, not ten in the
+#: label: `Entity` holds six kinds and 9,237 nodes, and all-pairs is 42M comparisons.
+ENTITY_K = 10
+#: The adjudicator's budget for the entity band. Ranked, not truncated — see `cap_band`.
+ENTITY_BAND_LIMIT = 1200
 #: A merge group larger than this is reported as a warning, not refused: it is usually a
 #: name so common that similarity chained several people together.
 LARGE_GROUP = 5
@@ -130,6 +139,16 @@ def load_alias_candidates(reports_dir: Path) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------- one merge
 
 
+def evidence_weight(by_id: dict[str, Candidate]) -> Callable[[str], int]:
+    """How much the corpus says about a node — the entity survivor rule."""
+
+    def weight(node_id: str) -> int:
+        candidate = by_id.get(node_id)
+        return len(candidate.evidence) if candidate else 0
+
+    return weight
+
+
 def survivor_rows(
     kind: str,
     group: Sequence[str],
@@ -139,7 +158,7 @@ def survivor_rows(
     stamp: str,
 ) -> tuple[str, dict[str, Any]]:
     """The survivor id and the properties that record what it swallowed."""
-    keep = survivor(kind, group)
+    keep = survivor(kind, group, evidence_weight(by_id) if kind == "entity" else None)
     swallowed = [i for i in group if i != keep]
     members = [by_id[i] for i in group if i in by_id]
     identities = sorted({i for m in members for i in (m.identities or [m.id])})
@@ -161,6 +180,20 @@ def survivor_rows(
     }
     if kind == "person":
         props["identity_keys"] = identities
+    else:
+        # Every phrasing the merged entities carried, longest first: the survivor's own
+        # description is one of them, so nothing a merge swallowed is lost.
+        props["descriptions"] = sorted(
+            {
+                d
+                for m in members
+                for d in ([*m.descriptions, m.description] if m.description else m.descriptions)
+                if d
+            },
+            key=lambda d: (-len(d), d),
+        )
+        if props["descriptions"]:
+            props["description"] = props["descriptions"][0]
     return keep, props
 
 
@@ -179,7 +212,11 @@ def apply_merges(
     label = LABELS[kind]
     by_id = {c.id: c for c in candidates}
     grouped = connected_groups(pairs)
-    ordered = [[survivor(kind, g), *[i for i in g if i != survivor(kind, g)]] for g in grouped]
+    weight = evidence_weight(by_id) if kind == "entity" else None
+    ordered = [
+        [survivor(kind, g, weight), *[i for i in g if i != survivor(kind, g, weight)]]
+        for g in grouped
+    ]
     stats: dict[str, Any] = {
         "pairs": len(pairs),
         "groups": len(grouped),
@@ -247,10 +284,14 @@ def run_tier1(
     dry_run: bool,
     stamp: str,
 ) -> dict[str, Any]:
+    links: list[dict[str, Any]] = []
     if kind == "person":
         pairs = person_tier1(candidates, alias_candidates=alias_candidates)
     else:
         pairs = entity_tier1(candidates)
+        # Brief 08 decision 2: a Feature named after a KIP is linked to the Document, not
+        # merged into anything. It is an edge, so it never enters the merge machinery.
+        links = kip_title_links(candidates, resolve_graph.document_titles(ctx))
     pairs = dedupe(pairs)
     by_rule: dict[str, int] = {}
     for pair in pairs:
@@ -267,6 +308,16 @@ def run_tier1(
     )
     stats["by_rule"] = dict(sorted(by_rule.items()))
     stats["sample"] = [p.model_dump() for p in pairs[:20]]
+    if kind == "person":
+        stats["generic_stems_rejected"] = generic_stems_seen(candidates)
+    if links:
+        stats["kip_title_links"] = {
+            "count": len(links),
+            "written": 0 if dry_run else resolve_graph.write_document_links(ctx, links),
+            "sample": [{"entity": r["src"], "document": r["dst"]} for r in links[:20]],
+            "note": "SAME_AS to the Document. A link, never a merge — the KIP proposes the "
+            "feature, it is not the feature.",
+        }
     return stats
 
 
@@ -278,6 +329,7 @@ def score_tier2(
     embedder: OllamaEmbedder,
     k: int,
     vector_evidence: int = resolve_embed.EVIDENCE_IN_VECTOR,
+    band_limit: int = ENTITY_BAND_LIMIT,
     echo: Callable[[str], None],
 ) -> tuple[list[Pair], list[Pair], dict[str, Any]]:
     """Embed, probe the vector index, split the band. Writes vectors, merges nothing."""
@@ -287,8 +339,20 @@ def score_tier2(
     usage = resolve_embed.ensure_embeddings(
         ctx, label, candidates, embedder, evidence=vector_evidence, echo=echo
     )
-    scored = resolve_graph.knn(ctx, label, k=k, floor=ADJUDICATE_FLOOR)
-    auto, grey, filtered = tier2_pairs(scored, by_id, text_note=usage["text_choice"])
+    scored = resolve_graph.knn(
+        ctx, label, k=k, floor=ADJUDICATE_FLOOR, within_kind=(kind == "entity")
+    )
+    auto, grey, filtered = tier2_pairs(
+        scored,
+        by_id,
+        text_note=usage["text_choice"],
+        # Entities need more than a cosine to merge unasked: a shared word or a shared
+        # parent document. Two Decisions phrased alike in unrelated KIPs are two decisions.
+        auto_extra=entity_auto_ok if kind == "entity" else None,
+    )
+    cut_off = None
+    if kind == "entity":
+        grey, cut_off = cap_band(grey, by_id, limit=band_limit)
     stats = {
         "k": k,
         "band": [ADJUDICATE_FLOOR, AUTO_THRESHOLD],
@@ -298,6 +362,8 @@ def score_tier2(
         "auto": len(auto),
         "grey": len(grey),
         "filtered": filtered,
+        "band_limit": band_limit if kind == "entity" else None,
+        "band_cut_off_rank": cut_off,
         # Reported, never applied: what the adjudicator's bill would be at other floors.
         "band_table": band_table(scored, by_id),
     }
@@ -315,6 +381,7 @@ def run_tier2(
     dry_run: bool,
     stamp: str,
     vector_evidence: int,
+    band_limit: int = ENTITY_BAND_LIMIT,
     echo: Callable[[str], None],
 ) -> dict[str, Any]:
     auto, grey, stats = score_tier2(
@@ -324,6 +391,7 @@ def run_tier2(
         embedder=embedder,
         k=k,
         vector_evidence=vector_evidence,
+        band_limit=band_limit,
         echo=echo,
     )
     by_id = {c.id: c for c in candidates}
@@ -503,7 +571,10 @@ def run_resolve(
                     candidates=candidates,
                     embedder=embedder,
                     ledger=ledger,
-                    k=k,
+                    # Ten neighbours inside the kind for entities, twenty-five for people:
+                    # a person has a handful of identities, an entity kind has thousands of
+                    # near-synonyms and a wide k buys duplicates of the same question.
+                    k=ENTITY_K if (kind == "entity" and k == DEFAULT_K) else k,
                     dry_run=dry_run,
                     stamp=stamp,
                     vector_evidence=vector_evidence,

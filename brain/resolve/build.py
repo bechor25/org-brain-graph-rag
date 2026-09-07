@@ -39,8 +39,12 @@ MAX_PAIRS = 25
 #: Bytes, decimal KB — the brief says "40 KB" and a reviewer dividing by 1000 must agree.
 MAX_BATCH_BYTES = 40_000
 MAX_LINE_BYTES = 45_000
-#: Brief 08: up to three evidence items per side. More is not more decidable.
+#: Evidence per side, as (quotes/roles, parents). Brief 08 gives people three touched
+#: items; the coordinator gives entities two quotes plus the documents they were found in,
+#: because for an entity "where was this said" is most of the question.
+EVIDENCE_PER_SIDE: dict[str, tuple[int, int]] = {"person": (3, 0), "entity": (2, 2)}
 MAX_EVIDENCE_PER_SIDE = 3
+PARENT_ROLE = "PARENT"
 
 
 class BuildError(RuntimeError):
@@ -66,6 +70,9 @@ def pair_id(kind: str, a: str, b: str) -> str:
 
 
 def side(candidate: Candidate) -> PairSide:
+    quotes, parents = EVIDENCE_PER_SIDE.get(candidate.kind, (MAX_EVIDENCE_PER_SIDE, 0))
+    said = [e for e in candidate.evidence if e.role != PARENT_ROLE][:quotes]
+    where = [e for e in candidate.evidence if e.role == PARENT_ROLE][:parents]
     return PairSide(
         id=candidate.id,
         name=candidate.name,
@@ -73,7 +80,7 @@ def side(candidate: Candidate) -> PairSide:
         description=candidate.description,
         identities=candidate.identities,
         aliases=candidate.aliases,
-        evidence=candidate.evidence[:MAX_EVIDENCE_PER_SIDE],
+        evidence=[*said, *where],
     )
 
 
@@ -120,6 +127,14 @@ def envelope(
     generated_at: str,
     schema_sha: str,
 ) -> dict[str, Any]:
+    """`band` describes what is *in this batch*, not the tier's nominal window.
+
+    The two are not the same and saying so cost an adjudication round: a pair scoring 1.00
+    can be in the band, because the name guard demotes an initials-only pair however high
+    its cosine. Reading `[0.80, 0.92)` beside a `similarity: 1.0` makes the reader distrust
+    one of the two numbers, and the number they should distrust is the label.
+    """
+    scores = [p.similarity for p in pairs]
     return BatchInput(
         batch_id=batch_id,
         shard=shard,
@@ -129,7 +144,14 @@ def envelope(
         generated_at=generated_at,
         schema_path=SCHEMA_REF,
         schema_sha256=schema_sha,
-        band=[ADJUDICATE_FLOOR, AUTO_THRESHOLD],
+        band=[min(scores), max(scores)] if scores else [ADJUDICATE_FLOOR, AUTO_THRESHOLD],
+        band_note=(
+            f"Actual similarity range of this batch. The adjudication window is "
+            f"[{ADJUDICATE_FLOOR}, {AUTO_THRESHOLD}), but a pair above it is here because "
+            "an automatic merge was refused — for people, a display that is only initials "
+            "plus a surname; for entities, no shared word and no shared parent document. "
+            "A high similarity is therefore not a reason to answer `same`."
+        ),
         pair_count=len(pairs),
         pairs=list(pairs),
     ).model_dump(mode="json")
@@ -266,7 +288,15 @@ def run_build(
     from brain.resolve.runner import score_tier2
 
     started = time.perf_counter()
-    root = batches_dir / TASK
+    if len(kinds) != 1:
+        raise BuildError(
+            f"build one kind at a time, got {list(kinds)}: people and entities get their own "
+            "shard tree so an agent working one is never handed the other"
+        )
+    # `data/batches/resolve/<kind>/shard-NN/`. People and entities are separate work with
+    # separate status files; sharing a tree would make a rebuild of one refuse because the
+    # other is in flight, and would delete its inputs as stale.
+    root = batches_dir / TASK / kinds[0]
     busy = shards_in_flight(root)
     if busy and not force:
         raise BuildError(
@@ -285,12 +315,14 @@ def run_build(
             per_kind[kind] = {"candidates": 0, "grey": 0, "batches": 0}
             continue
         by_id = {c.id: c for c in candidates}
+        from brain.resolve.runner import DEFAULT_K, ENTITY_K
+
         _auto, grey, stats = score_tier2(
             ctx,
             kind=kind,
             candidates=candidates,
             embedder=embedder,
-            k=k,
+            k=ENTITY_K if (kind == "entity" and k == DEFAULT_K) else k,
             vector_evidence=EVIDENCE_IN_VECTOR if vector_evidence is None else vector_evidence,
             echo=echo,
         )
@@ -310,6 +342,8 @@ def run_build(
             "candidates": len(candidates),
             "auto_band": stats["auto"],
             "grey": len(grey),
+            "band_limit": stats.get("band_limit"),
+            "band_cut_off_rank": stats.get("band_cut_off_rank"),
             "shards": shards,
             "score_range": [
                 round(min((p.score for p in grey), default=0.0), 4),

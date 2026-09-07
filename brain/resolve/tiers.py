@@ -14,12 +14,20 @@ finds only the real-corpus duplicates it was written for.
 from __future__ import annotations
 
 import itertools
+import re
 from collections import defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from typing import Any
 
 from brain.resolve.models import Candidate, Pair, make_pair
-from brain.resolve.names import display_tokens, key_of, norm_display, source_of
+from brain.resolve.names import (
+    display_tokens,
+    key_of,
+    norm_display,
+    rejected_stem,
+    source_of,
+    username_stem,
+)
 
 #: Cosine at or above which tier 2 merges without asking (spec 3.6, brief decision 3).
 AUTO_THRESHOLD = 0.92
@@ -34,6 +42,8 @@ MIN_SUBSTANTIVE_TOKENS = 2
 #: Shortest identity-key stem that counts as a name in the grey-band blocking. Three
 #: characters match by accident; four rarely do.
 MIN_STEM = 4
+#: `KIP-848: The Next Generation…` -> `The Next Generation…`
+_KIP_PREFIX = re.compile(r"^\s*KIP-\d+\s*[:.\-]?\s*", re.IGNORECASE)
 
 #: Tier-1 rule names, in the order the report lists them.
 PERSON_RULES: tuple[str, ...] = (
@@ -43,7 +53,10 @@ PERSON_RULES: tuple[str, ...] = (
     "alias_candidates",
     "confluence_userkey",
 )
-ENTITY_RULES: tuple[str, ...] = ("norm_name",)
+ENTITY_RULES: tuple[str, ...] = ("norm_name", "kip_title_alias")
+#: Kinds a KIP title may name. A `Decision` or a `Problem` called after a KIP is a
+#: coincidence of phrasing; a `Feature` or a `Technology` is the thing the KIP proposes.
+KIP_ALIAS_KINDS: frozenset[str] = frozenset({"Feature", "Technology"})
 
 
 def _index(candidates: Iterable[Candidate]) -> dict[str, Candidate]:
@@ -258,7 +271,54 @@ def person_tier1(
                 )
             )
 
+    # (e) the same username, byte for byte, typed into two different systems.
+    # `danica.fine.10077` (ADO), `danica.fine@gmail.com` (git) and `danicafine` (Jira) are
+    # one string once the synthetic namespace, the numeric id, the mail domain and the
+    # separators come off — and nobody arrives at another person's username by accident.
+    # Two identities of the *same* source are excluded: within one system a username is
+    # already unique, so a collision there means the stemming was too aggressive.
+    stems_by_id: dict[str, dict[str, set[str]]] = {}
+    for c in candidates:
+        for identity in c.identities or [c.id]:
+            if stem := username_stem(identity):
+                stems_by_id.setdefault(c.id, {}).setdefault(stem, set()).add(source_of(identity))
+    by_stem: dict[str, list[str]] = defaultdict(list)
+    for cid, found in stems_by_id.items():
+        for stem in found:
+            by_stem[stem].append(cid)
+    for stem, ids in sorted(by_stem.items()):
+        for a, b in itertools.combinations(sorted(set(ids)), 2):
+            sources = stems_by_id[a][stem] | stems_by_id[b][stem]
+            if len(sources) < 2:
+                continue
+            pairs.append(
+                make_pair(
+                    a,
+                    b,
+                    kind="person",
+                    block="person",
+                    tier=1,
+                    rule="username_stem",
+                    score=1.0,
+                    reason=f"username {stem!r} typed identically in {'/'.join(sorted(sources))}",
+                )
+            )
+
     return dedupe(pairs)
+
+
+def generic_stems_seen(candidates: Sequence[Candidate]) -> dict[str, int]:
+    """Stems `username_stem` refused as generic words, and how often.
+
+    In the report because a stoplist that quietly swallowed a real surname would otherwise
+    be invisible: the rule it disables is the highest-precision one this tier has.
+    """
+    counts: dict[str, int] = {}
+    for c in candidates:
+        for identity in c.identities or [c.id]:
+            if stem := rejected_stem(identity):
+                counts[stem] = counts.get(stem, 0) + 1
+    return dict(sorted(counts.items()))
 
 
 def entity_tier1(candidates: Sequence[Candidate]) -> list[Pair]:
@@ -279,6 +339,95 @@ def entity_tier1(candidates: Sequence[Candidate]) -> list[Pair]:
     )
 
 
+#: Words whose presence or absence does not change which thing is named. Deliberately
+#: grammatical: `all`, `max`, `avg`, `latest` and `range` are NOT here, because they are
+#: exactly what tells `rebalance latency avg` from `rebalance latency max`.
+FILLER_TOKENS: frozenset[str] = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "by",
+        "for",
+        "in",
+        "its",
+        "new",
+        "of",
+        "on",
+        "or",
+        "that",
+        "the",
+        "this",
+        "to",
+        "with",
+    }
+)
+
+
+def kip_title_links(
+    candidates: Sequence[Candidate], titles: dict[str, str]
+) -> list[dict[str, Any]]:
+    """Brief 08 decision 2: a Feature/Technology named exactly after a KIP links to the
+    Document — `SAME_AS`, not a merge. Returns rows `write_document_links` can write.
+
+    Matched on the title's *substantive words*, with the `KIP-N:` prefix and the articles
+    dropped: the page is called "KIP-848: The Next Generation of the Consumer Rebalance
+    Protocol" and the extractor names "next generation consumer rebalance protocol". Those
+    are the same name; requiring the articles to line up would find almost nothing.
+
+    Word *set*, not sequence, and every word has to be there — this is a naming identity,
+    not a similarity, and it is the only entity rule allowed to fire without a reader.
+    """
+    index: dict[frozenset[str], str] = {}
+    for title, key in titles.items():
+        words = display_tokens(_KIP_PREFIX.sub("", title)) - FILLER_TOKENS
+        if words:
+            index.setdefault(words, key)
+    rows: list[dict[str, Any]] = []
+    for c in candidates:
+        if c.block not in KIP_ALIAS_KINDS:
+            continue
+        for name in {c.name, *c.aliases}:
+            key = index.get(display_tokens(name) - FILLER_TOKENS)
+            if key:
+                rows.append(
+                    {
+                        "src": c.id,
+                        "dst": key,
+                        "props": {
+                            "tier": 1,
+                            "rule": "kip_title_alias",
+                            "score": 1.0,
+                            "reason": f"{c.block} is named exactly after {key}",
+                        },
+                    }
+                )
+                break
+    return sorted(rows, key=lambda r: (r["src"], r["dst"]))
+
+
+def entity_auto_ok(a: Candidate, b: Candidate) -> bool:
+    """May two entities be merged on similarity alone?
+
+    Coordinator's decision (b) asks for a shared word or a shared parent document. Measured
+    on this corpus that is not enough, and the failure is not subtle: `rebalance latency
+    avg`, `rebalance latency max` and `rebalance latency total` share three words and one
+    KIP, score above 0.92 against each other, and are three different metrics. A dry run
+    chained eight of them into one node, and fourteen query APIs into another.
+
+    So the shared context is necessary and the *names* decide: an automatic merge needs the
+    two names to be the same words — same order or not, singular or plural, punctuation or
+    not — give or take a grammatical filler. Every other pair, however high the cosine, is
+    a question for a reader, which is what the grey band is for.
+    """
+    if not (display_tokens(a.name) & display_tokens(b.name) or a.parents & b.parents):
+        return False
+    ta, tb = display_tokens(a.name), display_tokens(b.name)
+    if not ta or not tb:
+        return False
+    return not (ta ^ tb) - FILLER_TOKENS
+
+
 def band(score: float) -> str:
     """`"auto"` (>= 0.92), `"grey"` (0.80-0.92), `"reject"` (< 0.80)."""
     if score >= AUTO_THRESHOLD:
@@ -296,6 +445,7 @@ def tier2_pairs(
     guard: bool = True,
     blocking: bool = True,
     floor: float = ADJUDICATE_FLOOR,
+    auto_extra: Callable[[Candidate, Candidate], bool] | None = None,
 ) -> tuple[list[Pair], list[Pair], dict[str, int]]:
     """Split scored candidate pairs into (auto-merge, adjudicate) plus what was filtered.
 
@@ -309,7 +459,7 @@ def tier2_pairs(
     """
     auto: dict[tuple[str, str], Pair] = {}
     grey: dict[tuple[str, str], Pair] = {}
-    filtered = {"demoted_by_name_guard": 0, "dropped_by_blocking": 0}
+    filtered = {"demoted_by_name_guard": 0, "dropped_by_blocking": 0, "demoted_by_auto_extra": 0}
     for a, b, score in scored:
         if a == b or a not in by_id or b not in by_id:
             continue
@@ -319,8 +469,15 @@ def tier2_pairs(
             continue
         where = "auto" if score >= AUTO_THRESHOLD else "grey"
         demoted = where == "auto" and guard and not auto_guard(by_id[a], by_id[b])
-        if demoted:
+        unrelated = (
+            where == "auto"
+            and not demoted
+            and auto_extra is not None
+            and not auto_extra(by_id[a], by_id[b])
+        )
+        if demoted or unrelated:
             where = "grey"
+            filtered["demoted_by_auto_extra" if unrelated else "demoted_by_name_guard"] += 1
         if where == "grey" and blocking and not name_blocked(by_id[a], by_id[b]):
             filtered["dropped_by_blocking"] += 1
             continue
@@ -335,10 +492,9 @@ def tier2_pairs(
             reason=(
                 f"cosine {score:.4f} on {text_note}"
                 + (" — names are initials, so not merged unasked" if demoted else "")
+                + (" — no shared word and no shared parent" if unrelated else "")
             ),
         )
-        if demoted:
-            filtered["demoted_by_name_guard"] += 1
         target = auto if where == "auto" else grey
         prior = target.get(pair.key)
         if prior is None or pair.score > prior.score:
@@ -376,6 +532,29 @@ def band_table(
                 }
             )
     return rows
+
+
+def cap_band(
+    grey: Sequence[Pair], by_id: dict[str, Candidate], *, limit: int
+) -> tuple[list[Pair], float | None]:
+    """Keep the `limit` most answerable pairs, ranked by score x a shared-token bonus.
+
+    A band bigger than the agents can read is not a band, it is a backlog. Ranking rather
+    than raising the floor keeps the *hard* pairs — a 0.84 pair whose names share two words
+    outranks a 0.91 pair that shares none — and the cut-off is reported so the planner can
+    see what was left out and at what rank, rather than discovering a silent truncation.
+    """
+    if limit <= 0 or len(grey) <= limit:
+        return list(grey), None
+
+    def rank(p: Pair) -> float:
+        a, b = by_id[p.a], by_id[p.b]
+        shared = len(display_tokens(a.name) & display_tokens(b.name))
+        bonus = 1.0 + 0.10 * min(shared, 3) + (0.10 if a.parents & b.parents else 0.0)
+        return p.score * bonus
+
+    ordered = sorted(grey, key=lambda p: (-rank(p), p.a, p.b))
+    return ordered[:limit], round(rank(ordered[limit - 1]), 4)
 
 
 def dedupe(pairs: Iterable[Pair]) -> list[Pair]:
