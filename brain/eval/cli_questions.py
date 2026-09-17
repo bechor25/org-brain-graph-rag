@@ -56,7 +56,9 @@ def build(
         DEFAULT_SLACK, "--slack", help="Extra questions to ask for, as a fraction of --n."
     ),
     spares: int = typer.Option(
-        DEFAULT_SPARES, "--spares", help="Extra paths per type the forger may substitute in."
+        DEFAULT_SPARES,
+        "--spares",
+        help="Spare paths per BATCH the forger may substitute in. 0 turns them off.",
     ),
     seed: int = typer.Option(
         DEFAULT_SEED, "--seed", help="Which paths the seeded pick takes from each pool."

@@ -172,16 +172,56 @@ class FakeCtx:
         raise AssertionError("run_build must not query the graph in this test")
 
 
+#: Which shape stands in for each type in the fake sampler, so a fake path looks like the
+#: real one it replaces.
+SHAPE_FOR = {
+    "traceability": "test_fix",
+    "impact": "blast_radius",
+    "rationale": "motivation",
+    "global": "community_theme",
+    "temporal": "release_window",
+}
+
+
+def fake_sampler(monkeypatch: pytest.MonkeyPatch, *, snippetless: set[str] = frozenset()):
+    """A sampler that honours `wanted` and `exclude`, which is what the two phases rely on.
+
+    A fake that ignores both hands phase two the same paths phase one already asked about,
+    and the double-counted asks look like a bug in `run_build` rather than in the fake.
+    """
+    handed: list[str] = []
+
+    def _sample(ctx, wanted, *, seed=0, truth=None, exclude=()):
+        blocked = set(exclude)
+        out = []
+        for qtype, n in wanted.items():
+            made = 0
+            index = 0
+            while made < n:
+                key = f"{qtype[:2]}{index}"
+                index += 1
+                if key in blocked or key in handed:
+                    continue
+                handed.append(key)
+                out.append(sample(SHAPE_FOR[qtype], qtype, key))
+                made += 1
+        return out
+
+    def _attach(ctx, paths):
+        for path in paths:
+            if path.path_key in snippetless:
+                path.snippets = []
+        return sum(len(p.snippets) for p in paths)
+
+    monkeypatch.setattr(paths_mod, "load_truth", lambda *a, **k: {"stale_states": []})
+    monkeypatch.setattr(paths_mod, "sample", _sample)
+    monkeypatch.setattr(paths_mod, "attach_snippets", _attach)
+    return handed
+
+
 @pytest.fixture
 def built(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    samples = [sample("test_fix", "traceability", f"K{i}") for i in range(4)]
-    samples += [sample("blast_radius", "impact", f"c{i}") for i in range(4)]
-    samples += [sample("motivation", "rationale", f"KIP-{i}") for i in range(3)]
-    samples += [sample("community_theme", "global", f"L0-{i}") for i in range(8)]
-    samples += [sample("release_window", "temporal", f"v{i}") for i in range(3)]
-    monkeypatch.setattr(paths_mod, "load_truth", lambda *a, **k: {"stale_states": []})
-    monkeypatch.setattr(paths_mod, "sample", lambda *a, **k: samples)
-    monkeypatch.setattr(paths_mod, "attach_snippets", lambda ctx, paths: len(paths))
+    fake_sampler(monkeypatch)
     manifest = Q.run_build(
         ctx=FakeCtx(),
         batches_dir=tmp_path / "batches",
@@ -236,6 +276,101 @@ def test_every_requested_question_is_accounted_for_in_the_batches(built):
         asked += payload["questions_requested"]
         assert payload["questions_requested"] == len(payload["asks"])
     assert asked == manifest["demand"]["requested_total"] == 17
+
+
+def test_every_batch_gets_a_spare_so_an_unusable_path_always_has_a_stand_in(built):
+    """shard-01/003 shipped with two paths, both asked for, and nothing to substitute."""
+    manifest, tmp_path = built
+    assert manifest["sharding"]["batches_without_spare"] == []
+    root = tmp_path / "batches" / "questions"
+    for path in sorted(root.glob("shard-*/[0-9][0-9][0-9].in.json")):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        spares = [p for p in payload["paths"] if p["spare"]]
+        assert spares, payload["batch_id"]
+        assert all(not p["asks"] for p in spares)
+
+
+def test_a_spare_is_never_a_path_the_same_build_is_asking_about(built):
+    manifest, _ = built
+    ids = manifest["paths"]["ids"]
+    assert len(ids) == len(set(ids))
+
+
+def test_a_spare_prefers_a_type_the_batch_already_asks_about(built):
+    _, tmp_path = built
+    root = tmp_path / "batches" / "questions"
+    matched = 0
+    for path in sorted(root.glob("shard-*/[0-9][0-9][0-9].in.json")):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        asked_types = {p["type"] for p in payload["paths"] if p["asks"]}
+        spare_types = {p["type"] for p in payload["paths"] if p["spare"]}
+        matched += bool(spare_types & asked_types)
+    assert matched == len(list(root.glob("shard-*/[0-9][0-9][0-9].in.json")))
+
+
+def test_the_batch_stays_under_budget_once_the_spare_is_in_it(built):
+    manifest, _ = built
+    assert manifest["sizes"]["over_budget"] == []
+    assert manifest["sizes"]["max_bytes"] <= MAX_BATCH_BYTES
+    assert manifest["sharding"]["spare_reserve_bytes"] == Q.SPARE_RESERVE_BYTES
+
+
+def test_a_path_with_nothing_to_quote_is_dropped_and_named_in_the_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A question written from a summary nobody can quote cannot be graded on faithfulness."""
+    fake_sampler(monkeypatch, snippetless={"gl0", "gl1"})
+    manifest = Q.run_build(
+        ctx=FakeCtx(),
+        batches_dir=tmp_path / "batches",
+        reports_dir=tmp_path / "reports",
+        existing_rows=COMPETENCY,
+        shards=2,
+    )
+    dropped = manifest["paths"]["dropped_without_snippets"]
+    assert "community_theme:gl0" in dropped
+    assert "community_theme:gl1" in dropped
+    assert all(p["snippets"] > 0 for p in manifest["batches"])
+
+
+def test_a_build_whose_every_path_is_textless_refuses_rather_than_shipping_empty_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    fake_sampler(monkeypatch)
+    monkeypatch.setattr(paths_mod, "attach_snippets", lambda ctx, paths: _blank(paths))
+    with pytest.raises(BuildError, match="without a single chunk to quote"):
+        Q.run_build(
+            ctx=FakeCtx(),
+            batches_dir=tmp_path / "batches",
+            reports_dir=tmp_path / "reports",
+            existing_rows=COMPETENCY,
+        )
+
+
+def _blank(paths):
+    for path in paths:
+        path.snippets = []
+    return 0
+
+
+def test_drop_snippetless_keeps_the_paths_with_text_and_names_the_rest():
+    a = sample("test_fix", "traceability", "K1")
+    b = sample("test_fix", "traceability", "K2")
+    b.snippets = []
+    kept, dropped = Q.drop_snippetless([a, b])
+    assert [p.path_key for p in kept] == ["K1"]
+    assert dropped == ["test_fix:K2"]
+
+
+def test_place_spares_reports_a_batch_it_could_not_fit_one_into(demand):
+    batch = Q.PlannedBatch(0, 1, [sample("a", "impact", "i0")])
+    huge = sample("a", "impact", "spare", nodes=900, text=400)
+    without, unplaced = Q.place_spares(
+        [batch], [huge], demand=demand, generated_at="t", schema_sha="s"
+    )
+    assert without == ["shard-01/001"]
+    assert unplaced == [huge]
+    assert len(batch.paths) == 1
 
 
 def test_rebuilding_unchanged_inputs_does_not_rewrite_them(built):

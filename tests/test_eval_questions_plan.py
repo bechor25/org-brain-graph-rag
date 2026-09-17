@@ -142,12 +142,16 @@ def test_a_hebrew_floor_the_new_questions_cannot_reach_is_reported_not_faked():
     assert any("Hebrew" in note for note in impossible.notes)
 
 
-def test_paths_wanted_covers_every_requested_question_plus_a_spare_per_type(demand):
-    wanted = demand.paths_wanted(spares=1)
+def test_paths_wanted_asks_for_exactly_the_questions_requested(demand):
+    """Phase one of the build takes no spares: spares are per batch, and batches come later."""
+    wanted = demand.paths_wanted()
     for qtype in QUESTION_TYPES:
-        asked = sum(c.request for c in demand.cells if c.type == qtype)
-        assert wanted[qtype] == asked + 1
-    assert sum(wanted.values()) == 17 + len(QUESTION_TYPES)
+        assert wanted[qtype] == sum(c.request for c in demand.cells if c.type == qtype)
+    assert sum(wanted.values()) == 17
+
+
+def test_paths_wanted_can_still_be_asked_for_a_per_type_cushion(demand):
+    assert sum(demand.paths_wanted(spares=1).values()) == 17 + len(QUESTION_TYPES)
 
 
 def test_the_defaults_are_the_plan_decision_not_a_magic_number():

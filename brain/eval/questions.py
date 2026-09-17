@@ -71,9 +71,13 @@ DEFAULT_HEBREW_MIN = 11
 PER_TYPE_GOAL = 8
 #: How much more than the deficit to ask for, so one rejection does not empty a cell.
 DEFAULT_SLACK = 0.30
-#: Paths per type beyond what was asked for — a fallback the forger may substitute in when
-#: a sampled path turns out to make only unfair questions.
+#: Spare paths per BATCH — a fallback the forger may substitute in when a sampled path turns
+#: out to make only unfair questions. Per batch rather than per type: shard-01/003 shipped
+#: with two paths and both asked for, so an unusable one had nothing to replace it.
 DEFAULT_SPARES = 1
+#: Room kept free in each batch while packing the asked-for paths, so the spare added
+#: afterwards fits. A little over the largest path measured on the real corpus (10.9 KB).
+SPARE_RESERVE_BYTES = 12_000
 
 #: `q001`…; each shard gets a disjoint block so two agents never collide on an id.
 ID_BLOCK = 100
@@ -185,8 +189,12 @@ class Demand:
     def goal_reachable(self) -> bool:
         return self.existing_total + self.new_total >= self.questions_for_goal
 
-    def paths_wanted(self, spares: int = DEFAULT_SPARES) -> dict[str, int]:
-        """Paths to sample per type: one per requested question, plus a spare or two."""
+    def paths_wanted(self, spares: int = 0) -> dict[str, int]:
+        """Paths to sample per type: one per requested question, plus `spares` if asked.
+
+        The build calls this with 0. Spares are per batch now, not per type, and a batch
+        does not exist until the asked-for paths have been packed — see `run_build`.
+        """
         return {t: n + spares for t, n in self.request_by_type.items() if n + spares > 0}
 
     def as_dict(self) -> dict[str, Any]:
@@ -387,7 +395,11 @@ def pack(
     generated_at: str = "",
     schema_sha: str = "",
 ) -> list[PlannedBatch]:
-    """Greedy packing against the *serialised* size, so 40 KB is measured, not guessed."""
+    """Greedy packing against the *serialised* size, so 40 KB is measured, not guessed.
+
+    Callers pack the asked-for paths against `MAX_BATCH_BYTES - SPARE_RESERVE_BYTES` and
+    add the spare afterwards; see `place_spares`.
+    """
     batches: list[PlannedBatch] = []
     current: list[PathSample] = []
 
@@ -415,6 +427,46 @@ def pack(
     return batches
 
 
+def batch_bytes(batch: PlannedBatch, *, demand: Demand, generated_at: str, schema_sha: str) -> int:
+    payload = envelope(batch=batch, demand=demand, generated_at=generated_at, schema_sha=schema_sha)
+    return len(serialise(payload).encode("utf-8"))
+
+
+def place_spares(
+    planned: Sequence[PlannedBatch],
+    spares: Sequence[PathSample],
+    *,
+    demand: Demand,
+    generated_at: str,
+    schema_sha: str,
+    max_bytes: int = MAX_BATCH_BYTES,
+) -> tuple[list[str], list[PathSample]]:
+    """One spare per batch, preferring a spare of a type that batch already asks about.
+
+    Per batch, not per type: shard-01/003 shipped with two paths and both asked for, so a
+    path that turned out unusable would have had nothing to replace it. A spare of the same
+    type is worth more than any spare — the forger substituting it still owes the same
+    question — so type is matched first and anything left over fills the rest.
+    """
+    pool = list(spares)
+    without: list[str] = []
+    for batch in planned:
+        types = [p.question_type for p in batch.paths]
+        ordered = sorted(pool, key=lambda p: (p.question_type not in types, p.path_id))
+        for candidate in ordered:
+            batch.paths.append(candidate)
+            if (
+                batch_bytes(batch, demand=demand, generated_at=generated_at, schema_sha=schema_sha)
+                <= max_bytes
+            ):
+                pool.remove(candidate)
+                break
+            batch.paths.pop()
+        else:
+            without.append(batch.batch_id)
+    return without, pool
+
+
 def assign_shards(samples: Sequence[PathSample], shards: int) -> list[list[PathSample]]:
     """Spread the types evenly over the shards, heaviest path first inside each type.
 
@@ -439,6 +491,7 @@ def plan_batches(
     demand: Demand,
     generated_at: str,
     schema_sha: str,
+    max_bytes: int = MAX_BATCH_BYTES,
 ) -> list[PlannedBatch]:
     planned: list[PlannedBatch] = []
     for i, bucket in enumerate(assign_shards(samples, shards)):
@@ -447,11 +500,23 @@ def plan_batches(
                 bucket,
                 shard=i,
                 demand=demand,
+                max_bytes=max_bytes,
                 generated_at=generated_at,
                 schema_sha=schema_sha,
             )
         )
     return planned
+
+
+def drop_snippetless(samples: Sequence[PathSample]) -> tuple[list[PathSample], list[str]]:
+    """A path with no text is a path no answer can be quoted from. It does not ship.
+
+    The global questions are why this exists: a community whose ten shown members happened
+    to carry no chunks arrived with `snippets: []`, and a question written from a summary
+    nobody can quote cannot be graded on faithfulness to its context.
+    """
+    kept = [p for p in samples if p.snippets]
+    return kept, [p.path_id for p in samples if not p.snippets]
 
 
 def remove_stale_files(root: Path, planned: Sequence[PlannedBatch]) -> dict[str, list[str]]:
@@ -484,6 +549,26 @@ def remove_stale_files(root: Path, planned: Sequence[PlannedBatch]) -> dict[str,
         path.replace(target)
         moved.append(str(target.relative_to(root)))
     return {"removed_inputs": removed, "moved_outputs": moved}
+
+
+def _sample_spares(
+    ctx: RetrieveContext,
+    planned: Sequence[PlannedBatch],
+    *,
+    per_batch: int,
+    taken: set[str],
+    seed: int,
+    truth: Mapping[str, Any],
+) -> list[PathSample]:
+    """As many further paths as there are batch slots, of the types those batches ask about."""
+    wanted: dict[str, int] = {}
+    for batch in planned:
+        types = sorted({p.question_type for p in batch.paths}, key=QUESTION_TYPES.index)
+        for i in range(per_batch):
+            qtype = types[i % len(types)] if types else QUESTION_TYPES[0]
+            wanted[qtype] = wanted.get(qtype, 0) + 1
+    # A different seed from phase one, so the spare pool is not the same pick re-filtered.
+    return paths_mod.sample(ctx, wanted, seed=seed + 101, truth=dict(truth), exclude=taken)
 
 
 # ------------------------------------------------------------------------------- runner
@@ -520,15 +605,54 @@ def run_build(
 
     demand = plan_demand(existing_rows, new_total=new_total, hebrew_min=hebrew_min, slack=slack)
     truth = paths_mod.load_truth(truth_path)
-    samples = paths_mod.sample(ctx, demand.paths_wanted(spares), seed=seed, truth=truth)
+
+    # Two phases, because "one spare per batch" cannot be planned before the batches exist.
+    # Phase one packs only the paths questions are asked about, against a reduced budget;
+    # phase two samples exactly as many further paths as there are batches and drops one
+    # into each. `exclude` keeps a batch from being handed a spare it is already asking about.
+    samples = paths_mod.sample(ctx, demand.paths_wanted(0), seed=seed, truth=truth)
     if not samples:
         raise BuildError("no paths sampled — is the graph loaded? (`brain load`, `brain extract`)")
-    snippet_total = paths_mod.attach_snippets(ctx, samples)
+    paths_mod.attach_snippets(ctx, samples)
+    samples, snippetless = drop_snippetless(samples)
+    if not samples:
+        raise BuildError(
+            "every sampled path came back without a single chunk to quote — has `brain chunk` run?"
+        )
     assigned = assign_asks(samples, demand)
 
     planned = plan_batches(
-        samples, shards=shards, demand=demand, generated_at=generated_at, schema_sha=schema_sha
+        samples,
+        shards=shards,
+        demand=demand,
+        generated_at=generated_at,
+        schema_sha=schema_sha,
+        max_bytes=MAX_BATCH_BYTES - SPARE_RESERVE_BYTES,
     )
+    spare_paths: list[PathSample] = []
+    without_spare: list[str] = []
+    if spares > 0 and planned:
+        spare_paths = _sample_spares(
+            ctx,
+            planned,
+            per_batch=spares,
+            taken={p.path_key for p in samples},
+            seed=seed,
+            truth=truth,
+        )
+        paths_mod.attach_snippets(ctx, spare_paths)
+        spare_paths, spare_snippetless = drop_snippetless(spare_paths)
+        snippetless.extend(spare_snippetless)
+        without_spare, unplaced = place_spares(
+            planned,
+            spare_paths,
+            demand=demand,
+            generated_at=generated_at,
+            schema_sha=schema_sha,
+        )
+        spare_paths = [p for p in spare_paths if p not in unplaced]
+    samples = [*samples, *spare_paths]
+    snippet_total = sum(len(p.snippets) for p in samples)
     stale = remove_stale_files(root, planned)
 
     written: list[dict[str, Any]] = []
@@ -572,6 +696,8 @@ def run_build(
         generated_at=generated_at,
         stale=stale,
         prefix=ctx.prefix,
+        snippetless=snippetless,
+        without_spare=without_spare,
         duration_ms=int((time.monotonic() - started) * 1000),
     )
     write_json_atomic(root / MANIFEST_NAME, manifest)
@@ -593,6 +719,8 @@ def build_manifest(
     stale: Mapping[str, list[str]],
     prefix: str,
     duration_ms: int,
+    snippetless: Sequence[str] = (),
+    without_spare: Sequence[str] = (),
 ) -> dict[str, Any]:
     sizes = [int(b["bytes"]) for b in written]
     by_shape: dict[str, int] = {}
@@ -619,6 +747,7 @@ def build_manifest(
             "spares": sum(1 for p in samples if p.spare),
             "snippets": snippet_total,
             "snippet_chars": paths_mod.SNIPPET_CHARS,
+            "dropped_without_snippets": list(snippetless),
             "ids": [p.path_id for p in samples],
         },
         "questions_requested": {
@@ -630,6 +759,8 @@ def build_manifest(
             "max_batch_bytes": MAX_BATCH_BYTES,
             "max_line_bytes": MAX_LINE_BYTES,
             "rule": "types spread round-robin over shards; packed to a measured 40 KB",
+            "spare_reserve_bytes": SPARE_RESERVE_BYTES,
+            "batches_without_spare": list(without_spare),
             "removed_stale_inputs": list(stale.get("removed_inputs", [])),
             "moved_stale_outputs": list(stale.get("moved_outputs", [])),
         },

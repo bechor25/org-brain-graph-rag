@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import json
 import random
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -343,6 +343,11 @@ def _build_decision_rejects(row: dict[str, Any]) -> tuple[list[dict], list[dict]
         )
         edges.append(edge("DECIDES", d["key"], e["id"]))
     for a in row.get("alternatives") or []:
+        # The REJECTS edge's own provenance first: the entity's `evidence_chunk_ids` say
+        # where the alternative was *named*, the edge's say where it was *turned down*.
+        # "What was rejected and why" is answered by the second chunk, not the first.
+        grounds = [str(x) for x in (a.get("grounds_chunk_ids") or [])][:2]
+        named_in = [str(x) for x in (a.get("evidence_chunk_ids") or [])][:2]
         nodes.append(
             node(
                 "alternative",
@@ -351,13 +356,18 @@ def _build_decision_rejects(row: dict[str, Any]) -> tuple[list[dict], list[dict]
                 a.get("name"),
                 kind=a.get("kind"),
                 description=clip(a.get("description"), SNIPPET_CHARS),
-                evidence_chunk_ids=(a.get("evidence_chunk_ids") or [])[:2],
+                evidence_chunk_ids=[*grounds, *[c for c in named_in if c not in grounds]][:3],
+                grounds_chunk_ids=grounds,
             )
         )
-        edges.append(edge("REJECTS", d["key"], a["id"]))
+        edges.append(
+            edge("REJECTS", d["key"], a["id"], evidence_chunk_ids=grounds, note=a.get("note"))
+        )
     facts = {
-        "decisions": len(row.get("decisions") or []),
-        "rejected_alternatives": len(row.get("alternatives") or []),
+        "decisions_shown": len(row.get("decisions") or []),
+        "rejected_alternatives_shown": len(row.get("alternatives") or []),
+        "shown_cap": 4,
+        "note": "Each arm is capped at four by the shape's Cypher; these are not totals.",
     }
     return nodes, edges, facts
 
@@ -485,6 +495,11 @@ def _build_community_theme(row: dict[str, Any]) -> tuple[list[dict], list[dict],
             rank=c.get("rank"),
             summary=clip(c.get("summary"), SNIPPET_CHARS),
             findings=[clip(f, 200) for f in (c.get("finding_statements") or [])[:4]],
+            # The chunks the community REPORT cites, not the members'. A global question is
+            # asked about the theme, so the text a gold answer quotes has to be the text the
+            # theme was written from — and a community whose members happen to carry no
+            # chunks would otherwise ship with `snippets: []`.
+            evidence_chunk_ids=[str(x) for x in (c.get("evidence_chunk_ids") or [])[:4]],
         )
     ]
     edges: list[dict] = []
@@ -497,6 +512,7 @@ def _build_community_theme(row: dict[str, Any]) -> tuple[list[dict], list[dict],
                 m.get("title"),
                 kind=m.get("kind"),
                 status=m.get("status"),
+                degree=m.get("degree"),
             )
         )
         edges.append(edge("IN_COMMUNITY", m["key"], c["id"]))
@@ -535,11 +551,12 @@ def _build_blast_radius(row: dict[str, Any]) -> tuple[list[dict], list[dict], di
             )
             edges.append(edge("REFERENCES", w["key"], d["key"]))
     facts = {
-        # Named apart because a forger read `open_items` as the component's real total and
-        # said so in its batch notes: one is the sample in front of you, the other is the
-        # number the answer should quote.
-        "open_items_shown_here": len(row.get("items") or []),
-        "open_items_total_in_component": row.get("open_items_total"),
+        # `<thing>_shown` vs `<thing>_total`, the convention `community_theme` already uses
+        # for `members_shown` vs `size`. A forger read the old `open_items` as the
+        # component's real total and said so in its batch notes; a name is cheaper than a
+        # note nobody reads.
+        "open_items_shown": len(row.get("items") or []),
+        "open_items_total": row.get("open_items_total"),
         "covering_tests": sum(len(w.get("tests") or []) for w in (row.get("items") or [])),
         "referenced_documents": sum(
             len(w.get("documents") or []) for w in (row.get("items") or [])
@@ -785,9 +802,11 @@ SHAPES: tuple[Shape, ...] = (
             "CALL (d) { MATCH (d)-[:DECIDES]->(e:{Entity}) WITH e ORDER BY e.id LIMIT 4 "
             "  RETURN collect({id: e.id, name: e.name, kind: e.kind, description: e.description, "
             "                  evidence_chunk_ids: e.evidence_chunk_ids}) AS decisions } "
-            "CALL (d) { MATCH (d)-[:REJECTS]->(a:{Entity}) WITH a ORDER BY a.id LIMIT 4 "
+            "CALL (d) { MATCH (d)-[r:REJECTS]->(a:{Entity}) WITH a, r ORDER BY a.id LIMIT 4 "
             "  RETURN collect({id: a.id, name: a.name, kind: a.kind, description: a.description, "
-            "                  evidence_chunk_ids: a.evidence_chunk_ids}) AS alternatives } "
+            "                  evidence_chunk_ids: a.evidence_chunk_ids, "
+            "                  grounds_chunk_ids: r.evidence_chunk_ids, note: r.note}) "
+            "         AS alternatives } "
             "RETURN {key: d.key, title: d.title, kind: d.kind} AS document, decisions, alternatives"
         ),
         build=_build_decision_rejects,
@@ -838,20 +857,23 @@ SHAPES: tuple[Shape, ...] = (
         detail=(
             "MATCH (c:{Community} {id: $key}) "
             "CALL (c) { MATCH (m)-[:IN_COMMUNITY]->(c) RETURN count(m) AS size } "
-            "CALL (c) { MATCH (m)-[:IN_COMMUNITY]->(c) "
-            "  WITH m, coalesce(m.key, m.id, m.name) AS mkey, "
+            "CALL (c) { MATCH (m)-[rel:IN_COMMUNITY]->(c) "
+            "  WITH m, rel, coalesce(m.key, m.id, m.name) AS mkey, "
             "    CASE WHEN m:{Document} THEN 'Document' WHEN m:{Component} THEN 'Component' "
             "         WHEN m:{WorkItem} THEN 'WorkItem' ELSE 'Entity' END AS mlabel "
-            # Ordering by key alone hands back ten `Alternative|…`/`Decision|…` entities,
-            # because an entity id sorts before `KAFKA-…`. A theme is legible from its
-            # documents and issues, and those are also the members that carry chunks.
-            "  ORDER BY CASE mlabel WHEN 'Document' THEN 0 WHEN 'WorkItem' THEN 1 "
-            "                       WHEN 'Component' THEN 2 ELSE 3 END, mkey LIMIT 10 "
-            "  RETURN collect({key: mkey, label: mlabel, "
+            # `IN_COMMUNITY.degree` is the member's degree in the projected graph — what the
+            # Leiden run actually clustered on, and what `brain communities batches` ranks
+            # by. Two earlier orderings were wrong for the same reason: by key alone returns
+            # ten `Alternative|…` entities (an entity id sorts before `KAFKA-…`), and
+            # label-first returns an alphabetical slice of documents. L1-489 shipped with
+            # KIP-1, KIP-10, KIP-11 while its summary was about KIP-98 and KIP-724.
+            "  ORDER BY coalesce(rel.degree, 0) DESC, mkey LIMIT 10 "
+            "  RETURN collect({key: mkey, label: mlabel, degree: rel.degree, "
             "                  title: coalesce(m.title, m.name), kind: m.kind, "
             "                  status: m.status}) AS members } "
             "RETURN {id: c.id, title: c.title, summary: c.summary, rank: c.rank, level: c.level, "
-            "        finding_statements: c.finding_statements, size: size} AS community, members"
+            "        finding_statements: c.finding_statements, "
+            "        evidence_chunk_ids: c.evidence_chunk_ids, size: size} AS community, members"
         ),
         build=_build_community_theme,
     ),
@@ -978,15 +1000,29 @@ def load_truth(path: Path | None = None) -> dict[str, Any]:
 
 
 def sample_graph_shape(
-    ctx: RetrieveContext, shape: Shape, want: int, *, seed: int = DEFAULT_SEED
+    ctx: RetrieveContext,
+    shape: Shape,
+    want: int,
+    *,
+    seed: int = DEFAULT_SEED,
+    exclude: Collection[str] = (),
 ) -> list[PathSample]:
-    """`select` a pool, pick `want` of it deterministically, then `detail` each one."""
+    """`select` a pool, pick `want` of it deterministically, then `detail` each one.
+
+    `exclude` is what a second pass (the per-batch spares) has already taken, so the spare
+    a batch gets is never a path the batch is also asking questions about.
+    """
     if shape.build is None:
         raise PathError(f"shape {shape.name} has no builder")
     rows = ctx.read(
-        _fill(shape.select, ctx), pool=max(want * POOL_FACTOR, want), closed=list(CLOSED_STATUSES)
+        _fill(shape.select, ctx),
+        pool=max((want + len(exclude)) * POOL_FACTOR, want),
+        closed=list(CLOSED_STATUSES),
     )
-    keys = [str(r["path_key"]) for r in rows if r.get("path_key")]
+    blocked = {str(x) for x in exclude}
+    keys = [
+        str(r["path_key"]) for r in rows if r.get("path_key") and str(r["path_key"]) not in blocked
+    ]
     out: list[PathSample] = []
     for key in _pick(keys, want, seed, shape.name):
         detail = ctx.read(_fill(shape.detail, ctx), key=key, closed=list(CLOSED_STATUSES))
@@ -1018,6 +1054,7 @@ def sample_truth_shape(
     truth: dict[str, Any],
     *,
     seed: int = DEFAULT_SEED,
+    exclude: Collection[str] = (),
 ) -> list[PathSample]:
     """Rows of known truth, with whatever the graph holds for the keys they name."""
     if shape.truth_keys is None or shape.truth_build is None:
@@ -1025,7 +1062,12 @@ def sample_truth_shape(
     section = truth.get(shape.truth_section) or []
     if not isinstance(section, list):
         raise PathError(f"synthetic_truth.json/{shape.truth_section} is not an array")
-    indexed = list(enumerate(section))
+    blocked = {str(x) for x in exclude}
+    indexed = [
+        (i, row)
+        for i, row in enumerate(section)
+        if "-".join(str(k) for k in shape.truth_keys(row)) not in blocked
+    ]
     out: list[PathSample] = []
     for index, row in _pick(indexed, want, seed, shape.name):
         keys = [str(k) for k in shape.truth_keys(row)]
@@ -1156,6 +1198,7 @@ def sample(
     *,
     seed: int = DEFAULT_SEED,
     truth: dict[str, Any] | None = None,
+    exclude: Collection[str] = (),
 ) -> list[PathSample]:
     """`{question_type: how many paths}` -> paths, round-robin over that type's shapes.
 
@@ -1189,10 +1232,17 @@ def sample(
                 have = {p.path_key for p in got if p.shape == shape.name}
                 extra = (
                     sample_truth_shape(
-                        ctx, shape, len(have) + short, truth or load_truth(), seed=seed + 1
+                        ctx,
+                        shape,
+                        len(have) + short,
+                        truth or load_truth(),
+                        seed=seed + 1,
+                        exclude=exclude,
                     )
                     if shape.gold_source == "truth"
-                    else sample_graph_shape(ctx, shape, len(have) + short, seed=seed + 1)
+                    else sample_graph_shape(
+                        ctx, shape, len(have) + short, seed=seed + 1, exclude=exclude
+                    )
                 )
                 for p in extra:
                     if short <= 0:

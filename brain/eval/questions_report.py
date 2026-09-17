@@ -334,6 +334,8 @@ def review_question(
     }
     if question.get("notes"):
         row["notes"] = question["notes"]
+    if question.get("substituted_for"):
+        row["substituted_for"] = str(question["substituted_for"])
     return Verdict(ok=not reasons, reasons=reasons, row=row, batch_id=batch_id, question=question)
 
 

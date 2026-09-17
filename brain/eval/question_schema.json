@@ -112,6 +112,12 @@
           "maxLength": 200
         },
         "gold_source": { "$ref": "#/$defs/gold_source" },
+        "substituted_for": {
+          "type": "string",
+          "description": "Set only when this question came from a `spare: true` path standing in for one that was asked about: the `path_id` of the path it replaces. The id stays `q###` — the batch id and this field say what happened, so nothing has to be encoded in the number.",
+          "minLength": 3,
+          "maxLength": 200
+        },
         "notes": {
           "type": "string",
           "description": "Optional: why this question is fair, or what about the path made it hard.",
@@ -209,6 +215,13 @@
           "items": { "type": "string", "maxLength": 300 },
           "maxItems": 20
         },
+        "substituted_for": {
+          "type": "string",
+          "description": "Set only when this question came from a `spare: true` path standing in for one that was asked about: the `path_id` of the path it replaces. The id stays `q###` — the batch id and this field say what happened, so nothing has to be encoded in the number.",
+          "minLength": 3,
+          "maxLength": 200
+        },
+
         "notes": { "type": "string", "maxLength": 500 }
       }
     }

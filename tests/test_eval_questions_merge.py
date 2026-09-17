@@ -88,10 +88,29 @@ def test_a_well_formed_question_is_accepted_and_carries_its_provenance():
     v = review(question())
     assert v.ok, v.reasons
     assert v.row["origin"] == "forged"
+    assert v.row["gold_derived_by"] == "agent"
     assert v.row["shape"] == "test_fix"
     assert v.row["batch_id"] == "shard-01/001"
     assert v.row["difficulty_source"] == "forged"
     assert v.row["anchors"] == ["KAFKA-16448"]
+
+
+def test_a_substituted_spare_is_recorded_by_field_not_by_a_mangled_id():
+    """The agent file asked for a `-spare` id suffix, which `^q[0-9]{3}$` refuses."""
+    v = review(question(substituted_for="test_fix:KAFKA-99999"))
+    assert v.ok, v.reasons
+    assert v.row["id"] == "q101"
+    assert v.row["substituted_for"] == "test_fix:KAFKA-99999"
+
+
+def test_a_question_that_substituted_nothing_carries_no_such_field():
+    assert "substituted_for" not in review(question()).row
+
+
+def test_an_id_with_a_spare_suffix_is_still_refused_by_the_schema():
+    v = review(question(id="q101-spare"))
+    assert not v.ok
+    assert any(r.startswith("schema") for r in v.reasons)
 
 
 def test_the_row_it_produces_validates_against_the_merged_row_schema():
