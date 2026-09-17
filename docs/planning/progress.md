@@ -35,11 +35,19 @@
 | 1 ספריית אחזור S1/S2/S3/S6 + `brain ask` | ✅ | f7262d8 | 21 מודולים; 18/18 שאלות עם ראיה תקפה; HE↔EN 4/4 זהות ב-S3 (S1 hybrid 0.48 — הגרף נושא את ה-cross-lingual, לא ה-embedding); p50 S1 139 / S2 176 / S3 125 / S6 26 ms; `SEARCH` לא נתמך ב-2026.06 CE → `queryNodes`; S3 דירג לפי degree בלבד → תיקון ב-0472aae |
 | 2 Text2Cypher מוגן + reranker + בנק דוגמאות | ✅ | 602f5bf | guard: 42/42 נחסמו (deny-list 21 / allowlist 17 / static 4; `EXPLAIN CREATE` מתקבל ב-READ → שכבת plan-scan), 16/16 קריאות, timeout מוכח בשרת; בנק: author 19 → 15 validated → 13 accepted, 3 rationale נפלו על "Aggregation column contains implicit grouping" → batch 002 תיקן → **20 דוגמאות, 5/סוג, 20/20 רצות**; `sample_values` נוסף ל-`get_schema`; reranker bge-reranker-v2-m3: 19/19 top-1 השתנה (RRF ~0.002 מרווח), +1.6s p50, ברירת מחדל off; S4 מצב A על cq03/cq06 = similarity 1.0 (הבנק מכיל את השאלה) — Plan 3 מודד על שאלות חדשות; `merge` exit 1 כשיש rejects (קוסמטי — לתקן: exit 0 כשהבנק מלא) |
 | 3 Global search S5 + שרת MCP | ✅ | 0472aae, 342ba80 | 15 כלים + 2 resources + prompt על stdio ו-HTTP; p50 lookup 9 ms / local 260 / global 148; truncation 46→17 פריטים (10.1k→3.9k tokens) עם כל kind; S5 מאחד 22 זוגות member_hash; cq12 → "New async consumer…", "OAuth/TLS client auth…", "Streams error handling…"; `.mcp.json` + `brain-mcp` ב-compose (profile `mcp`, לא הורם — build ארוך); 1,565 בדיקות |
-| 4 שער: 19 שאלות במצב B | ⬜ brief `steps/12-plan2-gate.md` | | דורש סשן חדש של המשתמש (`.mcp.json` נטען בעלייה) |
+| 4 שער: 19 שאלות במצב B (15 EN + 4 HE; ה-roadmap אמר 15 — הורחב ב-4 עבריות) | ⬜ brief `steps/12-plan2-gate.md` · ממתין לסבב תיקון | | דורש סשן חדש של המשתמש (`.mcp.json` נטען בעלייה) |
 
 ### פתוח ל-Plan 2 (מ-Task 3, S3 = קובץ של Task 1)
 - `local_search` **לא מחזיר את מסמך העוגן עצמו** (KIP-848 מחוץ ל-top-10 של השאלה עליו): עוגן = 1.0, שכן עם 3 מסלולים = 1.43. הודעת ה-commit 0472aae טענה שזה תוקן — המדידה אומרת לא. הכרעה: לתקן בסבב הסקירה של Plan 2 (עוגן מוצמד ראשון).
 - top-1 לא תלוי בשאלה: צמתים בלי `entity_embedding` (Document/WorkItem/Person/Component) מקבלים גורם ניטרלי 1.0 → KIP-932 ראשון בשתי השאלות ב-1.43 בדיוק. הכרעה: Document/WorkItem יקבלו גורם מ-fulltext score של השאלה על `document_text`/`workitem_text` (זול), ימדד ב-Plan 3.
+
+### סקירת Plan 2 Tasks 1–3 (2026-09-17, brain-reviewer) — fix-required ×3, שער Task 4 **לא** מוכן
+- 🔴 `run_cypher` מעתיק שורה שלמה ל-`props` בלי קיטום: `RETURN d.body_md` → פריט אחד, **66,289 tokens, `truncated=false`**. תקרת 4k לא נאכפת על השדה הרחב ביותר.
+- 🔴 דוגמת ה-temporal בבנק מסננת `s.at <= datetime($date)` (חצות) בעוד `status_at` = סוף היום → על cq14 שני כלים של אותו שרת עונים "Reopened" מול "Resolved".
+- 🟠 `seed-impact-01` סופר `run IS NULL` כ-"failing_tests"; 4/17 רשומות בבנק = העתקים של seeds (rationale = דוגמה ייחודית אחת); `INSERT` (GQL) עובר את ה-deny-list ונתפס רק בשכבת ה-plan; חלקי Task 1 ב-`retrieve.json` ללא sha/STALE ומכילים fallback ל-S4/S5 שכבר נבנו; קריטריון cross-lingual "S1/S3" צומצם ל-S3 בבדיקה; provenance "טקסט הצומת עצמו" (S6/impact) לא מסומן → cite-check ינפח.
+- 🟡 allowlist לא מוחל על roots לא-מוכרים; `SHOW SETTINGS/TRANSACTIONS/PROCEDURES` עוברים; לוג כפול על refusal ב-MCP; `pack.truncated` לא מסמן חריגת budget בלי השמטה; `impact` לא דטרמיניסטי (slice של collect לא ממוין) ומסמן Test כ-WorkItem; `route` פותח driver; `inject_limit` שובר `UNION`/`FINISH`; `cq01/cq16` נבחרו ל-issue שאין לו `HAS_RUN` בכלל; `s5` חסר ב-help; `traceability-cq04` בלי סינון ADO; compose לא הורם; `explain()` לא תופס `Neo4jError`.
+- **לקחי הסוקר:** (1) הגנה לעומק מוכחת רק כששכבה נכשלת — `INSERT` הוכיח את שכבת ה-EXPLAIN ואת המגבלה של טבלת 42; (2) תקרת הקשר שלא נאכפת על "כל השאר" איננה תקרה; (3) בנק few-shot הוא מימוש שני של אותה שאלה — צריך אותה שאלת זהב ואותה תשובה כמו הכלי שלידו; (4) שינוי שם של בדיקה הוא הדרך השקטה ביותר להחליש אותה.
+- **הכרעה:** סבב תיקון לפני Task 4 (שני ה-blockers + כל ה-majors + minors זולים), בשני סוכנים עם גבולות קבצים.
 
 ## החלטת תהליך (2026-09-03, המשתמש)
 - מ-Plan 1 והלאה: התכנית = brief + חוזים + קריטריונים. **הסוכנים מתכננים וכותבים את הקוד**; המתכנן סוקר ומכריע. (ב-Plan 0 הקוד היה בתכנית והסוכנים הקלידו.)
