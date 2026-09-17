@@ -55,3 +55,4 @@ the current step brief is in `docs/planning/steps/`.
 - **golden test** = קוד שמייצר את הפלט מקלט ומשווה; digest של קובץ committed שאיש לא מייצר מחדש אינו golden test ואסור לתאר אותו ככזה.
 - **פעולות database-wide** (`db.awaitIndexes`, `SHOW INDEXES` בלי סינון) אסורות בקוד צעד; ממתינים/בודקים לפי שמות בבעלות הצעד.
 - **`make smoke` הסופי** רץ פעם אחת, כשאף סוכן אחר לא נוגע ב-DB, ע"י המתכנן; תוצאה שנמדדה תחת עומס מקבילי מדווחת כ"contended", לא כ-FAIL.
+- **commit של המתכנן בזמן שסוכנים עובדים:** תמיד `git commit -m "…" -- <paths>` (commit מוגבל-נתיבים), לעולם לא `git add <file> && git commit` — ה-index עלול להכיל קבצים שסוכן אחר שלב רגע לפני (קרה ב-546adff: 7 קבצים של סוכן נכנסו תחת הודעה של המתכנן).
