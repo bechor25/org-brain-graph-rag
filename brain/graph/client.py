@@ -51,6 +51,19 @@ class GraphClient:
         )
         return [r.data() for r in result.records]
 
+    def explain(self, cypher: Any, **params: Any) -> dict[str, Any] | None:
+        """The planner's plan for an `EXPLAIN …` query, under READ routing, without running it.
+
+        `read()` returns records, and an `EXPLAIN` has none — the plan lives on the result
+        summary. The Cypher guard needs it: `EXPLAIN CREATE (n)` is *accepted* in READ mode
+        (measured on 2026.06.0), so a write is only visible in the plan's operators.
+        Accepts a `neo4j.Query` so the caller can carry a transaction timeout.
+        """
+        result = self._driver.execute_query(
+            cypher, params, database_=self._db, routing_=RoutingControl.READ
+        )
+        return result.summary.plan
+
     def write(self, cypher: str, **params: Any) -> dict[str, int]:
         result = self._driver.execute_query(
             cypher, params, database_=self._db, routing_=RoutingControl.WRITE

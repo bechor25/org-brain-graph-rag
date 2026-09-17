@@ -958,7 +958,7 @@ def ask(
         "auto",
         "--strategy",
         help="auto (deterministic router) | s1 hybrid | s2 graph-vector | s3 entity-local "
-        "| s6 temporal | lookup | impact.",
+        "| s4 text2cypher | s6 temporal | lookup | impact.",
     ),
     k: int = typer.Option(10, "--k", help="How many items to return before packing."),
     hops: int = typer.Option(1, "--hops", help="S2 only: neighbourhood depth (1-2)."),
@@ -966,6 +966,17 @@ def ask(
     mode: str = typer.Option("hybrid", "--mode", help="S1 only: hybrid | vector | fulltext."),
     rerank: bool = typer.Option(
         False, "--rerank", help="Cross-encoder rerank if the local model is installed."
+    ),
+    cypher: str = typer.Option(
+        "",
+        "--cypher",
+        help="S4 only: run this read-only Cypher through the guard (mode B, you are the author).",
+    ),
+    question_type: str = typer.Option(
+        "",
+        "--type",
+        help="S4 only: traceability | impact | rationale | temporal — restricts the example "
+        "bank the question is matched against (mode A).",
     ),
     include_synthetic: bool = typer.Option(
         True, "--synthetic/--no-synthetic", help="Include the synthetic Xray/ADO layer."
@@ -977,11 +988,14 @@ def ask(
 
     from brain.config import get_settings
     from brain.retrieve.context import RetrieveContext
+    from brain.retrieve.cypher_guard import GuardError
     from brain.retrieve.runner import ask as run_ask
     from brain.retrieve.runner import render
     from brain.retrieve.types import RetrieveError
 
     settings = get_settings()
+    if cypher and strategy in ("auto", ""):
+        strategy = "s4"
     try:
         with RetrieveContext.open(settings, include_synthetic=include_synthetic) as ctx:
             result = run_ask(
@@ -993,8 +1007,16 @@ def ask(
                 depth=depth,
                 rerank=rerank,
                 mode=mode,
+                cypher=cypher or None,
+                question_type=question_type or None,
                 log_mode="cli",
             )
+    except GuardError as exc:
+        # The guard's refusal is the answer: `{error, hint}`, the same pair the MCP tool
+        # returns, so the wording an agent sees and the wording a person sees are one.
+        typer.echo(f"ask: {exc}", err=True)
+        typer.echo(f"hint: {exc.hint}", err=True)
+        raise typer.Exit(code=1) from exc
     except RetrieveError as exc:
         typer.echo(f"ask: {exc}", err=True)
         raise typer.Exit(code=1) from exc
@@ -1003,6 +1025,144 @@ def ask(
     else:
         typer.echo(render(result, question))
     raise typer.Exit(code=0 if result.items else 3)
+
+
+cypher_examples_app = typer.Typer(
+    help="S4's few-shot bank and the evidence behind it: build the batch for the "
+    "cypher-author agent, merge what it wrote — every example is guarded, run and required "
+    "to return a row before it is accepted — and `check` the whole Task 2 surface (guard, "
+    "reranker, bank) against the live graph [Plan 2]",
+    no_args_is_help=True,
+)
+app.add_typer(cypher_examples_app, name="cypher-examples")
+
+
+@cypher_examples_app.command("build")
+def cypher_examples_build(
+    out: str = typer.Option(
+        "data/batches/cypher/001.in.json", "--out", help="Where to write the batch input."
+    ),
+) -> None:
+    """Write the reduced schema, the four question types and the competency questions."""
+    from brain.config import get_settings
+    from brain.retrieve.context import RetrieveContext
+    from brain.retrieve.examples import build_batch
+
+    settings = get_settings()
+    try:
+        with RetrieveContext.open(settings) as ctx:
+            payload, path = build_batch(ctx, path=Path(out))
+    except (OSError, ValueError) as exc:
+        typer.echo(f"cypher-examples build: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(
+        f"batch: {path} ({path.stat().st_size} bytes) · "
+        f"{len(payload['questions'])} questions · "
+        f"{len(payload['schema']['labels'])} labels · "
+        f"{len(payload['style_examples'])} style examples"
+    )
+    typer.echo("next: dispatch `cypher-author` on it, then `brain cypher-examples merge`")
+
+
+@cypher_examples_app.command("merge")
+def cypher_examples_merge(
+    batch_dir: str = typer.Option(
+        "data/batches/cypher", "--batch-dir", help="Where the NNN.out.json files are."
+    ),
+    bank: str = typer.Option(
+        "data/eval/cypher_examples.jsonl", "--bank", help="Where to write the bank."
+    ),
+    report_out: str = typer.Option(
+        "data/reports/cypher_examples.json",
+        "--report",
+        help="Where to write the per-question merge report (accepted/rejected with reasons).",
+    ),
+) -> None:
+    """Validate every answer through the guard, run it, and keep the ones that return rows."""
+    from brain.config import get_settings
+    from brain.retrieve.context import RetrieveContext
+    from brain.retrieve.examples import merge_batch
+
+    settings = get_settings()
+    try:
+        with RetrieveContext.open(settings) as ctx:
+            report = merge_batch(
+                ctx,
+                batch_dir=Path(batch_dir),
+                bank_path=Path(bank),
+                report_path=Path(report_out),
+            )
+    except (OSError, ValueError) as exc:
+        typer.echo(f"cypher-examples merge: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(
+        f"answers: {report['answers']} · validated: {report['validated']} · "
+        f"accepted: {report['accepted']} · rejected: {len(report['rejected'])}"
+    )
+    for rejection in report["rejected"]:
+        detail = str(rejection.get("detail", ""))[:80]
+        typer.echo(
+            f"  [reject] {rejection['question_id']}: {rejection['reason']}"
+            + (f" — {detail}" if detail else "")
+        )
+    typer.echo(f"bank: {report['bank_path']} · {report['bank_size']} examples {report['per_type']}")
+    thin = [t for t, n in report["per_type"].items() if n < 3]
+    if thin:
+        typer.echo(f"warning: fewer than 3 examples for {', '.join(thin)} (plan asks for 3-5)")
+    typer.echo(f"report: {report['report_path']}")
+    raise typer.Exit(code=0)
+
+
+@cypher_examples_app.command("check")
+def cypher_examples_check(
+    repeats: int = typer.Option(3, "--repeats", help="Runs per S4 question, for a p50."),
+    report: str = typer.Option(
+        "data/reports/retrieve.json", "--report", help="Where to merge the sections."
+    ),
+) -> None:
+    """Measure the guard, the reranker and the bank, and write the Task 2 report sections.
+
+    Everything here is live: the write/injection table goes through the real `run_cypher`
+    against the real server, the read table is executed rather than merely planned, and the
+    reranker is measured on the competency questions with and without it.
+    """
+    from brain.config import get_settings
+    from brain.retrieve.context import RetrieveContext
+    from brain.retrieve.s4_report import run as run_s4_report
+
+    settings = get_settings()
+    with RetrieveContext.open(settings) as ctx:
+        sections, path = run_s4_report(
+            ctx, report_path=Path(report), repeats=repeats, echo=typer.echo
+        )
+
+    guard_part = sections["guard"]
+    typer.echo(
+        f"guard: {guard_part['blocked']['refused']}/{guard_part['blocked']['cases']} refused "
+        f"({guard_part['blocked']['refused_pct']}%) · "
+        f"{guard_part['allowed']['passed']}/{guard_part['allowed']['cases']} reads passed · "
+        f"timeout {guard_part['timeout']['elapsed_ms']}ms"
+    )
+    rerank_part = sections["rerank"]
+    if rerank_part.get("available"):
+        summary = rerank_part["summary"]
+        typer.echo(
+            f"rerank: top-1 changed on {summary['top1_changed']}/{summary['questions']} "
+            f"questions · p50 {summary['latency_without_rerank']['p50_ms']}ms → "
+            f"{summary['latency_with_rerank']['p50_ms']}ms"
+        )
+    else:
+        typer.echo(f"rerank: unavailable ({rerank_part.get('error')})")
+    bank = sections["cypher_examples"]
+    typer.echo(
+        f"bank: {bank['returning_at_least_one_row']}/{bank['bank_size']} examples return rows "
+        f"{bank['per_type']}"
+    )
+    checks = bank["checks"]
+    for check in checks:
+        typer.echo(f"  [{'OK ' if check['ok'] else 'FAIL'}] {check['name']}: {check['detail']}")
+    typer.echo(f"report: {path}")
+    raise typer.Exit(code=0 if all(c["ok"] for c in checks) else 1)
 
 
 @app.command()

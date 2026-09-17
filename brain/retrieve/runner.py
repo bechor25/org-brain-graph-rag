@@ -7,11 +7,11 @@ in the same words. Plan decision 1: no dispatch logic that exists only in the se
 Two things this file does that `route()` deliberately does not:
 
 * **Fallback.** The router is faithful to spec §4.2 and will suggest S4 (Text2Cypher) for an
-  aggregation question, which needs a Cypher author rather than a retrieval.
-  Rather than weaken the router so today's questions land on today's strategies — which
-  would make the router a report of what is implemented instead of what is right — an
-  unimplemented suggestion is executed by its nearest neighbour and *both* are recorded.
-  `Result.route` carries `strategy` (suggested) and `executed`.
+  aggregation question, which needs a Cypher author rather than a retrieval. In mode B the
+  asking agent is that author; in mode A (evaluation, plain `brain ask`) the example bank
+  is, and when the bank holds nothing close enough the nearest graph strategy answers
+  instead. Both are recorded: `Result.route` carries `strategy` (suggested), `executed`,
+  and `fallback_from`/`fallback_reason` when they differ.
 * **Binding S6's arguments.** `status_at(key, date)` needs a key and a date; the router
   only says "this is temporal". Pulling `KAFKA-15123` and `2024-03-01` out of the sentence
   is parsing, not routing, and it belongs next to the dispatch that needs it.
@@ -32,17 +32,18 @@ from brain.retrieve.local import local_search
 from brain.retrieve.lookup import lookup, resolve_key
 from brain.retrieve.route import route
 from brain.retrieve.temporal import assignees_over_time, changes_between, status_at, timeline
+from brain.retrieve.text2cypher import text2cypher
 from brain.retrieve.types import Result, RetrieveError
 
-#: What runs when the router suggests a strategy this plan step has not built yet.
-#: S4 (aggregation) falls back to `impact` when the question names a node the graph holds
-#: and to S3 otherwise — because the aggregation questions in this corpus are about a
-#: component or a KIP, and S3's relation set (`MENTIONS/DECIDES/…`) does not include
-#: `IN_COMPONENT`, so a component anchor walks nowhere. Every fallback is recorded in
-#: `route.fallback_from`, never silent. S5 was here until Task 3 built `global_search`; a
-#: thematic question now reaches the community reports instead of the hybrid baseline.
-FALLBACKS: dict[str, str] = {"s4": "s3"}
-IMPLEMENTED: tuple[str, ...] = ("s1", "s2", "s3", "s5", "s6", "lookup", "impact")
+#: What runs when a strategy cannot answer, recorded in `route.fallback_from` and never
+#: silent. Both plan-step fallbacks are gone — Task 2 built S4 and Task 3 built S5 — but S4
+#: keeps a *runtime* one: without a model in the loop it answers from the example bank
+#: (`text2cypher`, mode A), and when no example is close enough to the question it says so
+#: and the nearest graph strategy runs instead. `impact` when the question names a node the
+#: graph holds, S3 otherwise — S3's relation set (`MENTIONS/DECIDES/…`) has no
+#: `IN_COMPONENT`, so a component anchor walks nowhere.
+FALLBACKS: dict[str, str] = {}
+IMPLEMENTED: tuple[str, ...] = ("s1", "s2", "s3", "s4", "s5", "s6", "lookup", "impact")
 
 
 def ask(
@@ -55,6 +56,8 @@ def ask(
     depth: int = 2,
     rerank: bool = False,
     mode: str = "hybrid",
+    cypher: str | None = None,
+    question_type: str | None = None,
     log_mode: str = "python",
     log_path: Path | None = None,
     log: bool = True,
@@ -69,6 +72,17 @@ def ask(
         trace["fallback_reason"] = f"{chosen} is not implemented in this plan step"
 
     common = {"log_mode": log_mode, "log_path": log_path, "log": log, "route": trace}
+    if executed == "s4":
+        # Mode B hands us the Cypher; mode A has to find it. When the bank holds nothing
+        # close enough, S4 says so in `route.fallback_reason` and the nearest graph
+        # strategy answers — a `GuardError` is *not* caught here, because a refused query
+        # is an answer about the query, not a reason to quietly run something else.
+        try:
+            return text2cypher(ctx, question, cypher=cypher, question_type=question_type, **common)
+        except RetrieveError as exc:
+            trace["fallback_from"] = "s4"
+            trace["fallback_reason"] = str(exc)
+            executed = trace["executed"] = "impact" if _resolvable_anchor(ctx, question) else "s3"
     if executed == "s1":
         return search_chunks(ctx, question, k=k, mode=mode, rerank=rerank, **common)
     if executed == "s2":

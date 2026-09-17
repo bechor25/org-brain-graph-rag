@@ -78,9 +78,23 @@ def _embed_checks(s: Settings) -> list[Check]:
         return checks
 
 
+def _rerank_check() -> Check:
+    """Optional by design: `rerank=True` is a flag, not a dependency (plan decision 5).
+
+    Reported as a warning rather than a failure so `make smoke` still passes on a machine
+    without the `local-embed` extra — the reranker changes answer *order*, never whether an
+    answer exists.
+    """
+    from brain.retrieve.rerank import probe
+
+    state = probe()
+    detail = state["model"] if state["available"] else str(state["error"])
+    return Check("reranker", state["available"], detail, required=False)
+
+
 def run_doctor() -> bool:
     s = get_settings()
-    checks = _neo4j_checks(s) + _embed_checks(s)
+    checks = _neo4j_checks(s) + _embed_checks(s) + [_rerank_check()]
     ok = True
     warnings = 0
     for c in checks:
