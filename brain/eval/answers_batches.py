@@ -23,15 +23,33 @@ Merge keeps a bad citation rather than dropping it. `cited_keys` that name nothi
 case's own context are marked invalid and stay attached to the answer, because "this
 strategy's answers cite keys that were never retrieved" is exactly the sort of thing layer 3
 exists to catch.
+
+**What "in the context" means, and why it was widened.** The first definition was the set of
+`Item.key`, `props.parent_key` and `provenance[].chunk_id` values — which is right for a node
+and wrong for a `Row`. A `run_cypher`/S6/impact row is keyed by whatever the query grouped on
+(`clients`, a decision sentence, a person's display name), and the ids the answer must cite
+(`XT-10007`, `ADO-10076`, `person_id=jira:mjsax`, `chunk_id=0f53ae…`) are written *inside* the
+row's snippet, where the answering agent reads them. Scoring those as "cited a key that was
+never retrieved" measured the row's key column, not the retrieval. So an id now counts as in
+the context when it is an item key, a `props.parent_key`, a provenance chunk id, **or** an id
+token the same regexes that gate citations recognise inside an item's `snippet`, `title` or
+`props` (`id_tokens`). Both spellings are normalised first — the README brackets carry
+`person:`/`community:`/`chunk:` prefixes that `cited_keys` leaves off.
+
+The old, strict number is kept beside the new one (`cited_keys_valid_strict`,
+`citation_in_context_strict_pct`): widening a metric without publishing what it used to say
+is how a measurement turns into an advertisement.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -131,7 +149,11 @@ def context_of(record: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 
 def context_keys(context: Sequence[Mapping[str, Any]]) -> set[str]:
-    """Every id a citation of this context may name — item keys, parents, chunk ids."""
+    """The strict set: item keys, `props.parent_key`, provenance chunk ids and sources.
+
+    This is the original definition of "in the context" and it stays that, so the report can
+    keep publishing what the number used to be. `context_ids` is what the check now uses.
+    """
     keys: set[str] = set()
     for item in context:
         if item.get("key"):
@@ -148,27 +170,151 @@ def context_keys(context: Sequence[Mapping[str, Any]]) -> set[str]:
     return keys
 
 
+#: `chunk_id=0f53ae…` / `chunk_id: '0f53ae…'` — how a row spells the one id a citation of it
+#: can name. Eight hex is `citations.MIN_CHUNK_PREFIX`: shorter is a coincidence, not an id.
+CHUNK_ID_RE = re.compile(r"chunk_id\s*[=:]\s*['\"]?([0-9a-fA-F]{8,40})")
+#: A community key as `brain/graph/communities.py` writes it: `L0-8`, `L1-377`.
+COMMUNITY_KEY_RE = re.compile(r"\bL\d{1,2}-\d{1,6}\b")
+#: The prefixes `data/eval/plan2_answers/README.md` puts in the brackets and `cited_keys`
+#: leaves off. Stripping them on both sides is what makes `[person:jira:mjsax]` and the
+#: `jira:mjsax` an item carries one id rather than two.
+CITATION_PREFIXES: tuple[str, ...] = ("chunk:", "person:", "community:")
+HEX_ONLY_RE = re.compile(r"[0-9a-fA-F]+")
+
+
+@dataclass(frozen=True)
+class IdPatterns:
+    """What the citation gate recognises, so a context can be scanned with the same eyes."""
+
+    document: re.Pattern[str]
+    workitem: re.Pattern[str]
+    person: re.Pattern[str]
+    sha: re.Pattern[str]
+    not_keys: frozenset[str]
+    #: `citations.MIN_CHUNK_PREFIX` — below this, a hex prefix identifies nothing.
+    min_chunk_prefix: int
+    #: `citations.SHA_MIN` — git's own abbreviation floor, and the shortest hex worth
+    #: treating as an id at all when deciding whether to lowercase a token.
+    min_sha: int
+    #: `citations.WRAPPER_CHARS` — the backticks and quotes an id collects in prose.
+    wrappers: str
+
+
+@lru_cache(maxsize=1)
+def _id_patterns() -> IdPatterns:
+    """The citation gate's own regexes, imported once and late.
+
+    `brain.eval.citations` reads them from `brain/retrieve/keys.py` so that "what the gate
+    accepts in an answer" and "what code finds in a context" cannot drift apart; this reads
+    them from the same place, for the same reason. The import is deferred because
+    `brain.retrieve.__init__` drags in the whole retrieval stack, and `answers build` has no
+    use for it.
+    """
+    from brain.eval.citations import MIN_CHUNK_PREFIX, SHA_MIN, WRAPPER_CHARS
+    from brain.retrieve.keys import (
+        DOCUMENT_KEY_RE,
+        NOT_KEYS,
+        PERSON_ID_RE,
+        SHA_RE,
+        WORKITEM_KEY_RE,
+    )
+
+    return IdPatterns(
+        document=DOCUMENT_KEY_RE,
+        workitem=WORKITEM_KEY_RE,
+        person=PERSON_ID_RE,
+        sha=SHA_RE,
+        not_keys=NOT_KEYS,
+        min_chunk_prefix=MIN_CHUNK_PREFIX,
+        min_sha=SHA_MIN,
+        wrappers=WRAPPER_CHARS,
+    )
+
+
+def id_tokens(text: str) -> set[str]:
+    """Every graph id a piece of context text spells out, in its canonical form.
+
+    A `Row` is the reason this exists: `key=KAFKA-14649, test=XT-10007, execution_key=XE-10004`
+    is one item whose `key` names none of the two ids an answer about it must cite.
+    """
+    blob = text or ""
+    patterns = _id_patterns()
+    found: set[str] = set(patterns.document.findall(blob))
+    found |= {m for m in patterns.workitem.findall(blob) if m not in patterns.not_keys}
+    found |= set(COMMUNITY_KEY_RE.findall(blob))
+    found |= set(patterns.person.findall(blob))
+    found |= {m.lower() for m in CHUNK_ID_RE.findall(blob)}
+    found |= {m.lower() for m in patterns.sha.findall(blob)}
+    return found
+
+
+def item_id_tokens(item: Mapping[str, Any]) -> set[str]:
+    """The ids one context item spells in its `snippet`, `title` and kept `props`."""
+    found = id_tokens(str(item.get("title") or ""))
+    found |= id_tokens(str(item.get("snippet") or ""))
+    props = item.get("props")
+    if isinstance(props, Mapping) and props:
+        found |= id_tokens(json.dumps(props, ensure_ascii=False, sort_keys=True))
+    return found
+
+
+def context_ids(context: Sequence[Mapping[str, Any]]) -> set[str]:
+    """Every id this context puts in front of the answering agent — keys *and* row text."""
+    ids = context_keys(context)
+    for item in context:
+        ids |= item_id_tokens(item)
+    return ids
+
+
 def context_sha(context: Sequence[Mapping[str, Any]]) -> str:
     """A hash of the context as shipped, so an answer can prove which retrieval it answers."""
     blob = json.dumps(list(context), ensure_ascii=False, sort_keys=True).encode("utf-8")
     return hashlib.sha256(blob).hexdigest()
 
 
+def canonical_id(value: str) -> str:
+    """One spelling per id: no README prefix, no wrapper, hex lowercased."""
+    patterns = _id_patterns()
+    text = (value or "").strip().strip(patterns.wrappers).strip()
+    for prefix in CITATION_PREFIXES:
+        if text.lower().startswith(prefix):
+            text = text[len(prefix) :].strip().strip(patterns.wrappers).strip()
+            break
+    if len(text) >= patterns.min_sha and HEX_ONLY_RE.fullmatch(text):
+        return text.lower()
+    return text
+
+
+def canonical_index(keys: Iterable[str]) -> dict[str, str]:
+    """canonical id -> the spelling the context used, first in sorted order so it is stable."""
+    index: dict[str, str] = {}
+    for key in sorted({str(k) for k in keys}):
+        index.setdefault(canonical_id(key), key)
+    return index
+
+
 def cited_key_matches(cited: str, keys: set[str]) -> str | None:
-    """The context key a cited id names, allowing the `chunk:`-prefixed and truncated forms."""
+    """The context id a cited key names, once both sides are in one canonical form.
+
+    A truncated chunk id still resolves by prefix: an agent that writes `[chunk:ab12cd34]`
+    for a 40-hex `Chunk.id` is citing it, and eight hex characters over ~14k chunks is an
+    identifier rather than a coincidence.
+    """
     value = (cited or "").strip()
     if not value:
         return None
     if value in keys:
         return value
-    bare = value.split(":", 1)[1] if value.lower().startswith("chunk:") else value
-    if bare in keys:
-        return bare
-    lowered = bare.lower()
-    if len(lowered) >= 8 and all(c in "0123456789abcdef" for c in lowered):
-        for key in sorted(keys):
-            if key.lower().startswith(lowered):
-                return key
+    index = canonical_index(keys)
+    wanted = canonical_id(value)
+    if not wanted:
+        return None
+    if wanted in index:
+        return index[wanted]
+    if len(wanted) >= _id_patterns().min_chunk_prefix and HEX_ONLY_RE.fullmatch(wanted):
+        for canonical in sorted(index):
+            if canonical.startswith(wanted):
+                return index[canonical]
     return None
 
 
@@ -524,17 +670,22 @@ def check_answer(
     case_id = str(answer.get("case_id") or "")
     qid, strategy = split_case_id(case_id)
     context = list(case.get("context") or [])
-    keys = context_keys(context)
+    strict = context_keys(context)
+    keys = context_ids(context)
 
     declared = [str(k) for k in (answer.get("cited_keys") or [])]
     valid: list[str] = []
+    valid_strict: list[str] = []
     invalid: list[dict[str, str]] = []
     for cited in declared:
         match = cited_key_matches(cited, keys)
         if match is None:
             invalid.append({"cited": cited, "reason": "not in this case's context"})
-        else:
-            valid.append(match)
+            continue
+        valid.append(match)
+        strict_match = cited_key_matches(cited, strict)
+        if strict_match is not None:
+            valid_strict.append(strict_match)
 
     body = str(answer.get("answer") or "")
     bracketed = unique(find_citations(body))
@@ -568,6 +719,9 @@ def check_answer(
         "answer": body,
         "cited_keys": declared,
         "cited_keys_valid": sorted(set(valid)),
+        # The old, narrower definition, kept so the widening is auditable per answer and
+        # not only per strategy: these are the citations an item *key* names outright.
+        "cited_keys_valid_strict": sorted(set(valid_strict)),
         "cited_keys_invalid": invalid,
         "cited_in_text": in_text,
         "confidence": confidence,
@@ -578,7 +732,10 @@ def check_answer(
         "context_sha256": case.get("context_sha256"),
         # Kept on the answer so the deterministic citation cross-check needs neither the
         # batch input nor the run file: "was this key ever retrieved" is answerable here.
+        # This is the widened set — `judge_report.citation_check` reads this field, and it
+        # must read the same definition the merge scored the answer with.
         "context_keys": sorted(keys),
+        "context_keys_strict": sorted(strict),
         "context_available": True,
         "citation_problems": problems,
         "generated_at": utc_now_iso(),
@@ -756,6 +913,7 @@ def merge_agentic(*, plan2_dir: Path, out_dir: Path, sha: str) -> dict[str, Any]
             "answer": answer.body,
             "cited_keys": [c.text for c in citations],
             "cited_keys_valid": [],
+            "cited_keys_valid_strict": [],
             "cited_keys_invalid": [],
             "cited_in_text": [c.text for c in citations],
             "confidence": None,
@@ -804,16 +962,28 @@ def merge_report(
     for merged in accepted:
         row = by_strategy.setdefault(
             merged.strategy,
-            {"answers": 0, "refused": 0, "with_invalid_citations": 0, "citations": 0, "valid": 0},
+            {
+                "answers": 0,
+                "refused": 0,
+                "with_invalid_citations": 0,
+                "citations": 0,
+                "valid": 0,
+                "valid_strict": 0,
+            },
         )
         row["answers"] += 1
         row["refused"] += 1 if merged.record["refused"] else 0
         row["citations"] += len(merged.record["cited_keys"])
         row["valid"] += len(merged.record["cited_keys_valid"])
+        row["valid_strict"] += len(merged.record["cited_keys_valid_strict"])
         row["with_invalid_citations"] += 1 if merged.record["cited_keys_invalid"] else 0
     for row in by_strategy.values():
-        row["citation_in_context_pct"] = (
-            round(100 * row["valid"] / row["citations"], 2) if row["citations"] else None
+        total = row["citations"]
+        row["citation_in_context_pct"] = round(100 * row["valid"] / total, 2) if total else None
+        # The pre-widening number: ids an item key, parent key or provenance chunk id names
+        # outright. The gap between the two is what the row-shaped strategies hide in a snippet.
+        row["citation_in_context_strict_pct"] = (
+            round(100 * row["valid_strict"] / total, 2) if total else None
         )
     answered = {f"{m.batch_id}" for m in batches if m.ok}
     return {
@@ -861,9 +1031,11 @@ def summarize_merge(report: Mapping[str, Any]) -> str:
     ]
     for name, row in answers["by_strategy"].items():
         pct = row["citation_in_context_pct"]
+        strict = row.get("citation_in_context_strict_pct")
         lines.append(
             f"  {name:<8} {row['answers']:>3} answers · {row['refused']:>2} refused · "
             f"citations in context {'-' if pct is None else f'{pct}%'}"
+            f" (strict {'-' if strict is None else f'{strict}%'})"
         )
     agentic = report.get("agentic") or {}
     if agentic.get("answers"):

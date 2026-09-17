@@ -142,6 +142,51 @@ def test_a_truncated_chunk_citation_resolves_against_the_context(tmp_path):
     assert record["citation_problems"] == []
 
 
+def test_an_id_only_a_snippet_spells_is_in_context_but_not_strictly(tmp_path):
+    """A `run_cypher` row is keyed by what the query grouped on; the test key is in the text."""
+    build(tmp_path, snippet="key=KAFKA-1, test=XT-10007, execution_key=XE-10004")
+    write_output(
+        tmp_path,
+        answers=[answer(text="It is covered by [XT-10007].", cited=("XT-10007",))],
+    )
+    report = merge(tmp_path)
+    record = json.loads(
+        (tmp_path / "eval" / "answers" / "fixed" / "q001.s1.json").read_text(encoding="utf-8")
+    )
+    assert record["cited_keys_valid"] == ["XT-10007"]
+    assert record["cited_keys_valid_strict"] == []
+    assert record["cited_keys_invalid"] == []
+    assert "XT-10007" in record["context_keys"]
+    assert "XT-10007" not in record["context_keys_strict"]
+    row = report["answers"]["by_strategy"]["s1"]
+    assert (row["citation_in_context_pct"], row["citation_in_context_strict_pct"]) == (100.0, 0.0)
+
+
+def test_a_person_cited_with_its_readme_prefix_resolves_to_the_id_in_the_snippet(tmp_path):
+    build(tmp_path, snippet="person=Matthias J. Sax, person_id=jira:mjsax, commits=52")
+    write_output(
+        tmp_path,
+        answers=[answer(text="[person:jira:mjsax] wrote it.", cited=("person:jira:mjsax",))],
+    )
+    merge(tmp_path)
+    record = json.loads(
+        (tmp_path / "eval" / "answers" / "fixed" / "q001.s1.json").read_text(encoding="utf-8")
+    )
+    assert record["cited_keys_valid"] == ["jira:mjsax"]
+    assert record["cited_keys_invalid"] == []
+
+
+def test_an_id_the_context_never_spells_is_still_invalid_under_both_definitions(tmp_path):
+    build(tmp_path, snippet="key=KAFKA-1, test=XT-10007")
+    write_output(
+        tmp_path,
+        answers=[answer(text="It is covered by [XT-99999].", cited=("XT-99999",))],
+    )
+    report = merge(tmp_path)
+    row = report["answers"]["by_strategy"]["s1"]
+    assert (row["citation_in_context_pct"], row["citation_in_context_strict_pct"]) == (0.0, 0.0)
+
+
 def test_a_key_declared_but_never_bracketed_is_reported(tmp_path):
     build(tmp_path)
     write_output(tmp_path, answers=[answer(text="It was fixed.", cited=("KAFKA-1",))])

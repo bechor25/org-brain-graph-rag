@@ -103,6 +103,74 @@ def test_cited_key_matches_accepts_the_spellings_an_agent_actually_writes(cited,
     assert ab.cited_key_matches(cited, keys) == expected
 
 
+# ------------------------------------------------------------------- ids the snippets spell
+
+
+def test_id_tokens_finds_the_keys_a_cypher_row_hides_in_its_snippet():
+    """A `Row` is keyed by whatever the query grouped on; the graph ids are in the text."""
+    snippet = (
+        "key=KAFKA-14649, test=XT-10007, coverage=REFERENCES, "
+        "last_execution_status=PASS, execution_key=XE-10004"
+    )
+    assert {"KAFKA-14649", "XT-10007", "XE-10004"} <= ab.id_tokens(snippet)
+
+
+@pytest.mark.parametrize(
+    "text,wanted",
+    [
+        ("person=Matthias J. Sax, person_id=jira:mjsax, commits=52", "jira:mjsax"),
+        ("This cluster is KIP-778, adopted, which makes upgrades possible", "KIP-778"),
+        ("level=0, community=L0-562, size=52", "L0-562"),
+        ("relation=DEPENDS_ON, chunk_id=0f53ae374f0b03f980418274d76ee71b3cb7236a", "0f53ae374f0b"),
+        ("bug_keys=['ADO-10215', 'ADO-10131']", "ADO-10215"),
+    ],
+)
+def test_id_tokens_recognises_every_form_the_readme_lets_an_answer_cite(text, wanted):
+    tokens = ab.id_tokens(text)
+    assert any(t.startswith(wanted) for t in tokens), sorted(tokens)
+
+
+def test_id_tokens_ignores_a_key_shaped_word_that_is_not_a_key():
+    assert "UTF-8" not in ab.id_tokens("the payload is UTF-8 encoded")
+
+
+def test_context_ids_widen_the_strict_keys_with_what_the_snippets_spell():
+    record = run_record(keys=("KAFKA-1",), snippet="key=KAFKA-1, test=XT-10007")
+    context = ab.context_of(record)
+    strict = ab.context_keys(context)
+    ids = ab.context_ids(context)
+    assert "XT-10007" not in strict, "the strict set is the old definition and stays that way"
+    assert strict < ids
+    assert "XT-10007" in ids
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("person:jira:mjsax", "jira:mjsax"),
+        ("community:L0-8", "L0-8"),
+        ("chunk:AB12CD34", "ab12cd34"),
+        ("KAFKA-1", "KAFKA-1"),
+        ("  `KIP-848`  ", "KIP-848"),
+    ],
+)
+def test_canonical_id_strips_the_prefix_the_brackets_carry(value, expected):
+    assert ab.canonical_id(value) == expected
+
+
+@pytest.mark.parametrize(
+    "cited,keys,expected",
+    [
+        ("person:jira:mjsax", {"jira:mjsax"}, "jira:mjsax"),
+        ("jira:mjsax", {"jira:mjsax"}, "jira:mjsax"),
+        ("community:L0-8", {"L0-8"}, "L0-8"),
+        ("community:L0-9", {"L0-8"}, None),
+    ],
+)
+def test_cited_key_matches_normalises_both_sides_before_comparing(cited, keys, expected):
+    assert ab.cited_key_matches(cited, set(keys)) == expected
+
+
 def test_context_sha_changes_when_the_context_does():
     one = ab.context_of(run_record(snippet="a"))
     two = ab.context_of(run_record(snippet="b"))
