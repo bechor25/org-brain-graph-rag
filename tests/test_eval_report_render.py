@@ -343,3 +343,121 @@ def test_the_page_is_markdown_with_balanced_tables(tmp_path):
 
 def test_the_document_path_is_the_one_the_roadmap_gate_names():
     assert rb.DOCUMENT == Path("docs/report/eval-report.md")
+
+
+# --------------------------------------------------- what the fix round had to make visible
+
+
+def section(text: str, heading: str, until: str) -> str:
+    return text.split(heading)[1].split(until)[0]
+
+
+def test_the_header_no_longer_claims_nothing_was_typed_by_hand(tmp_path):
+    """Step `notes` are an engineer's prose; the numbers are what the generator promises."""
+    text = page(tmp_path)
+    assert "אין כאן מספר שהוקלד ביד" not in text
+    assert "המספרים נלקחים מדוחות השלבים" in text
+    assert "הערות השלבים הן פרוזה של המהנדס/ת של השלב" in text
+
+
+def test_the_layer_3_tables_print_their_denominator(tmp_path):
+    layer3 = section(page(tmp_path), "## שכבה 3", "## עדכון אינקרמנטלי")
+    assert "### ממוצעים לפי אסטרטגיה" in layer3
+    assert "| n |" in layer3 or "| n " in layer3
+
+
+def test_the_dropped_cases_are_rendered_with_their_reason(tmp_path):
+    from tests.eval_report_helpers import eval_answers as answers_fixture
+
+    report = answers_fixture()
+    report["answers_merge"]["context_drift"] = [
+        {"case_id": "cq16.s1", "why": "the run file now packs a different context"}
+    ]
+    layer3 = section(page(tmp_path, eval_answers=report), "## שכבה 3", "## עדכון אינקרמנטלי")
+    assert "cq16.s1" in layer3
+    assert "context_drift" in layer3
+
+
+def test_the_strict_citation_column_sits_beside_the_widened_one(tmp_path):
+    from tests.eval_report_helpers import eval_answers as answers_fixture
+
+    report = answers_fixture()
+    report["answers_merge"]["answers"]["by_strategy"] = {
+        "s4": {
+            "answers": 32,
+            "citations": 192,
+            "valid": 192,
+            "valid_strict": 140,
+            "citation_in_context_pct": 100.0,
+            "citation_in_context_strict_pct": 72.92,
+        }
+    }
+    layer3 = section(page(tmp_path, eval_answers=report), "## שכבה 3", "## עדכון אינקרמנטלי")
+    assert "strict" in layer3
+    assert "140" in layer3 and "192" in layer3
+
+
+def test_the_crosscheck_prints_the_four_way_breakdown(tmp_path):
+    text = page(tmp_path)
+    cross = section(text, "### שופט מול בדיקת הקוד", "### מצב B")
+    assert "בהסכמה" in cross
+    assert "היו ב-snapshot" in cross
+    assert "טעות שופט" in cross
+
+
+def test_the_pairwise_agreement_is_printed_beside_the_metric_agreement(tmp_path):
+    agree = section(page(tmp_path), "### הסכמה בין השופטים", "### שופט מול בדיקת הקוד")
+    assert "pairwise" in agree
+
+
+def test_the_when_what_table_says_whose_cost_the_delta_is(tmp_path):
+    when = page(tmp_path).split("## מתי מה")[1]
+    assert "מובילת ה-recall" in when
+    assert "עלות מיוחסת ל" in when
+
+
+def test_the_when_what_table_counts_the_types_whose_leaders_differ(tmp_path):
+    from tests.eval_report_helpers import eval_answers as answers_fixture
+
+    report = answers_fixture()
+    matrix = report["metrics"]["matrix"]
+    matrix["s1r"]["traceability"]["correctness"] = 2.0
+    matrix["s3"]["traceability"]["correctness"] = 0.5
+    when = page(tmp_path, eval_answers=report).split("## מתי מה")[1]
+    assert "מובילת recall ≠ מובילת נכונוּת" in when
+
+
+def test_the_incremental_section_has_named_rows_and_no_dumped_objects(tmp_path):
+    inc = section(page(tmp_path), "## עדכון אינקרמנטלי", "## מתי מה")
+    for label in ("צמתים שנוספו", "קשתות שנוספו", "chunks שנוספו", "קהילות שהשתנו"):
+        assert label in inc
+    assert "member_hash_changed_ids" not in inc
+    assert "L0-3" not in inc, "the changed community ids are a count, never a list"
+
+
+def test_the_questions_section_states_the_gold_source_split(tmp_path):
+    questions = section(page(tmp_path), "## סט השאלות", "## שכבה 0")
+    assert "gold source: graph 32 / truth 0" in questions
+
+
+def test_the_temporal_questions_whose_gold_is_the_strategys_own_call_are_marked(tmp_path):
+    from tests.eval_report_helpers import write_questions
+
+    write_questions(tmp_path)
+    text = rr.render(
+        rb.build(
+            write_reports(tmp_path),
+            eval_dir=tmp_path / "eval",
+            sha=SHA,
+            generated_at="2026-09-17T12:00:00+00:00",
+        )
+    )
+    layer2 = section(text, "## שכבה 2", "## שכבה 3")
+    assert "cq13" in layer2 and "cq19" in layer2
+    assert "code path" in layer2
+
+
+def test_both_ungraded_merge_counts_are_on_the_page(tmp_path):
+    resolution = section(page(tmp_path), "### שכבה 1 — איחוד ישויות", "### שכבה 1 — כיסוי")
+    assert "1,656" in resolution
+    assert "1,657" in resolution

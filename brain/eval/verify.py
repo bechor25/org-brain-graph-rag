@@ -8,9 +8,11 @@ the *server* enforces; nothing in this module can write even if a query were wro
 Two design notes worth the space:
 
 * **Batched per kind, not per citation.** Nineteen answers carry a few hundred citations.
-  `UNWIND $values AS v` turns that into five queries, and the properties are all constrained
-  (`WorkItem.key`, `Document.key`, `Person.id`, `Commit.sha`, `Chunk.id`), so both the exact
-  matches and the `STARTS WITH` prefixes are index-backed.
+  `UNWIND $values AS v` turns that into a handful of queries, and the properties are all
+  constrained (`WorkItem.key`, `Document.key`, `Person.id`, `Commit.sha`, `Chunk.id`,
+  `StatusChange.id`), so both the exact matches and the `STARTS WITH` prefixes are
+  index-backed. A full forty-hex id fits three of those labels, so it is asked of each in
+  turn (`FALLBACK_KINDS`) rather than of the first one only.
 * **Explicit projection everywhere.** `GraphClient.read()` returns `record.data()`, which
   turns a node into a plain property dict with its labels dropped. A query that returned `n`
   would hand back something that cannot say what it is.
@@ -36,7 +38,20 @@ EXACT_KINDS: dict[str, tuple[str, str, str]] = {
 PREFIX_KINDS: dict[str, tuple[str, str, str]] = {
     "commit": ("Commit", "sha", "message"),
     "chunk": ("Chunk", "id", "parent_key"),
+    "statuschange": ("StatusChange", "id", "field"),
 }
+#: A *bare* forty-hex token in an answer is ambiguous by construction: three labels key on
+#: forty hex characters (`Commit.sha`, `Chunk.id`, `StatusChange.id`) and the bracket says
+#: which none of them. Asking only the first is how ten `StatusChange` ids and one full
+#: `Chunk.id` were published as "not in the graph" while sitting in it. So a forty-hex miss
+#: falls through to the next label, in this order, and the verdict says which one answered.
+#:
+#: Only at full length. Seven hex characters is git's own abbreviation and a deliberate
+#: commit citation; over ~14k chunks and ~60k status changes it is also a coincidence
+#: waiting to happen, so a short prefix stays a commit question.
+FALLBACK_KINDS: dict[str, tuple[str, ...]] = {"commit": ("chunk", "statuschange")}
+#: The length at which the fallback chain applies — a full sha1, all three labels' id width.
+FULL_HEX = 40
 
 
 @dataclass(frozen=True)
@@ -173,14 +188,22 @@ class GraphVerifier:
     def _resolve_prefix(self, kind: str, values: list[str]) -> None:
         label, key_prop, _ = PREFIX_KINDS[kind]
         rows = self._prefix(kind, values)
+        rows, resolved_by, tried = self._fall_through(kind, values, rows)
         for value in values:
             row = rows.get(value)
             if not row:
+                asked = ", ".join(PREFIX_KINDS[k][0] for k in tried.get(value, (kind,)))
                 self._cache[f"{kind}:{value}"] = Verdict(
-                    False, reason=f"no {label} {key_prop} starts with {value!r}"
+                    False, reason=f"no {asked} key starts with {value!r}"
                 )
                 continue
             notes = []
+            other = resolved_by.get(value)
+            if other:
+                notes.append(
+                    f"resolved as a {PREFIX_KINDS[other][0]}.{PREFIX_KINDS[other][1]}, not a "
+                    f"{label}.{key_prop} — a forty-hex id does not say which label it belongs to"
+                )
             if row["matches"] > 1:
                 notes.append(
                     f"ambiguous prefix — {row['matches']} nodes start with {value!r} "
@@ -195,6 +218,29 @@ class GraphVerifier:
                 title=row.get("title") or "",
                 note="; ".join(notes) or None,
             )
+
+    def _fall_through(
+        self, kind: str, values: list[str], rows: dict[str, dict[str, Any]]
+    ) -> tuple[dict[str, dict[str, Any]], dict[str, str], dict[str, tuple[str, ...]]]:
+        """Ask the next label about the full-length ids the first one did not know.
+
+        Returns the rows with the late answers folded in, which citation each late answer
+        came from, and — for every value — the labels that were actually asked, so a refusal
+        can name them instead of naming one and implying the rest were checked.
+        """
+        rows = dict(rows)
+        resolved_by: dict[str, str] = {}
+        tried: dict[str, tuple[str, ...]] = {v: (kind,) for v in values}
+        for other in FALLBACK_KINDS.get(kind, ()):
+            todo = [v for v in values if v not in rows and len(v) == FULL_HEX]
+            if not todo:
+                break
+            for value in todo:
+                tried[value] = (*tried[value], other)
+            for value, row in self._prefix(other, todo).items():
+                rows[value] = row
+                resolved_by[value] = other
+        return rows, resolved_by, tried
 
 
 def graph_verify(citations: Iterable[Citation]) -> dict[str, Verdict]:

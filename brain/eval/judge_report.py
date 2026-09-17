@@ -11,13 +11,19 @@ things are checked that a judge cannot check about itself:
   that do not, because "2, it looks right" is an opinion in the shape of a measurement.
 * **Citation validity is computed as well as judged.** The code check is binary — every
   bracket names something the retrieval actually returned, and something the graph holds —
-  and the report prints where it and the judge disagree instead of picking a winner.
+  and the report prints where it and the judge disagree instead of picking a winner. It
+  answers `in_graph_now` and `in_retrieval_snapshot` separately, because the graph moved
+  between the retrieval and the check and only one of those two questions is about the
+  answer.
 * **The two judges are compared on the overlap.** 20% of the cases were scored twice, and
-  exact and within-1 agreement per metric is what says whether the averages mean anything.
+  exact and within-1 agreement per metric is what says whether the averages mean anything —
+  beside the agreement on the pairwise winner, which is the same judges on a nominal scale
+  and is markedly lower.
 
-A case that was scored twice contributes *one* score to every average (the mean of its two
-judgments), so a shard's overlap cannot double-weight the questions that happened to be
-sampled into it.
+Every aggregate here dedupes by its **own** key before it counts. A case scored twice
+contributes one score to every average (the mean of its two judgments); a pair judged twice
+is one row of the pairwise table, and two judges who named different winners make it a tie.
+Counting verdicts instead of pairs double-weighted 23 of 120 pairs.
 """
 
 from __future__ import annotations
@@ -348,8 +354,14 @@ def case_scores(judgments: Sequence[Judgment]) -> dict[str, dict[str, Any]]:
 
 
 def summarise(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """The four means plus how many cases each rests on. `None` when nothing was scored."""
-    out: dict[str, Any] = {"cases": len(rows)}
+    """The four means plus how many cases each rests on. `None` when nothing was scored.
+
+    `n` is `cases` under the name every table prints it by. The denominators are not equal
+    across strategies — 13 cases were dropped for context drift, and they fell on `s1` and
+    `s1r` hardest — so a mean without its `n` beside it invites a comparison that the
+    numbers do not support.
+    """
+    out: dict[str, Any] = {"cases": len(rows), "n": len(rows)}
     for metric in METRICS:
         values = [float(r[metric]) for r in rows if r.get(metric) is not None]
         out[metric] = _mean(values)
@@ -374,8 +386,14 @@ def matrix(rows: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, dict[str, A
     return {k: dict(sorted(v.items())) for k, v in sorted(out.items())}
 
 
-def agreement(judgments: Sequence[Judgment]) -> dict[str, Any]:
-    """Exact and within-1 agreement between the two judges, on the cases both scored."""
+def agreement(judgments: Sequence[Judgment], pairs: Sequence[PairVerdict] = ()) -> dict[str, Any]:
+    """Exact and within-1 agreement between the two judges, on the cases both scored.
+
+    `pairs` is here rather than in a section of its own because agreement is scale-dependent
+    and the two scales disagree: on a 0–2 rubric the judges are 90% exact, and on "which of
+    these two answers is better" they are 65%. Publishing the first without the second reads
+    as one number about one judge.
+    """
     grouped: dict[str, list[Judgment]] = {}
     for judgment in judgments:
         grouped.setdefault(judgment.label, []).append(judgment)
@@ -409,32 +427,102 @@ def agreement(judgments: Sequence[Judgment]) -> dict[str, Any]:
         "overlap_cases": len(overlap),
         "overlap_labels": sorted(overlap),
         "by_metric": per_metric,
+        "pairwise": pairwise_agreement(pairs),
         "note": (
-            "Only cases scored by two different shards are compared. A case both judges "
-            "scored counts once in every average above; the two scores are averaged."
+            "Only cases scored by two different shards are compared, and only the four case "
+            "metrics: a case both judges scored counts once in `metrics`, with its two "
+            "scores averaged. The pairwise table dedupes separately, by `pair_id`, and its "
+            "own agreement is in `pairwise` beside this one."
+        ),
+    }
+
+
+def pair_groups(pairs: Sequence[PairVerdict]) -> dict[str, list[PairVerdict]]:
+    """`pair_id` -> every verdict on it. The unit of the pairwise table is the pair."""
+    grouped: dict[str, list[PairVerdict]] = {}
+    for pair in pairs:
+        grouped.setdefault(pair.label, []).append(pair)
+    return grouped
+
+
+def pairwise_agreement(pairs: Sequence[PairVerdict]) -> dict[str, Any]:
+    """Do the two judges pick the same winner? Exact only — "better" has no half a point."""
+    overlap = {
+        label: group
+        for label, group in pair_groups(pairs).items()
+        if len(group) > 1 and len({p.shard for p in group}) > 1
+    }
+    exact = sum(1 for group in overlap.values() if len({p.winner_strategy for p in group}) == 1)
+    total = len(overlap)
+    return {
+        "compared": total,
+        "exact": exact,
+        "exact_pct": round(100 * exact / total, 2) if total else None,
+        "note": (
+            "Exact on the winner, because a pairwise verdict is nominal: there is no "
+            "within-1 for `s4` against `tie`. This is the least reliable of the judge's "
+            "answers and the one the win rates rest on."
         ),
     }
 
 
 def pairwise_table(pairs: Sequence[PairVerdict], *, baseline: str = BASELINE) -> dict[str, Any]:
-    """Win / loss / tie against the baseline, per challenger strategy."""
+    """Win / loss / tie against the baseline, per challenger strategy — **per pair**.
+
+    A pair inside the 20% overlap carries two verdicts, and counting verdicts weighted those
+    pairs twice (143 verdicts over 120 pairs, and `s4`'s win rate 0.625 instead of 0.688).
+    Conventions, "dedupe הוא per-aggregate": every table that summarises overlapping work
+    groups by its own key first. Two judges who picked different winners produce a `tie` —
+    the conservative reading, since a win nobody can reproduce is not a win — and the pair
+    is named in `split_verdicts` rather than being averaged into silence.
+    """
     rows: dict[str, dict[str, Any]] = {}
-    for pair in pairs:
+    split: list[dict[str, Any]] = []
+    grouped = pair_groups(pairs)
+    for label, group in sorted(grouped.items()):
+        head = group[0]
+        winners = sorted({p.winner_strategy for p in group})
+        disputed = len(winners) > 1
+        winner = "tie" if disputed else winners[0]
+        if disputed:
+            split.append(
+                {
+                    "pair_id": label,
+                    "qid": head.qid,
+                    "challenger": head.challenger,
+                    "winners": winners,
+                    "shards": sorted({p.shard for p in group}),
+                }
+            )
         row = rows.setdefault(
-            pair.challenger,
-            {"cases": 0, "wins": 0, "losses": 0, "ties": 0, "both_wrong": 0, "qids": []},
+            head.challenger,
+            {
+                "cases": 0,
+                "wins": 0,
+                "losses": 0,
+                "ties": 0,
+                "both_wrong": 0,
+                "split": 0,
+                "verdicts": 0,
+                "qids": [],
+            },
         )
         row["cases"] += 1
-        row["qids"].append(pair.qid)
-        if pair.winner_strategy == pair.challenger:
+        row["verdicts"] += len(group)
+        row["split"] += 1 if disputed else 0
+        row["qids"].append(head.qid)
+        if winner == head.challenger:
             row["wins"] += 1
-        elif pair.winner_strategy == baseline:
+        elif winner == baseline:
             row["losses"] += 1
         else:
             row["ties"] += 1
-        row["both_wrong"] += 1 if pair.both_wrong else 0
+        # Unanimity, for the same reason a split winner is a tie: one judge's "both wrong"
+        # that the other did not confirm is a claim, not a finding.
+        row["both_wrong"] += 1 if all(p.both_wrong for p in group) else 0
     for row in rows.values():
         row["qids"] = sorted(set(row["qids"]))
+        row["n"] = row["cases"]
         row["win_rate"] = round(row["wins"] / row["cases"], 3) if row["cases"] else None
         row["win_rate_excluding_ties"] = (
             round(row["wins"] / (row["wins"] + row["losses"]), 3)
@@ -443,10 +531,17 @@ def pairwise_table(pairs: Sequence[PairVerdict], *, baseline: str = BASELINE) ->
         )
     return {
         "baseline": baseline,
+        "pairs": len(grouped),
+        "verdicts": len(pairs),
         "by_challenger": dict(sorted(rows.items())),
+        "split_verdicts": split,
+        "agreement": pairwise_agreement(pairs),
         "note": (
-            "`win_rate` counts a tie as a non-win. `both_wrong` ties are counted in `ties` "
-            "and reported separately: two wrong answers agreeing is not a draw on quality."
+            "One row per `pair_id`, not per verdict: the 20% overlap judged some pairs "
+            "twice. A pair whose two judges named different winners counts as `tie` and is "
+            "listed in `split_verdicts`. `win_rate` counts a tie as a non-win; `both_wrong` "
+            "needs every judge that saw the pair to say so, and is reported separately "
+            "because two wrong answers agreeing is not a draw on quality."
         ),
     }
 
@@ -458,6 +553,7 @@ def code_citation_check(
     answers: Sequence[Mapping[str, Any]],
     *,
     verify: Callable[[Iterable[Any]], Mapping[str, Any]] | None = None,
+    snapshot: Any | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Per case: does every bracket name something retrieved, and something the graph holds?
 
@@ -465,6 +561,12 @@ def code_citation_check(
     context; it cannot say whether the key supports the sentence it follows, which is half
     of the judge's 0–2. Pretending otherwise would produce a number that looks like the
     judge's and is not comparable with it.
+
+    Two verdicts, not one, because the graph moved under this check: `in_graph_now` is what
+    the graph holds at check time, `in_retrieval_snapshot` is what the retrieval actually
+    returned when the answer was written (`brain/eval/snapshot.py`). A citation that is
+    `false` and `true` is a re-partitioned community, not an invented id, and the two words
+    for that are different words.
     """
     from brain.eval.citations import find_citations, unique
 
@@ -488,42 +590,59 @@ def code_citation_check(
             for c in citations
             if available and cited_key_matches(c.value or c.text, keys) is None
         ]
-        not_in_graph = [
-            c.text for c in citations if verdicts and not getattr(verdicts.get(c.id), "ok", True)
+        gone = [c for c in citations if verdicts and not getattr(verdicts.get(c.id), "ok", True)]
+        not_in_graph = [c.text for c in gone]
+        not_in_snapshot = [
+            c.text for c in gone if not (snapshot and snapshot.contains(case_id, c.value or c.text))
         ]
         refused = bool(answer.get("refused"))
         if not citations:
             valid: bool | None = True if refused else False
             reason = "a refusal cites nothing" if refused else "the answer carries no citation"
         elif not_in_context or not_in_graph:
-            valid, reason = (
-                False,
-                "; ".join(
-                    filter(
-                        None,
-                        [
-                            f"not in the context: {', '.join(not_in_context[:5])}"
-                            if not_in_context
-                            else "",
-                            f"not in the graph: {', '.join(not_in_graph[:5])}"
-                            if not_in_graph
-                            else "",
-                        ],
-                    )
-                ),
-            )
+            valid, reason = False, _why_invalid(not_in_context, not_in_graph, not_in_snapshot)
         else:
             valid, reason = True, "every citation is in the context and resolves in the graph"
         out[case_id] = {
             "citations": len(citations),
             "not_in_context": not_in_context,
             "not_in_graph": not_in_graph,
+            "not_in_snapshot": not_in_snapshot,
             "context_checked": available,
             "graph_checked": bool(verdicts),
+            "snapshot_checked": snapshot is not None,
+            "snapshot_source": snapshot.source(case_id) if snapshot else None,
+            "in_graph_now": (not not_in_graph) if verdicts else None,
+            "in_retrieval_snapshot": (not not_in_snapshot) if (snapshot and gone) else None,
             "code_valid": valid,
+            # The same verdict measured against the graph the retrieval saw. It differs from
+            # `code_valid` only for ids that left the graph after they were returned.
+            "code_valid_in_snapshot": (
+                valid if valid is not False else not (not_in_context or not_in_snapshot)
+            )
+            if citations
+            else valid,
             "reason": reason,
         }
     return out
+
+
+def _why_invalid(
+    not_in_context: Sequence[str], not_in_graph: Sequence[str], not_in_snapshot: Sequence[str]
+) -> str:
+    """Name the failing ids, and say which of them the retrieval had really returned."""
+    parts = []
+    if not_in_context:
+        parts.append(f"not in the context: {', '.join(not_in_context[:5])}")
+    if not_in_graph:
+        parts.append(f"not in the graph now: {', '.join(not_in_graph[:5])}")
+    moved = [c for c in not_in_graph if c not in set(not_in_snapshot)]
+    if moved:
+        parts.append(
+            f"but in the retrieval snapshot: {', '.join(moved[:5])} — the graph moved "
+            "between the retrieval and this check"
+        )
+    return "; ".join(parts)
 
 
 def crosscheck(
@@ -552,31 +671,97 @@ def crosscheck(
                     "case_id": case_id,
                     "judge": judged,
                     "code": "valid",
+                    "kind": "judge_stricter",
+                    "in_snapshot": None,
                     "why": verdict["reason"],
                 }
             )
         elif not code_valid and judged >= 1.5:
+            # The graph moved between the retrieval and this check, so "the code says
+            # invalid" has two meanings. Only the one the snapshot cannot explain is a
+            # judge error; the other is a measurement of the move.
+            explained = bool(verdict.get("code_valid_in_snapshot"))
             disagreements.append(
-                {"case_id": case_id, "judge": judged, "code": "invalid", "why": verdict["reason"]}
+                {
+                    "case_id": case_id,
+                    "judge": judged,
+                    "code": "invalid",
+                    "kind": "in_snapshot" if explained else "judge_error",
+                    "in_snapshot": explained,
+                    "why": verdict["reason"],
+                }
             )
         else:
             agreed += 1
+    in_snapshot = [d for d in disagreements if d["kind"] == "in_snapshot"]
+    judge_errors = [d for d in disagreements if d["kind"] in ("judge_error", "judge_stricter")]
     return {
         "compared": compared,
         "agreed": agreed,
         "disagreements": disagreements,
+        "disagree_now": len(disagreements),
+        "disagree_but_in_snapshot": len(in_snapshot),
+        "real_judge_error": len(judge_errors),
+        "real_judge_errors": sorted(d["case_id"] for d in judge_errors),
         "disagreement_pct": (round(100 * len(disagreements) / compared, 2) if compared else None),
         "note": (
             "The code check is binary — every bracket names something the retrieval returned "
             "and the graph holds. A disagreement is flagged only at the extremes (the code "
             "says valid and the judge scored 0, or the reverse); a judge's 1 is compatible "
             "with either, because only the judge can see whether a citation supports its "
-            "sentence."
+            "sentence. `disagree_but_in_snapshot` is a disagreement the moving graph "
+            "explains: the id was returned by the retrieval and deleted afterwards. What "
+            "is left over — `real_judge_error` — is the judge scoring a citation it did "
+            "not have."
         ),
     }
 
 
 # ----------------------------------------------------------------------------- the merge
+
+
+#: Why a case that was answered never reached a judge. One reason so far, and it is the one
+#: the un-frozen measurement window produced: the run file the answer was written against
+#: had been overwritten by the incremental sweep, so the judge could not be shown the
+#: context the answer had used.
+CONTEXT_DRIFT = "context_drift"
+
+
+def read_section(path: Path, name: str) -> dict[str, Any]:
+    """One section of a step report that another command already wrote, or `{}`."""
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    section = (data or {}).get(name)
+    return dict(section) if isinstance(section, Mapping) else {}
+
+
+def dropped_cases(answers_merge: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The answered cases no judge saw: case id, strategy, and the reason, spelled out.
+
+    Without this the layer-3 denominators look like an accident of sampling. They are not:
+    the 13 drops fell hardest on `s1` and `s1r`, which is the baseline arm, and a report
+    that prints `s1 n=26` beside `s3 n=32` without saying why invites the wrong comparison.
+    """
+    from brain.eval.answers_batches import split_case_id
+
+    out: list[dict[str, Any]] = []
+    for entry in answers_merge.get("context_drift") or []:
+        if not isinstance(entry, Mapping):
+            continue
+        case_id = str(entry.get("case_id") or "")
+        qid, strategy = split_case_id(case_id)
+        out.append(
+            {
+                "case_id": case_id,
+                "qid": qid,
+                "strategy": strategy,
+                "reason": CONTEXT_DRIFT,
+                "why": str(entry.get("why") or ""),
+            }
+        )
+    return sorted(out, key=lambda r: (str(r["strategy"]), str(r["qid"])))
 
 
 def run_merge(
@@ -586,11 +771,13 @@ def run_merge(
     reports_dir: Path,
     rows: Sequence[Mapping[str, Any]],
     verify: Callable[[Iterable[Any]], Mapping[str, Any]] | None = None,
+    log_path: Path | str | None = None,
     sha: str = "",
     echo: Callable[[str], None] = print,
 ) -> dict[str, Any]:
     """Validate, de-blind, measure, and write `data/reports/eval_answers.json`."""
-    from brain.eval.answers_batches import read_merged
+    from brain.eval import snapshot as snapshot_mod
+    from brain.eval.answers_batches import REPORT_NAME, read_merged
     from brain.eval.judge_batches import read_blind_map
 
     started = time.perf_counter()
@@ -609,7 +796,9 @@ def run_merge(
     pairs: list[PairVerdict] = read["pairs"]
     rows_by_case = case_scores(judgments)
     scored = list(rows_by_case.values())
-    code = code_citation_check(answers, verify=verify)
+    snapshot = snapshot_mod.RetrievalSnapshot.build(answers, log_path=log_path)
+    code = code_citation_check(answers, verify=verify, snapshot=snapshot)
+    dropped = dropped_cases(read_section(Path(reports_dir) / REPORT_NAME, "answers_merge"))
 
     planned = set(casebatch.batch_ids(root))
     with_output = {b.batch_id for b in read["batches"]}
@@ -657,14 +846,18 @@ def run_merge(
                 name: summarise(group) for name, group in sorted(group_by(scored, "lang").items())
             },
             "matrix": matrix(scored),
+            "dropped": dropped,
+            "snapshot": snapshot.as_dict(),
             "note": (
                 "Layer 3 of spec §5.2. A case judged twice contributes the mean of its two "
-                "judgments, once. `*_n` is how many cases carried that metric — faithfulness "
-                "is null on agentic cases, which recorded no context."
+                "judgments, once. `n` is the denominator of the row and they are not equal: "
+                f"{len(dropped)} case(s) never reached a judge (`dropped`). `*_n` is how "
+                "many cases carried that metric — faithfulness is null on agentic cases, "
+                "which recorded no context."
             ),
         },
         "pairwise": pairwise_table(pairs),
-        "agreement": agreement(judgments),
+        "agreement": agreement(judgments, pairs),
         "citation_crosscheck": crosscheck(scored, answers, code),
         "citation_code_check": dict(sorted(code.items())),
     }
@@ -687,21 +880,31 @@ def summarize_merge(report: Mapping[str, Any], sections: Mapping[str, Any]) -> s
         f"judge merge: {judgments['total']} judgment(s) over {judgments['cases']} case(s), "
         f"{judgments['pairs']} pairwise, {judgments['rejected']} rejected",
     ]
-    head = f"{'strategy':<10}" + "".join(f"{m[:5]:>8}" for m in METRICS) + f"{'cases':>7}"
+    head = f"{'strategy':<10}" + "".join(f"{m[:5]:>8}" for m in METRICS) + f"{'n':>7}"
     lines += [head, "-" * len(head)]
     for name, row in sections["metrics"]["by_strategy"].items():
         cells = "".join(
             f"{'-' if row.get(m) is None else format(row[m], '.2f'):>8}" for m in METRICS
         )
-        lines.append(f"{name:<10}{cells}{row['cases']:>7}")
+        lines.append(f"{name:<10}{cells}{row['n']:>7}")
+    dropped = sections["metrics"].get("dropped") or []
+    if dropped:
+        lines.append(
+            f"dropped before judging: {len(dropped)} case(s) "
+            f"({', '.join(sorted({d['case_id'] for d in dropped}))})"
+        )
     pairwise = sections["pairwise"]["by_challenger"]
     if pairwise:
         lines.append("")
-        lines.append(f"pairwise vs {sections['pairwise']['baseline']}:")
+        lines.append(
+            f"pairwise vs {sections['pairwise']['baseline']}: "
+            f"{sections['pairwise']['pairs']} pair(s) from "
+            f"{sections['pairwise']['verdicts']} verdict(s)"
+        )
         for name, row in pairwise.items():
             lines.append(
                 f"  {name:<6} {row['wins']}W/{row['losses']}L/{row['ties']}T "
-                f"· win rate {row['win_rate']}"
+                f"· win rate {row['win_rate']} (n={row['n']})"
             )
     agree = sections["agreement"]["by_metric"]
     lines.append("")
@@ -711,11 +914,16 @@ def summarize_merge(report: Mapping[str, Any], sections: Mapping[str, Any]) -> s
             f"  {metric:<18} exact {row['exact_pct']}% · within-1 {row['within_1_pct']}% "
             f"(n={row['compared']})"
         )
+    pair_agree = sections["agreement"]["pairwise"]
+    lines.append(
+        f"  {'pairwise winner':<18} exact {pair_agree['exact_pct']}% (n={pair_agree['compared']})"
+    )
     cross = sections["citation_crosscheck"]
     lines.append("")
     lines.append(
         f"citation cross-check: {cross['agreed']}/{cross['compared']} agree with the code; "
-        f"{len(cross['disagreements'])} disagreement(s)"
+        f"{cross['disagree_now']} disagreement(s) — {cross['disagree_but_in_snapshot']} "
+        f"explained by the retrieval snapshot, {cross['real_judge_error']} judge error(s)"
     )
     if judgments["unjudged_labels"]:
         lines.append(

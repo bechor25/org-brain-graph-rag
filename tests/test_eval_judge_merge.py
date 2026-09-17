@@ -469,3 +469,251 @@ def test_a_pairs_field_that_is_not_an_array_is_still_an_envelope_error(tmp_path)
     path.write_text(json.dumps(written), encoding="utf-8")
     report = merge(tmp_path, rows)
     assert report["batches"]["failed"][0]["where"] == "retry"
+
+
+# ------------------------------------------------- pairwise: pairs, not verdicts (review 🔴)
+
+
+def pair_verdict(label, shard, *, qid="q001", challenger="s3", winner="s3", both_wrong=False):
+    return jr.PairVerdict(
+        label=label,
+        shard=shard,
+        batch=f"{shard}/001",
+        qid=qid,
+        baseline="s1r",
+        challenger=challenger,
+        winner="a",
+        winner_strategy=winner,
+        both_wrong=both_wrong,
+    )
+
+
+def test_a_pair_judged_twice_counts_once():
+    table = jr.pairwise_table(
+        [pair_verdict("P1", "shard-01"), pair_verdict("P1", "shard-02")],
+    )
+    row = table["by_challenger"]["s3"]
+    assert (row["cases"], row["wins"]) == (1, 1), "two verdicts on one pair are one pair"
+    assert table["pairs"] == 1
+    assert table["verdicts"] == 2
+    assert table["split_verdicts"] == []
+
+
+def test_two_judges_who_disagree_on_a_pair_make_it_a_tie():
+    table = jr.pairwise_table(
+        [
+            pair_verdict("P1", "shard-01", winner="s3"),
+            pair_verdict("P1", "shard-02", winner="tie"),
+        ],
+    )
+    row = table["by_challenger"]["s3"]
+    assert (row["wins"], row["losses"], row["ties"]) == (0, 0, 1)
+    assert [s["pair_id"] for s in table["split_verdicts"]] == ["P1"]
+    assert table["split_verdicts"][0]["winners"] == ["s3", "tie"]
+
+
+def test_both_wrong_needs_every_judge_that_saw_the_pair_to_say_so():
+    table = jr.pairwise_table(
+        [
+            pair_verdict("P1", "shard-01", winner="tie", both_wrong=True),
+            pair_verdict("P1", "shard-02", winner="tie", both_wrong=False),
+        ],
+    )
+    assert table["by_challenger"]["s3"]["both_wrong"] == 0
+
+
+def test_pairwise_agreement_is_exact_on_the_winner():
+    table = jr.pairwise_table(
+        [
+            pair_verdict("P1", "shard-01", winner="s3"),
+            pair_verdict("P1", "shard-02", winner="s3"),
+            pair_verdict("P2", "shard-01", qid="q002", winner="s3"),
+            pair_verdict("P2", "shard-02", qid="q002", winner="tie"),
+            pair_verdict("P3", "shard-01", qid="q003", winner="s3"),
+        ],
+    )
+    agree = table["agreement"]
+    assert agree["compared"] == 2, "only the pairs two shards judged"
+    assert agree["exact"] == 1
+    assert agree["exact_pct"] == 50.0
+
+
+def test_the_pairwise_table_groups_by_pair_id_end_to_end(tmp_path):
+    answers = [answer(f"q{i:03d}", s) for i in range(6) for s in ("s1r", "s3")]
+    rows = [row(f"q{i:03d}") for i in range(6)]
+    _, blind = setup(tmp_path, answers, rows, shards=2, overlap=0.4, pair_with=("s3",))
+    root = tmp_path / "batches" / "judge"
+    for in_path in sorted(root.glob("shard-*/*.in.json")):
+        payload = json.loads(in_path.read_text(encoding="utf-8"))
+        # The second judge calls every pair a tie; the first picks side `a`.
+        winner = "tie" if payload["shard"] == "shard-02" else "a"
+        write_judgments(
+            tmp_path,
+            payload["shard"],
+            in_path.name.split(".", 1)[0],
+            scores=[score(c["case_id"]) for c in payload["cases"]],
+            pairs=[
+                {"pair_id": c["pair_id"], "winner": winner, "justification": QUOTE}
+                for c in payload["pairwise"]
+            ],
+        )
+    report = merge(tmp_path, rows)
+    pairwise = report["pairwise"]
+    table = pairwise["by_challenger"]["s3"]
+    assert pairwise["pairs"] == 6
+    assert pairwise["verdicts"] > pairwise["pairs"], "the overlap really did double-judge"
+    assert table["cases"] == 6
+    assert table["wins"] + table["losses"] + table["ties"] == 6
+    assert len(pairwise["split_verdicts"]) == pairwise["agreement"]["compared"]
+    assert pairwise["agreement"]["exact"] == 0
+
+
+def test_the_agreement_note_does_not_claim_the_pairwise_table_dedupes(tmp_path):
+    answers = [answer("q001", "s1")]
+    rows = [row("q001")]
+    _, blind = setup(tmp_path, answers, rows, pair_with=())
+    answer_all(tmp_path, blind)
+    report = merge(tmp_path, rows)
+    note = report["agreement"]["note"]
+    assert "every average above" not in note
+    assert "pairwise" in note.lower()
+    assert "pairwise" in report["agreement"]
+
+
+# --------------------------------------------------------- denominators (review 🟠 item 3)
+
+
+def test_every_strategy_row_carries_its_own_n(tmp_path):
+    answers = [answer("q001", "s1"), answer("q001", "s3"), answer("q002", "s3")]
+    rows = [row("q001"), row("q002")]
+    _, blind = setup(tmp_path, answers, rows, pair_with=())
+    answer_all(tmp_path, blind)
+    by_strategy = merge(tmp_path, rows)["metrics"]["by_strategy"]
+    assert by_strategy["s1"]["n"] == 1
+    assert by_strategy["s3"]["n"] == 2
+    assert all(cell["n"] == cell["cases"] for cell in by_strategy.values())
+
+
+def test_the_cases_that_never_reached_a_judge_are_named_with_their_reason(tmp_path):
+    answers = [answer("q001", "s1")]
+    rows = [row("q001")]
+    _, blind = setup(tmp_path, answers, rows, pair_with=())
+    answer_all(tmp_path, blind)
+    reports = tmp_path / "reports"
+    reports.mkdir(exist_ok=True)
+    (reports / ab.REPORT_NAME).write_text(
+        json.dumps(
+            {
+                "answers_merge": {
+                    "context_drift": [
+                        {"case_id": "cq16.s1r", "why": "the run file now packs a different context"}
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    dropped = merge(tmp_path, rows)["metrics"]["dropped"]
+    assert dropped == [
+        {
+            "case_id": "cq16.s1r",
+            "qid": "cq16",
+            "strategy": "s1r",
+            "reason": "context_drift",
+            "why": "the run file now packs a different context",
+        }
+    ]
+
+
+# ------------------------------------------ the graph moved under the check (review 🟠 item 2)
+
+
+class _Snapshot:
+    """Whatever the answer's own context held, as `RetrievalSnapshot` reports it."""
+
+    def __init__(self, by_case):
+        self.by_case = by_case
+
+    def contains(self, case_id, value):
+        return str(value) in self.by_case.get(case_id, set())
+
+    def source(self, case_id):
+        return "context"
+
+
+def test_a_citation_that_left_the_graph_is_still_in_the_retrieval_snapshot():
+    record = answer("q001", "s5", text="It was [community:L0-1436].", cited=("community:L0-1436",))
+    record["context_keys"] = ["L0-1436"]
+
+    class Gone:
+        ok = False
+
+    out = jr.code_citation_check(
+        [record],
+        verify=lambda cites: {c.id: Gone() for c in cites},
+        snapshot=_Snapshot({"q001.s5": {"L0-1436"}}),
+    )["q001.s5"]
+    assert out["in_graph_now"] is False
+    assert out["in_retrieval_snapshot"] is True
+    assert out["not_in_snapshot"] == []
+    assert out["code_valid"] is False, "the graph is still the graph"
+    assert out["code_valid_in_snapshot"] is True
+
+
+def test_a_citation_in_neither_the_graph_nor_the_snapshot_stays_invalid():
+    record = answer("q001", "s5", text="It was [community:L9-9].", cited=("community:L9-9",))
+    record["context_keys"] = ["L9-9"]
+
+    class Gone:
+        ok = False
+
+    out = jr.code_citation_check(
+        [record],
+        verify=lambda cites: {c.id: Gone() for c in cites},
+        snapshot=_Snapshot({}),
+    )["q001.s5"]
+    assert out["in_retrieval_snapshot"] is False
+    assert out["not_in_snapshot"] == ["community:L9-9"]
+    assert out["code_valid_in_snapshot"] is False
+
+
+def test_the_crosscheck_separates_a_moved_graph_from_a_judge_error():
+    code = {
+        "q001.s5": {
+            "code_valid": False,
+            "code_valid_in_snapshot": True,
+            "in_graph_now": False,
+            "in_retrieval_snapshot": True,
+            "not_in_snapshot": [],
+            "reason": "not in the graph: community:L0-1436",
+        },
+        "q002.s4": {
+            "code_valid": False,
+            "code_valid_in_snapshot": False,
+            "in_graph_now": None,
+            "in_retrieval_snapshot": None,
+            "not_in_snapshot": [],
+            "reason": "the answer carries no citation",
+        },
+        "q003.s1": {
+            "code_valid": True,
+            "code_valid_in_snapshot": True,
+            "in_graph_now": True,
+            "in_retrieval_snapshot": True,
+            "not_in_snapshot": [],
+            "reason": "every citation is in the context and resolves in the graph",
+        },
+    }
+    scored = [
+        {"label": "L1", "qid": "q001", "strategy": "s5", "citation_validity": 2.0},
+        {"label": "L2", "qid": "q002", "strategy": "s4", "citation_validity": 2.0},
+        {"label": "L3", "qid": "q003", "strategy": "s1", "citation_validity": 2.0},
+    ]
+    answers = [{"case_id": case_id} for case_id in code]
+    cross = jr.crosscheck(scored, answers, code)
+    assert cross["compared"] == 3
+    assert cross["agreed"] == 1
+    assert cross["disagree_now"] == 2
+    assert cross["disagree_but_in_snapshot"] == 1
+    assert cross["real_judge_error"] == 1
+    assert cross["real_judge_errors"] == ["q002.s4"]

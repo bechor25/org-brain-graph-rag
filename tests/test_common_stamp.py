@@ -77,6 +77,15 @@ def test_the_three_private_copies_are_now_one_helper():
     assert examples_mod.head_sha.__module__ == "brain.retrieve.examples"
 
 
+def test_the_last_two_private_copies_are_the_shared_helper():
+    """`brain eval report` and the Plan 2 gate kept a fifth and a sixth copy of the git call."""
+    from brain.eval import gate as gate_mod
+    from brain.eval import report_build as rb
+
+    assert rb.head_sha is stamp.head_sha
+    assert gate_mod.head_sha is stamp.head_sha
+
+
 # --------------------------------------------------------------------------- the writers
 
 

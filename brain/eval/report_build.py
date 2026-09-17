@@ -31,14 +31,18 @@ Plan 3 is `brain eval report` and not a day of editing.
 from __future__ import annotations
 
 import json
-import subprocess
-from collections.abc import Mapping
+import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import typer
+
+# Stdlib-only, so importing it costs `brain --help` nothing — which was the whole reason
+# this module kept a private copy of the git call until the closing review of Plan 3.
+from brain.common.stamp import head_sha
 
 #: Where the document lands, and the file the whole plan's gate names.
 DOCUMENT = Path("docs/report/eval-report.md")
@@ -105,25 +109,6 @@ INPUTS: tuple[Source, ...] = (
 
 def utc_now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
-
-
-def head_sha() -> str:
-    """The commit this document is being generated at, or `""` outside a checkout.
-
-    Deliberately not imported from `brain/retrieve/report.py`: that module pulls the whole
-    retrieval stack at import time, and `brain --help` should not.
-    """
-    try:
-        done = subprocess.run(  # noqa: S603 - a fixed argv, no shell
-            ["git", "rev-parse", "HEAD"],  # noqa: S607
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return ""
-    return done.stdout.strip() if done.returncode == 0 else ""
 
 
 def read_json(path: Path) -> dict[str, Any] | None:
@@ -321,6 +306,9 @@ def _resolution(
     summary = (index or {}).get("resolution") or {}
     kinds = summary.get("kinds") or {}
     source = summary.get("source") or "data/reports/resolve.json"
+    #: The file the printed numbers are read out of, which is not the same as `source` —
+    #: `source` is where the census got them from, one step further back.
+    summary_source = "data/reports/index.json" if kinds else "data/reports/resolve.json"
     if not kinds and resolve:
         # `brain resolve eval` writes the same numbers one level deeper.
         evaluated = resolve.get("eval") or {}
@@ -343,6 +331,11 @@ def _resolution(
             "nodes_before": part.get("nodes_before"),
             "nodes_after": part.get("nodes_after"),
             "ungraded_merges": part.get("ungraded_merges"),
+            "ungraded_merges_source": summary_source,
+            # `resolve.json` counts the merges through tier 3; the census counts them one
+            # tier earlier, so the two disagree by one for `person` (1,656 vs 1,657). Both
+            # are printed with their file: one of them is not "the" number.
+            "ungraded_merges_resolve": _ungraded_from_resolve(resolve, kind),
         }
         for kind, part in sorted(kinds.items())
     ]
@@ -351,8 +344,22 @@ def _resolution(
         "rows": rows,
         "target": summary.get("target"),
         "source": source,
+        "ungraded_sources": {
+            summary_source: "מה שהמפקד סופר",
+            "data/reports/resolve.json": "`through_tier_3` של `brain resolve eval`",
+        },
         "note": summary.get("note") or (resolve or {}).get("eval", {}).get("note"),
     }
+
+
+def _ungraded_from_resolve(resolve: Mapping[str, Any] | None, kind: str) -> Any:
+    """The same count as `brain resolve eval` writes it — through every tier."""
+    part = ((resolve or {}).get("eval") or {}).get(kind) or {}
+    for tier in ("through_tier_3", "through_tier_2", "through_tier_1"):
+        value = (part.get(tier) or {}).get("ungraded_merges")
+        if value is not None:
+            return value
+    return None
 
 
 def _provenance(index: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -409,10 +416,82 @@ def _communities(index: Mapping[str, Any] | None) -> dict[str, Any]:
     }
 
 
-def _questions(report: Mapping[str, Any] | None) -> dict[str, Any]:
+#: A `gold_query` that starts with this is not an independent gold: it is the very function
+#: the strategy under test executes, so a `1.0` for that strategy on that question says the
+#: call is deterministic and says nothing about retrieval.
+SHARED_CODE_PATH = "brain.retrieve."
+#: The two arms the question set was supposed to be drawn from (spec §5.1). One of them
+#: produced nothing, and a table of one row does not say so out loud.
+GOLD_ARMS: tuple[str, ...] = ("graph", "truth")
+
+
+def read_questions(eval_dir: Path, path: str = "") -> list[dict[str, Any]]:
+    """`questions.jsonl` as rows. Missing or malformed is an empty set, never an error."""
+    candidates = [Path(eval_dir) / "questions.jsonl"]
+    if path:
+        candidates.append(Path(path))
+    for candidate in candidates:
+        if not candidate.is_file():
+            continue
+        rows = []
+        for line in candidate.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(row, dict):
+                rows.append(row)
+        return rows
+    return []
+
+
+def _gold_source(counts: Mapping[str, Any]) -> dict[str, Any]:
+    """ "graph 32 / truth 0" — and, when an arm is empty, what that arm was for."""
+    parts = [f"{arm} {int(counts.get(arm) or 0)}" for arm in GOLD_ARMS]
+    extra = [f"{k} {v}" for k, v in sorted(counts.items()) if k not in GOLD_ARMS]
+    empty = [arm for arm in GOLD_ARMS if not counts.get(arm)]
+    gap = ""
+    if "truth" in empty:
+        gap = (
+            "אף שאלה לא נגזרה מ-`synthetic_truth.json` — הזרוע הסינתטית של §5.1 לא נבדקה "
+            "בפועל, וכל ה-gold מגיע מהגרף עצמו."
+        )
+    return {
+        "gold_source_line": "gold source: " + " / ".join(parts + extra),
+        "gold_source_empty_arms": empty,
+        "gold_source_gap": gap,
+    }
+
+
+def _shared_code_path(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Which questions hand the gold the function the strategy under test runs."""
+    shared = sorted(
+        str(row.get("id"))
+        for row in rows
+        if str(row.get("gold_query") or "").startswith(SHARED_CODE_PATH)
+    )
+    types = sorted({str(r.get("type")) for r in rows if str(r.get("id")) in set(shared)})
+    return {
+        "gold_shares_code_path": shared,
+        "gold_shares_code_path_types": types,
+        "gold_shares_code_path_note": (
+            "gold shares the strategy's code path — the gold answer of these questions is "
+            "the output of the same `brain.retrieve.temporal.*` call the strategy executes, "
+            "so their recall measures determinism rather than retrieval."
+            if shared
+            else ""
+        ),
+    }
+
+
+def _questions(
+    report: Mapping[str, Any] | None, *, rows: Sequence[Mapping[str, Any]] = ()
+) -> dict[str, Any]:
     """The set under measurement: how many, of which type, in which language."""
     if not report:
-        return {"present": False}
+        return {"present": False, **_shared_code_path(rows)}
     merge = report.get("merge") or {}
     counts = merge.get("counts") or {}
     totals = merge.get("totals") or {}
@@ -429,6 +508,8 @@ def _questions(report: Mapping[str, Any] | None) -> dict[str, Any]:
         "by_origin": counts.get("by_origin") or {},
         "checks": list(merge.get("checks") or []),
         "hebrew_floor": (merge.get("target") or {}).get("hebrew_floor"),
+        **_gold_source(counts.get("by_gold_source") or {}),
+        **_shared_code_path(rows),
     }
 
 
@@ -595,10 +676,74 @@ def _citation_code_summary(check: Mapping[str, Any] | None) -> dict[str, Any]:
         "cases": len(rows),
         "code_valid": valid,
         "code_invalid": invalid,
+        # The same count against the graph the retrieval saw, not the graph as it is now.
+        "code_valid_in_snapshot": sum(1 for r in rows if r.get("code_valid_in_snapshot") is True),
         "no_citation": sum(1 for r in rows if not r.get("citations")),
         "not_in_context": sum(1 for r in rows if r.get("not_in_context")),
         "not_in_graph": sum(1 for r in rows if r.get("not_in_graph")),
+        "not_in_snapshot": sum(1 for r in rows if r.get("not_in_snapshot")),
     }
+
+
+def _with_n(cells: Mapping[str, Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Every layer-3 row carries the denominator its means rest on, under one name.
+
+    `judge merge` writes `n` now; a report written before it did carries only `cases`, and
+    a table with an empty `n` column would read as "nobody counted" rather than "this file
+    predates the column".
+    """
+    return {
+        name: {**dict(cell), "n": cell.get("n", cell.get("cases"))} for name, cell in cells.items()
+    }
+
+
+def _dropped(metrics: Mapping[str, Any], merge: Mapping[str, Any]) -> dict[str, Any]:
+    """The answered cases no judge ever saw, by strategy — why the denominators differ.
+
+    Prefers what `judge merge` wrote; derives the same list from `answers merge` when the
+    report predates that, so the section is never silently empty on an older file.
+    """
+    rows = list(metrics.get("dropped") or [])
+    if not rows:
+        from brain.eval.judge_report import dropped_cases
+
+        rows = dropped_cases(merge)
+    by_strategy: dict[str, int] = {}
+    for row in rows:
+        name = str(row.get("strategy") or "")
+        by_strategy[name] = by_strategy.get(name, 0) + 1
+    return {
+        "count": len(rows),
+        "rows": rows,
+        "by_strategy": dict(sorted(by_strategy.items())),
+        "reasons": sorted({str(r.get("reason") or "") for r in rows}),
+    }
+
+
+def _citations_by_strategy(merge: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Per strategy: how many citations the answers carried, widened and strict.
+
+    The widened count accepts a cited key that names the *parent* of a context item; strict
+    wants the id the context actually listed. Printing only the widened one hides S4's
+    habit of citing a row's work item instead of the row (192 valid, 140 strict)."""
+    rows = (merge.get("answers") or {}).get("by_strategy") or {}
+    return [
+        {
+            "strategy": name,
+            "answers": cell.get("answers"),
+            "refused": cell.get("refused"),
+            "citations": cell.get("citations"),
+            "valid": cell.get("valid"),
+            "valid_strict": cell.get("valid_strict"),
+            "in_context_pct": cell.get("citation_in_context_pct"),
+            "in_context_strict_pct": cell.get("citation_in_context_strict_pct"),
+        }
+        for name, cell in sorted(rows.items(), key=lambda kv: _strategy_rank(kv[0]))
+    ]
+
+
+def _strategy_rank(name: str) -> tuple[int, str]:
+    return (STRATEGY_ORDER.index(name) if name in STRATEGY_ORDER else 99, str(name))
 
 
 def _layer3(
@@ -616,15 +761,18 @@ def _layer3(
     judged = bool(matrix or metrics.get("by_strategy"))
     strategies = order_strategies(set(matrix) | set(metrics.get("by_strategy") or {}))
     types = sorted({t for row in matrix.values() for t in row} | set(metrics.get("by_type") or {}))
+    judge_merge = answers.get("judge_merge") or {}
     return {
         "present": judged,
         "metrics": JUDGE_METRICS,
         "strategies": strategies,
         "types": types,
         "matrix": matrix,
-        "by_strategy": metrics.get("by_strategy") or {},
-        "by_type": metrics.get("by_type") or {},
-        "by_lang": metrics.get("by_lang") or {},
+        "by_strategy": _with_n(metrics.get("by_strategy") or {}),
+        "by_type": _with_n(metrics.get("by_type") or {}),
+        "by_lang": _with_n(metrics.get("by_lang") or {}),
+        "dropped": _dropped(metrics, merge),
+        "citations": _citations_by_strategy(merge),
         "note": metrics.get("note"),
         "pairwise": answers.get("pairwise") or {},
         "agreement": answers.get("agreement") or {},
@@ -642,6 +790,11 @@ def _layer3(
             "skipped": (build.get("totals") or {}).get("skipped"),
             "accepted": (merge.get("answers") or {}).get("accepted"),
             "rejected": (merge.get("answers") or {}).get("rejected"),
+            # Built, accepted and judged are three different numbers and the report used to
+            # print one of them twice ("184 מתוך 184" while 190 cases were judged, because
+            # mode B's nineteen were merged elsewhere).
+            "judged": ((judge_merge.get("judgments") or {}).get("cases")),
+            "judgments": ((judge_merge.get("judgments") or {}).get("total")),
             "complete": merge.get("complete"),
             "missing_batches": len((merge.get("batches") or {}).get("missing") or []),
         },
@@ -668,8 +821,21 @@ def _count(value: Any) -> str:
 # -------------------------------------------------------------------------- "מתי מה"
 
 
-def _best(cells: Mapping[str, Mapping[str, Any]], metric: str) -> dict[str, Any] | None:
-    """Highest `metric` over the strategies that actually scored something, ties by order."""
+#: Below this many questions a "leader" is a coincidence with a name. S5 answered six global
+#: questions and nothing else; a cell with two is a sample, not a finding, so the table
+#: prints its `n` and refuses the word.
+MIN_LEADER_N = 3
+
+
+def _best(
+    cells: Mapping[str, Mapping[str, Any]], metric: str, *, count_key: str = "scored"
+) -> dict[str, Any] | None:
+    """Highest `metric` over the strategies that actually scored something, ties by order.
+
+    Carries `n` — how many questions the winning cell rests on — and `enough`, which is
+    `False` when that `n` is below `MIN_LEADER_N`. Both are printed: a leader whose lead
+    nobody can test is worth naming and worth not believing.
+    """
     ranked = [
         (float(cell[metric]), STRATEGY_ORDER.index(name) if name in STRATEGY_ORDER else 99, name)
         for name, cell in cells.items()
@@ -678,7 +844,14 @@ def _best(cells: Mapping[str, Mapping[str, Any]], metric: str) -> dict[str, Any]
     if not ranked:
         return None
     value, _, name = max(ranked, key=lambda row: (row[0], -row[1]))
-    return {"strategy": name, "value": value}
+    count = (cells.get(name) or {}).get(count_key)
+    n = int(count) if isinstance(count, (int, float)) else None
+    return {
+        "strategy": name,
+        "value": value,
+        "n": n,
+        "enough": bool(n is not None and n >= MIN_LEADER_N),
+    }
 
 
 def _delta(cell: Mapping[str, Any] | None, base: Mapping[str, Any] | None, key: str) -> Any:
@@ -711,7 +884,7 @@ def when_what(layer2: Mapping[str, Any], layer3: Mapping[str, Any]) -> dict[str,
             if qtype in row and (row[qtype] or {}).get("cases")
         }
         best_recall = _best(retrieval_cells, "recall")
-        best_correct = _best(answer_cells, "correctness")
+        best_correct = _best(answer_cells, "correctness", count_key="cases")
         base_cell = (matrix2.get(baseline) or {}).get(qtype)
         base_answer = (matrix3.get(baseline) or {}).get(qtype)
         winner_cell = (
@@ -724,6 +897,9 @@ def when_what(layer2: Mapping[str, Any], layer3: Mapping[str, Any]) -> dict[str,
             reasons.append(f"ה-baseline ({baseline}) לא רץ על הסוג הזה")
         if not answer_cells:
             reasons.append("אין שיפוט")
+        differ = bool(
+            best_recall and best_correct and best_recall["strategy"] != best_correct["strategy"]
+        )
         rows.append(
             {
                 "type": qtype,
@@ -731,18 +907,81 @@ def when_what(layer2: Mapping[str, Any], layer3: Mapping[str, Any]) -> dict[str,
                 "baseline_recall": (base_cell or {}).get("recall"),
                 "best_correctness": best_correct,
                 "baseline_correctness": (base_answer or {}).get("correctness"),
+                # The three deltas price the *recall* leader's win. They used to be printed
+                # beside the cell that names the correctness leader, which reads as the
+                # correctness leader's price. It is not; this names whose it is.
+                "cost_attributed_to": (best_recall or {}).get("strategy"),
                 "latency_delta_ms": _delta(winner_cell, base_cell, "latency_p50_ms"),
                 "tokens_delta": _delta(winner_cell, base_cell, "context_tokens_p50"),
                 "cypher_delta": _delta(winner_cell, base_cell, "cypher_total"),
+                "correctness_cost": _correctness_cost(best_correct, matrix2, base_cell, qtype),
+                "leaders_differ": differ,
+                "leaders_line": _leaders_line(best_recall, best_correct) if differ else "",
                 "note": "; ".join(reasons),
             }
         )
+    diverging = [r for r in rows if r["leaders_differ"]]
     return {
         "present": bool(rows),
         "baseline": baseline,
         "rows": rows,
         "judged": bool(matrix3),
+        "diverging_types": len(diverging),
+        "divergence_line": (
+            f"{len(diverging)} מתוך {len(rows)} סוגי שאלה: מובילת ה-recall אינה מובילת "
+            "הנכונוּת (" + ", ".join(r["type"] for r in diverging) + ")"
+            if diverging
+            else f"בכל {len(rows)} סוגי השאלה מובילת ה-recall היא גם מובילת הנכונוּת."
+        ),
     }
+
+
+def _correctness_cost(
+    best_correct: Mapping[str, Any] | None,
+    matrix2: Mapping[str, Any],
+    base_cell: Mapping[str, Any] | None,
+    qtype: str,
+) -> dict[str, Any]:
+    """What the correctness leader cost — or nothing at all, when nobody measured it.
+
+    Mode B is the case this exists for: `agentic` is the most correct column in the document
+    and has no layer-2 cost cell, because it packed no context and was run without a
+    stopwatch. An empty number there has to read as "not measured", never as "free".
+    """
+    if not best_correct:
+        return {"strategy": None, "available": False, "why": "אין שיפוט לסוג הזה"}
+    name = str(best_correct["strategy"])
+    cell = (matrix2.get(name) or {}).get(qtype)
+    if not cell:
+        return {
+            "strategy": name,
+            "available": False,
+            "why": f"ל-`{name}` אין תא עלות בשכבה 2 — מצב B לא ארז הקשר ולא נמדד בשעון",
+            "latency_delta_ms": None,
+            "tokens_delta": None,
+            "cypher_delta": None,
+        }
+    return {
+        "strategy": name,
+        "available": True,
+        "why": "",
+        "latency_delta_ms": _delta(cell, base_cell, "latency_p50_ms"),
+        "tokens_delta": _delta(cell, base_cell, "context_tokens_p50"),
+        "cypher_delta": _delta(cell, base_cell, "cypher_total"),
+    }
+
+
+def _n_of(best: Mapping[str, Any]) -> str:
+    return "n=?" if best.get("n") is None else f"n={best['n']}"
+
+
+def _leaders_line(best_recall: Mapping[str, Any], best_correct: Mapping[str, Any]) -> str:
+    """The contradiction, as a generated sentence instead of as planner prose."""
+    return (
+        f"מובילת recall ≠ מובילת נכונוּת: `{best_recall['strategy']}` "
+        f"(r={best_recall['value']}, {_n_of(best_recall)}) מול `{best_correct['strategy']}` "
+        f"(c={best_correct['value']}, {_n_of(best_correct)})"
+    )
 
 
 # --------------------------------------------------------------------------- incremental
@@ -782,11 +1021,117 @@ def _incremental(report: Mapping[str, Any] | None) -> dict[str, Any]:
         "chunks": report.get("chunks") or {},
         "entities": report.get("entities") or {},
         "communities": report.get("communities") or {},
-        "questions": list(report.get("questions") or []),
+        "summary": _incremental_summary(report),
+        "rollback": _rollback(report),
+        "questions": _incremental_questions(report),
         "problems": problems,
         "warnings": list(report.get("warnings") or []),
         "errors": list(report.get("errors") or []),
     }
+
+
+def _delta_of(part: Mapping[str, Any] | None, key: str = "") -> int | None:
+    """`{"before": x, "after": y}` -> `y - x`; `key` when each side is a census of its own."""
+    part = part or {}
+    before, after = part.get("before"), part.get("after")
+    if key:
+        before = before.get(key) if isinstance(before, Mapping) else None
+        after = after.get(key) if isinstance(after, Mapping) else None
+    if not isinstance(before, (int, float)) or not isinstance(after, (int, float)):
+        return None
+    return int(after) - int(before)
+
+
+def _coverage(report: Mapping[str, Any]) -> tuple[Any, Any]:
+    """Community-report coverage before and after — measured by the increment's `brain index`."""
+    for step in report.get("steps") or []:
+        communities = ((step or {}).get("report") or {}).get("communities") or {}
+        before = (communities.get("before") or {}).get("pct_members_in_a_summarised_community")
+        after = (communities.get("after") or {}).get("pct_members_in_a_summarised_community")
+        if before is not None or after is not None:
+            return before, after
+    return None, None
+
+
+def _incremental_summary(report: Mapping[str, Any]) -> dict[str, Any]:
+    """The eight numbers §5.5 asks for, each under its own name.
+
+    The section used to print four sub-objects into four table cells, and one of them held
+    645 community ids. A cell that needs scrolling is not a measurement; and `chunks` was
+    read from a `chunks` key the run never wrote, so it printed as empty while the number
+    sat in `graph.census_after_part1.chunks`.
+    """
+    graph = report.get("graph") or {}
+    census = graph.get("census_after_part1") or {}
+    communities = report.get("communities") or {}
+    before, after = _coverage(report)
+    return {
+        "nodes_added": _delta_of(census.get("nodes_total")),
+        "edges_added": _delta_of(census.get("edges_total")),
+        "chunks_added": _delta_of(census.get("chunks"), "chunks"),
+        "communities_before": communities.get("total_before"),
+        "communities_after": communities.get("total_after"),
+        # The count only. The 645 ids live in `incremental.json`, which is where a reader
+        # who wants them goes.
+        "communities_changed": communities.get("member_hash_changed"),
+        "reports_kept": communities.get("reports_carried_over"),
+        "reports_lost": communities.get("reports_dropped"),
+        "coverage_before": before,
+        "coverage_after": after,
+        "entities_minted": (report.get("entities") or {}).get("entities_minted_here"),
+    }
+
+
+#: `  incremental would delete      43 :Chunk nodes` — the dry run prints its plan as prose.
+ROLLBACK_LINE = re.compile(r"would delete\s+([\d,]+)\s+(.+?)\s*$")
+
+
+def _rollback(report: Mapping[str, Any]) -> dict[str, Any]:
+    """What `brain reset --slice` said it would remove, counted per label.
+
+    The later of the two dry runs wins: the first one ran before the provenance repair and
+    counted three entities that the repair gave back their base-run evidence.
+    """
+    graph = report.get("graph") or {}
+    run = graph.get("rollback_dry_run_after_fix") or graph.get("rollback_dry_run") or {}
+    counts: dict[str, int] = {}
+    for line in run.get("output") or []:
+        found = ROLLBACK_LINE.search(str(line))
+        if found:
+            counts[found.group(2)] = int(found.group(1).replace(",", ""))
+    return {
+        "present": bool(run),
+        "command": run.get("command"),
+        "applied": bool(run.get("applied")),
+        "counts": dict(sorted(counts.items())),
+        "note": (
+            "Dry run only. Plan 3 decision 7: the rollback is proven on a slice fixture in "
+            "`_ResetTest`, not by deleting from the measured graph."
+        ),
+    }
+
+
+def _incremental_questions(report: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The five questions about the new items, mode A beside mode B."""
+    out = []
+    for question in report.get("questions") or []:
+        mode_b = question.get("mode_b") or {}
+        out.append(
+            {
+                "qid": question.get("id") or question.get("qid"),
+                "type": question.get("type"),
+                "route": question.get("route"),
+                "best_strategy": question.get("best_strategy"),
+                "best_recall": question.get("best_recall"),
+                "mode_a_citation_valid": question.get(
+                    "mode_a_citation_valid", question.get("citation_valid")
+                ),
+                "mode_b_citations": mode_b.get("citations"),
+                "mode_b_citations_valid": mode_b.get("citations_valid"),
+                "mode_b_citation_valid": mode_b.get("citation_valid"),
+            }
+        )
+    return out
 
 
 # ------------------------------------------------------------------------------- the doc
@@ -813,6 +1158,8 @@ def build(
     resolution = _resolution(data["index"], data["resolve"])
     communities = _communities(data["index"])
     incremental = _incremental(data["incremental"])
+    questions_merge = (data["eval_questions"] or {}).get("merge") or {}
+    question_rows = read_questions(Path(eval_dir), str(questions_merge.get("questions_path") or ""))
 
     return {
         "step": "eval.report",
@@ -824,7 +1171,7 @@ def build(
         "command": "brain eval report",
         "inputs": [rows[s.key] for s in INPUTS],
         "questions": {
-            **_questions(data["eval_questions"]),
+            **_questions(data["eval_questions"], rows=question_rows),
             "state": _state(rows["eval_questions"]),
         },
         "layer01": {

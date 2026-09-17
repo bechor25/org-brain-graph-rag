@@ -1,26 +1,30 @@
 # הערכה — דוח Plan 3
 
-נוצר אוטומטית ע"י `brain eval report` ב-2026-09-17T10:19:30+00:00 (HEAD `8928c1e1`) מתוך דוחות השלבים ב-`data/reports`. **אין כאן מספר שהוקלד ביד** — למעט שני הסעיפים האחרונים, שהמתכנן כותב אחרי קריאת המספרים ושנשמרים בכל יצירה מחדש.
+נוצר אוטומטית ע"י `brain eval report` ב-2026-09-17T10:59:49+00:00 (HEAD `55598fe9`) מתוך דוחות השלבים ב-`data/reports`. **המספרים נלקחים מדוחות השלבים** ואין כאן מספר שהוקלד לתוך הדף; **הערות השלבים הן פרוזה של המהנדס/ת של השלב** (עמודות `הערות`/`note` שנגררות מה-JSON), ושני הסעיפים האחרונים נכתבים ביד ע"י המתכנן ונשמרים בכל יצירה מחדש.
 
 כל שורה בטבלה הבאה היא קלט של הדוח: מתי נמדד, באיזה commit, והאם ה-commit הזה הוא ה-HEAD. `STALE` = המספרים קיימים אבל נמדדו על קוד אחר; `חסר` = הסעיף שמתבסס עליו יופיע כ-**טרם נמדד** עם הפקודה שמייצרת אותו.
 
 | קובץ | מה מביא | מצב | נמדד ב | sha | הפקודה שכותבת | הערה |
 |---|---|---|---|---|---|---|
 | `data/reports/harvest.json` | שכבה 0 — מה נמשך מהמקורות | בלי sha | 2026-09-17T09:30:08+00:00 | — | `brain harvest` | הדוח לא חותם sha — אי אפשר לדעת באיזה commit נמדד |
-| `data/reports/index.json` | שכבה 1 — מפקד, provenance, קהילות | STALE | 2026-09-17T10:16:44+00:00 | 1ef67612 | `brain index` | נמדד ב-1ef67612, HEAD הוא 8928c1e1 |
-| `data/reports/resolve.json` | שכבה 1 — P/R/F1 של איחוד ישויות | STALE | 2026-09-17T10:16:44+00:00 | 1ef67612 | `brain resolve eval` | נמדד ב-1ef67612, HEAD הוא 8928c1e1 |
-| `data/reports/retrieve.json` | תשתית האחזור — reranker ו-guard | STALE | 2026-09-17T10:17:35+00:00 | 1ef67612 | `brain cypher-examples check` | נמדד ב-1ef67612, HEAD הוא 8928c1e1 |
-| `data/reports/eval_questions.json` | סט השאלות | STALE | 2026-09-17T10:17:36+00:00 | 1ef67612 | `brain eval questions merge` | נמדד ב-1ef67612, HEAD הוא 8928c1e1 |
-| `data/reports/eval_retrieval.json` | שכבה 2 | STALE | 2026-09-17T09:35:39+00:00 | 9dba7252 | `brain eval run --mode fixed` | נמדד ב-9dba7252, HEAD הוא 8928c1e1 |
-| `data/reports/eval_answers.json` | שכבה 3 — תשובות ושיפוט עיוור | STALE | 2026-09-17T10:13:04+00:00 | 4cf28f9a | `brain eval answers merge · brain eval judge merge` | נמדד ב-4cf28f9a, HEAD הוא 8928c1e1 |
-| `data/reports/plan2_gate.json` | שער מצב B (ציטוטים) | STALE | 2026-09-17T09:18:15+00:00 | c15b8385 | `brain eval cite-check` | נמדד ב-c15b8385, HEAD הוא 8928c1e1 |
-| `data/reports/incremental.json` | §5.5 — ריצת העדכון האינקרמנטלי (כל הפייפליין) | STALE | 2026-09-17T10:12:44+00:00 | 4cf28f9 | `brain harvest --since <date> --source jira` | נמדד ב-4cf28f9, HEAD הוא 8928c1e1 |
+| `data/reports/index.json` | שכבה 1 — מפקד, provenance, קהילות | STALE | 2026-09-17T10:16:44+00:00 | 1ef67612 | `brain index` | נמדד ב-1ef67612, HEAD הוא 55598fe9 |
+| `data/reports/resolve.json` | שכבה 1 — P/R/F1 של איחוד ישויות | STALE | 2026-09-17T10:16:44+00:00 | 1ef67612 | `brain resolve eval` | נמדד ב-1ef67612, HEAD הוא 55598fe9 |
+| `data/reports/retrieve.json` | תשתית האחזור — reranker ו-guard | STALE | 2026-09-17T10:17:35+00:00 | 1ef67612 | `brain cypher-examples check` | נמדד ב-1ef67612, HEAD הוא 55598fe9 |
+| `data/reports/eval_questions.json` | סט השאלות | STALE | 2026-09-17T10:17:36+00:00 | 1ef67612 | `brain eval questions merge` | נמדד ב-1ef67612, HEAD הוא 55598fe9 |
+| `data/reports/eval_retrieval.json` | שכבה 2 | STALE | 2026-09-17T09:35:39+00:00 | 9dba7252 | `brain eval run --mode fixed` | נמדד ב-9dba7252, HEAD הוא 55598fe9 |
+| `data/reports/eval_answers.json` | שכבה 3 — תשובות ושיפוט עיוור | STALE | 2026-09-17T10:58:21+00:00 | 55598fe9 | `brain eval answers merge · brain eval judge merge` | סעיפים ישנים: answers_build, answers_merge, judge_build |
+| `data/reports/plan2_gate.json` | שער מצב B (ציטוטים) | STALE | 2026-09-17T09:18:15+00:00 | c15b8385 | `brain eval cite-check` | נמדד ב-c15b8385, HEAD הוא 55598fe9 |
+| `data/reports/incremental.json` | §5.5 — ריצת העדכון האינקרמנטלי (כל הפייפליין) | STALE | 2026-09-17T10:12:44+00:00 | 4cf28f9 | `brain harvest --since <date> --source jira` | נמדד ב-4cf28f9, HEAD הוא 55598fe9 |
 
 ## סט השאלות
 
-מקור: `data/reports/eval_questions.json` · נמדד ב-2026-09-17T10:17:36+00:00 · sha `1ef67612`. **STALE** — נמדד ב-1ef67612, HEAD הוא 8928c1e1.
+מקור: `data/reports/eval_questions.json` · נמדד ב-2026-09-17T10:17:36+00:00 · sha `1ef67612`. **STALE** — נמדד ב-1ef67612, HEAD הוא 55598fe9.
 
 הסט: `data/eval/questions.jsonl` (sha256 `68df8e48c68b9476`), 32 שאלות מתוך יעד 32. רצפת העברית: 11.
+
+`gold source: graph 32 / truth 0`.
+
+> אף שאלה לא נגזרה מ-`synthetic_truth.json` — הזרוע הסינתטית של §5.1 לא נבדקה בפועל, וכל ה-gold מגיע מהגרף עצמו.
 
 | חתך | פירוט |
 |---|---|
@@ -67,7 +71,7 @@
 
 ## שכבה 1 — מפקד הגרף
 
-מקור: `data/reports/index.json` · נמדד ב-2026-09-17T10:16:44+00:00 · sha `1ef67612`. **STALE** — נמדד ב-1ef67612, HEAD הוא 8928c1e1.
+מקור: `data/reports/index.json` · נמדד ב-2026-09-17T10:16:44+00:00 · sha `1ef67612`. **STALE** — נמדד ב-1ef67612, HEAD הוא 55598fe9.
 
 הגרף שעליו נמדד הכול: **58,560** צמתים ו-**162,330** קשתות (147,534 דטרמיניסטיות, 14,796 מ-LLM). שער Plan 1: לא עבר — 11/13, נכשל: person_resolution_recall, make_smoke_green. המפקד המלא: `docs/report/plan1-graph-census.md`.
 
@@ -85,20 +89,22 @@
 
 ### שכבה 1 — איחוד ישויות
 
-מקור: `data/reports/resolve.json` · נמדד ב-2026-09-17T10:16:44+00:00 · sha `1ef67612`. **STALE** — נמדד ב-1ef67612, HEAD הוא 8928c1e1.
+מקור: `data/reports/resolve.json` · נמדד ב-2026-09-17T10:16:44+00:00 · sha `1ef67612`. **STALE** — נמדד ב-1ef67612, HEAD הוא 55598fe9.
 
 P/R/F1 מול זוגות הזהב בלבד (יעד 0.85); מיזוגים שהזהב לא אומר עליהם דבר נספרים כ-`ungraded` ולא נכנסים לאף צד.
 
-| סוג | זוגות זהב | P | R | F1 | TP | FP | FN | לפני | אחרי | ungraded |
-|---|---|---|---|---|---|---|---|---|---|---|
-| entity | 100 | 1.0 | 0.98 | 0.9899 | 49 | 0 | 1 | 9,237 | 9,064 | 176 |
-| person | 633 | 0.9801 | 0.7789 | 0.868 | 444 | 9 | 126 | 2,187 | 1,217 | 1,656 |
+| סוג | זוגות זהב | P | R | F1 | TP | FP | FN | לפני | אחרי | ungraded (index.json) | ungraded (resolve.json) |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| entity | 100 | 1.0 | 0.98 | 0.9899 | 49 | 0 | 1 | 9,237 | 9,064 | 176 | 176 |
+| person | 633 | 0.9801 | 0.7789 | 0.868 | 444 | 9 | 126 | 2,187 | 1,217 | 1,656 | 1,657 |
+
+שתי עמודות ה-ungraded אינן שגיאה: המפקד סופר את המיזוגים דרך tier אחד פחות מ-`brain resolve eval`, ולכן הן נבדלות ב-1 עבור `person`. שתיהן מודפסות עם הקובץ שלהן כדי שאיש לא יצטט את אחת מהן כ״המספר״.
 
 > Precision and recall are computed over the labelled gold pairs only. Merges between identities the gold says nothing about (the real Jira / git / Confluence duplicates) are counted as `ungraded_merges` and left out of both, because calling them right or wrong would be a guess.
 
 ### שכבה 1 — כיסוי provenance
 
-מקור: `data/reports/index.json` · נמדד ב-2026-09-17T10:16:44+00:00 · sha `1ef67612`. **STALE** — נמדד ב-1ef67612, HEAD הוא 8928c1e1.
+מקור: `data/reports/index.json` · נמדד ב-2026-09-17T10:16:44+00:00 · sha `1ef67612`. **STALE** — נמדד ב-1ef67612, HEAD הוא 55598fe9.
 
 כלל הבעלות: conventions rule 3: every LLM-derived node and edge carries ['evidence_chunk_ids', 'batch_id', 'model', 'extracted_at'] with a non-empty evidence list. — 14,796 קשתות מ-LLM, 100.0% מהן עם provenance.
 
@@ -119,7 +125,7 @@ P/R/F1 מול זוגות הזהב בלבד (יעד 0.85); מיזוגים שהז�
 
 ### שכבה 1 — כיסוי קהילות
 
-מקור: `data/reports/index.json` · נמדד ב-2026-09-17T10:16:44+00:00 · sha `1ef67612`. **STALE** — נמדד ב-1ef67612, HEAD הוא 8928c1e1.
+מקור: `data/reports/index.json` · נמדד ב-2026-09-17T10:16:44+00:00 · sha `1ef67612`. **STALE** — נמדד ב-1ef67612, HEAD הוא 55598fe9.
 
 **1,066** קהילות, מהן 124 מסוכמות (11.63%). 47.5% מהחברים נמצאים בקהילה מסוכמת — זה הכיסוי ש-S5 (חיפוש גלובלי) יכול לראות בכלל.
 
@@ -130,7 +136,7 @@ P/R/F1 מול זוגות הזהב בלבד (יעד 0.85); מיזוגים שהז�
 
 ## שכבה 2 — אחזור (דטרמיניסטי)
 
-מקור: `data/reports/eval_retrieval.json` · נמדד ב-2026-09-17T09:35:39+00:00 · sha `9dba7252`. **STALE** — נמדד ב-9dba7252, HEAD הוא 8928c1e1.
+מקור: `data/reports/eval_retrieval.json` · נמדד ב-2026-09-17T09:35:39+00:00 · sha `9dba7252`. **STALE** — נמדד ב-9dba7252, HEAD הוא 55598fe9.
 
 מצב fixed, k=10, תקציב הקשר 4,000 tokens לכל אסטרטגיה, baseline = `s1r`. 32 שאלות; כיסוי 224/224. כל התא נמדד דטרמיניסטית מול `gold_evidence` — אין כאן שופט.
 
@@ -175,6 +181,8 @@ P/R/F1 מול זוגות הזהב בלבד (יעד 0.85); מיזוגים שהז�
 | s6 | נימוק (`rationale`) | 6/6 | 0.167 | 0.167 | 0.0979 | 1.0 | 4 | 3,718 |
 | s6 | זמני (`temporal`) | 5/6 | 0.8133 | 0.7511 | 0.9467 | 1.0 | 4 | 1,284 |
 | s6 | עקיבוּת (`traceability`) | 6/7 | 0.3022 | 0.2837 | 0.1592 | 1.0 | 8 | 1,430 |
+
+> **gold shares the strategy's code path** — 4 שאלות (`cq13`, `cq14`, `cq15`, `cq19`, סוג: temporal): ה-gold שלהן הוא הפלט של אותה קריאת `brain.retrieve.temporal.*` שהאסטרטגיה מריצה. השורות שלהן בטבלה שלמעלה מודדות דטרמיניזם של הקריאה, לא אחזור.
 
 ### עלות לפי אסטרטגיה
 
@@ -254,13 +262,13 @@ P/R/F1 מול זוגות הזהב בלבד (יעד 0.85); מיזוגים שהז�
 
 ## שכבה 3 — תשובות ושיפוט עיוור
 
-מקור: `data/reports/eval_answers.json` · נמדד ב-2026-09-17T10:13:04+00:00 · sha `4cf28f9a`. **STALE** — נמדד ב-4cf28f9a, HEAD הוא 8928c1e1.
+מקור: `data/reports/eval_answers.json` · נמדד ב-2026-09-17T10:58:21+00:00 · sha `55598fe9`. **STALE** — סעיפים ישנים: answers_build, answers_merge, judge_build.
 
-שיפוט עיוור לפי רובריקה 0–2 על ארבעה מדדים (§5.4). 229 שיפוטים על 190 מקרים, 143 השוואות pairwise, 0 נדחו. התשובות: 184 התקבלו מתוך 184 מקרים שנבנו.
+שיפוט עיוור לפי רובריקה 0–2 על ארבעה מדדים (§5.4). 229 שיפוטים על 190 מקרים, 143 הכרעות pairwise על 120 זוגות, 0 נדחו. **המסלול של מצב A:** 184 מקרים נבנו, 184 תשובות התקבלו במיזוג, 13 נשמטו לפני השיפוט; 190 מקרים נשפטו בפועל (מצב A + מצב B יחד, שכן תשובות מצב B מוזגו בנפרד).
 
 ### מטריצה: אסטרטגיה × סוג שאלה (ממוצעי השופטים)
 
-| אסטרטגיה | סוג שאלה | מקרים | נאמנות להקשר | נכונוּת מול gold | תקינות ציטוט | רלוונטיות |
+| אסטרטגיה | סוג שאלה | n | נאמנות להקשר | נכונוּת מול gold | תקינות ציטוט | רלוונטיות |
 |---|---|---|---|---|---|---|
 | s1 | גלובלי (`global`) | 5 | 2.0 | 1.0 | 2.0 | 1.6 |
 | s1 | השפעה (`impact`) | 6 | 2.0 | 0.667 | 2.0 | 1.333 |
@@ -298,24 +306,84 @@ P/R/F1 מול זוגות הזהב בלבד (יעד 0.85); מיזוגים שהז�
 | agentic | זמני (`temporal`) | 4 | — | 1.875 | 1.375 | 2.0 |
 | agentic | עקיבוּת (`traceability`) | 5 | — | 1.4 | 1.6 | 2.0 |
 
+### ממוצעים לפי אסטרטגיה
+
+`n` = כמה מקרים נשפטו לאסטרטגיה הזו. המכנים אינם שווים, ולכן הפרש בין שני ממוצעים אינו בהכרח הפרש בין שתי אסטרטגיות.
+
+| אסטרטגיה | n | נאמנות להקשר | נכונוּת מול gold | תקינות ציטוט | רלוונטיות |
+|---|---|---|---|---|---|
+| s1 | 26 | 2.0 | 0.5 | 2.0 | 1.038 |
+| s1r | 29 | 1.966 | 0.517 | 1.966 | 1.172 |
+| s2 | 30 | 2.0 | 0.5 | 2.0 | 1.033 |
+| s3 | 32 | 2.0 | 0.469 | 2.0 | 1.031 |
+| s4 | 30 | 2.0 | 0.95 | 2.0 | 1.433 |
+| s5 | 6 | 2.0 | 1.0 | 2.0 | 2.0 |
+| s6 | 18 | 2.0 | 0.667 | 2.0 | 1.139 |
+| agentic | 19 | — | 1.395 | 1.342 | 1.947 |
+
+**13 מקרים שנענו לא הגיעו לשופט** (s1: 6, s1r: 3, s2: 2, s4: 2). זה ההפרש בין המכנים למעלה, והוא אינו מקרי: זרוע ה-baseline ספגה אותו הכי חזק.
+
+| מקרה | אסטרטגיה | סיבה | פירוט |
+|---|---|---|---|
+| `cq09.s1` | s1 | `context_drift` | the run file now packs a different context |
+| `cq13.s1` | s1 | `context_drift` | the run file now packs a different context |
+| `cq16.s1` | s1 | `context_drift` | the run file now packs a different context |
+| `cq17.s1` | s1 | `context_drift` | the run file now packs a different context |
+| `cq19.s1` | s1 | `context_drift` | the run file now packs a different context |
+| `q106.s1` | s1 | `context_drift` | the run file now packs a different context |
+| `cq13.s1r` | s1r | `context_drift` | the run file now packs a different context |
+| `cq16.s1r` | s1r | `context_drift` | the run file now packs a different context |
+| `cq19.s1r` | s1r | `context_drift` | the run file now packs a different context |
+| `cq01.s2` | s2 | `context_drift` | the run file now packs a different context |
+| `cq17.s2` | s2 | `context_drift` | the run file now packs a different context |
+| `cq03.s4` | s4 | `context_drift` | the run file now packs a different context |
+| `q103.s4` | s4 | `context_drift` | the run file now packs a different context |
+
 ### לפי שפת השאלה
 
-| שפה | מקרים | נאמנות להקשר | נכונוּת מול gold | תקינות ציטוט | רלוונטיות |
+| שפה | n | נאמנות להקשר | נכונוּת מול gold | תקינות ציטוט | רלוונטיות |
 |---|---|---|---|---|---|
 | אנגלית | 128 | 1.991 | 0.664 | 1.922 | 1.223 |
 | עברית | 62 | 2.0 | 0.742 | 1.944 | 1.306 |
 
+### ציטוטים לפי אסטרטגיה (רחב מול strict)
+
+`valid` מקבל ציטוט שמצביע על ההורה של פריט ההקשר; `valid_strict` דורש את המזהה שההקשר באמת הכיל. ההפרש הוא הרגל של S4: לצטט את פריט העבודה של שורה במקום את השורה.
+
+| אסטרטגיה | תשובות | סירובים | ציטוטים | valid | valid strict | % בהקשר | % בהקשר strict |
+|---|---|---|---|---|---|---|---|
+| s1 | 32 | 11 | 129 | 129 | 129 | 100.0 | 100.0 |
+| s1r | 32 | 12 | 134 | 134 | 134 | 100.0 | 100.0 |
+| s2 | 32 | 11 | 98 | 98 | 98 | 100.0 | 100.0 |
+| s3 | 32 | 16 | 90 | 90 | 90 | 100.0 | 100.0 |
+| s4 | 32 | 7 | 192 | 192 | 140 | 100.0 | 72.92 |
+| s5 | 6 | 0 | 15 | 15 | 15 | 100.0 | 100.0 |
+| s6 | 18 | 9 | 75 | 75 | 75 | 100.0 | 100.0 |
+
 ### pairwise מול ה-baseline (`s1r`)
 
-אותה שאלה, שתי תשובות, בסדר אקראי, בלי שם אסטרטגיה. `win_rate` סופר תיקו כאי-ניצחון; `both_wrong` מדווח בנפרד כי שתי תשובות שגויות שמסכימות אינן תיקו.
+אותה שאלה, שתי תשובות, בסדר אקראי, בלי שם אסטרטגיה. **היחידה היא זוג ולא הכרעה:** 143 הכרעות על 120 זוגות, כי 20% מהזוגות נשפטו פעמיים. זוג ששני השופטים בחרו בו מנצחים שונים נספר כתיקו ומופיע ב"הכרעות מפוצלות" למטה. `win_rate` סופר תיקו כאי-ניצחון; `both_wrong` דורש שכל שופט שראה את הזוג יאמר זאת, ומדווח בנפרד כי שתי תשובות שגויות שמסכימות אינן תיקו.
 
-| מתמודדת | מקרים | ניצחונות | הפסדים | תיקו | שתיהן שגויות | win rate | בלי תיקו |
-|---|---|---|---|---|---|---|---|
-| s2 | 40 | 4 | 16 | 20 | 25 | 0.1 | 0.2 |
-| s3 | 36 | 10 | 16 | 10 | 20 | 0.278 | 0.385 |
-| s4 | 40 | 25 | 14 | 1 | 4 | 0.625 | 0.641 |
-| s5 | 7 | 6 | 1 | 0 | 0 | 0.857 | 0.857 |
-| s6 | 20 | 6 | 7 | 7 | 10 | 0.3 | 0.462 |
+| מתמודדת | n (זוגות) | הכרעות | ניצחונות | הפסדים | תיקו | מפוצלים | שתיהן שגויות | win rate | בלי תיקו |
+|---|---|---|---|---|---|---|---|---|---|
+| s2 | 32 | 40 | 3 | 12 | 17 | 5 | 19 | 0.094 | 0.2 |
+| s3 | 32 | 36 | 8 | 14 | 10 | 2 | 17 | 0.25 | 0.364 |
+| s4 | 32 | 40 | 21 | 10 | 1 | 1 | 3 | 0.656 | 0.677 |
+| s5 | 6 | 7 | 5 | 1 | 0 | 0 | 0 | 0.833 | 0.833 |
+| s6 | 18 | 20 | 6 | 5 | 7 | 0 | 9 | 0.333 | 0.545 |
+
+הכרעות מפוצלות — שני שופטים, שני מנצחים שונים, לכן תיקו:
+
+| זוג | שאלה | מתמודדת | מי ניצח לפי כל שופט | shards |
+|---|---|---|---|---|
+| `36fffedb` | q004 | s2 | s1r, tie | shard-01, shard-02 |
+| `51edc8e2` | cq11 | s2 | s1r, tie | shard-01, shard-02 |
+| `59095c12` | cq05 | s3 | s1r, tie | shard-01, shard-02 |
+| `75113b5c` | q008 | s4 | s4, tie | shard-01, shard-02 |
+| `84d9ab12` | cq06 | s2 | s2, tie | shard-01, shard-02 |
+| `9b4ab5aa` | q109 | s2 | s1r, tie | shard-01, shard-02 |
+| `a152cfd1` | cq16 | s2 | s1r, tie | shard-01, shard-02 |
+| `ce6ec4ab` | cq09 | s3 | s3, tie | shard-01, shard-02 |
 
 ### הסכמה בין השופטים
 
@@ -327,30 +395,41 @@ P/R/F1 מול זוגות הזהב בלבד (יעד 0.85); מיזוגים שהז�
 | נכונוּת מול gold | 39 | 35 | 39 | 89.74 | 100.0 | 0.103 |
 | תקינות ציטוט | 39 | 34 | 39 | 87.18 | 100.0 | 0.128 |
 | רלוונטיות | 39 | 32 | 39 | 82.05 | 100.0 | 0.179 |
+| מנצח pairwise | 23 | 15 | — | 65.22 | — | — |
+
+השורה האחרונה היא הסולם השני, והיא זו שהטבלה שמעליה נשענת עליה: `win_rate` בנוי על "מי ניצח", שאין לו "בהפרש ≤1". ההסכמה עליו נמוכה מההסכמה על הרובריקה — כלומר דירוג של שתי תשובות פחות יציב מניקוד של אחת.
 
 ### שופט מול בדיקת הקוד (ציטוטים)
 
-בדיקת הקוד בינארית: כל סוגר מרובע מצביע על משהו שהאחזור החזיר ושהגרף מחזיק. מתוך 190 מקרים שהושוו, 182 בהסכמה ו-8 בסתירה (4.21%). הסתירה נרשמת רק בקצוות — 1 של השופט מתיישב עם שתי ההכרעות.
+בדיקת הקוד בינארית: כל סוגר מרובע מצביע על משהו שהאחזור החזיר ושהגרף מחזיק. הסתירה נרשמת רק בקצוות — 1 של השופט מתיישב עם שתי ההכרעות. **הגרף זז בין האחזור לבדיקה** (הפרוסה האינקרמנטלית עשתה re-partition לקהילות), ולכן סתירה שנובעת ממזהה שהאחזור באמת החזיר ושנמחק אחר כך מופרדת מטעות שופט אמיתית.
+
+| פירוק | מקרים |
+|---|---|
+| הושוו | 190 |
+| בהסכמה | 186 |
+| בסתירה מול הגרף עכשיו | 4 |
+| מתוכן: היו ב-snapshot של האחזור | 3 |
+| מתוכן: טעות שופט אמיתית | 1 |
+| אילו | cq06.s4 |
+| % סתירה | 2.11 |
 
 | מדד | ערך |
 |---|---|
 | מקרים שנבדקו בקוד | 203 |
-| ציטוטים תקפים (קוד) | 194 |
-| ציטוטים פסולים (קוד) | 9 |
+| ציטוטים תקפים (קוד) | 198 |
+| ציטוטים פסולים (קוד) | 5 |
+| מהם תקפים מול ה-snapshot | 201 |
 | תשובות בלי ציטוט | 24 |
 | ציטוט שלא היה בהקשר | 0 |
-| ציטוט שאין לו צומת בגרף | 8 |
+| ציטוט שאין לו צומת בגרף עכשיו | 4 |
+| ציטוט שגם ב-snapshot לא היה | 1 |
 
-| מקרה | ציון השופט | הכרעת הקוד | למה |
-|---|---|---|---|
-| cq07.s1 | 2.0 | invalid | not in the graph: 67c951b7a1ccdb02840f4479b6e524366e084074 |
-| cq12.s5 | 2.0 | invalid | not in the graph: community:L0-1436 |
-| q001.s6 | 2.0 | invalid | not in the graph: 5ae2682d21ea04b3b51ef100fe578899a54a889a, f594551e9aa0262cf02487ddae1f1fe0d08b7e2c, 4ce0cad10259d6a221244349dd55201819725d8f, 5c14e151415eb066752bd8fa497aed9a02475403, 1cc8287579ecaaf87f2a7e0280f785033cb29943 |
-| q101.s6 | 2.0 | invalid | not in the graph: b87ae266dc88cffaed59d93ecd91a5fb0a8fa68e |
-| q107.s5 | 2.0 | invalid | not in the graph: community:L1-377 |
-| q004.s5 | 2.0 | invalid | not in the graph: community:L0-1352 |
-| cq06.s4 | 2.0 | invalid | the answer carries no citation |
-| cq08.s6 | 2.0 | invalid | not in the graph: ff6c22e1e8a2b38c524283d4232232ae7c0dfb5c, e8ec9fd6862ff845ceeab3ba4438ca905f359c4d, aeae135ded42a7e59705cf2a75648b23587c257c, badb10e3f86aac918af287a3421c6d19d2abca35 |
+| מקרה | ציון השופט | הכרעת הקוד | סיווג | למה |
+|---|---|---|---|---|
+| cq12.s5 | 2.0 | invalid | היה ב-snapshot | not in the graph now: community:L0-1436; but in the retrieval snapshot: community:L0-1436 — the graph moved between the retrieval and this check |
+| q107.s5 | 2.0 | invalid | היה ב-snapshot | not in the graph now: community:L1-377; but in the retrieval snapshot: community:L1-377 — the graph moved between the retrieval and this check |
+| q004.s5 | 2.0 | invalid | היה ב-snapshot | not in the graph now: community:L0-1352; but in the retrieval snapshot: community:L0-1352 — the graph moved between the retrieval and this check |
+| cq06.s4 | 2.0 | invalid | טעות שופט | the answer carries no citation |
 
 ### מצב B (אגנטי) לצד מצב A
 
@@ -369,11 +448,11 @@ P/R/F1 מול זוגות הזהב בלבד (יעד 0.85); מיזוגים שהז�
 | תשובות עם ≥1 ציטוט תקף | 19 |
 | שער Plan 2 | 5/6 |
 
-> Layer 3 of spec §5.2. A case judged twice contributes the mean of its two judgments, once. `*_n` is how many cases carried that metric — faithfulness is null on agentic cases, which recorded no context.
+> Layer 3 of spec §5.2. A case judged twice contributes the mean of its two judgments, once. `n` is the denominator of the row and they are not equal: 13 case(s) never reached a judge (`dropped`). `*_n` is how many cases carried that metric — faithfulness is null on agentic cases, which recorded no context.
 
 ## עדכון אינקרמנטלי (§5.5)
 
-מקור: `data/reports/incremental.json` · נמדד ב-2026-09-17T10:12:44+00:00 · sha `4cf28f9`. **STALE** — נמדד ב-4cf28f9, HEAD הוא 8928c1e1.
+מקור: `data/reports/incremental.json` · נמדד ב-2026-09-17T10:12:44+00:00 · sha `4cf28f9`. **STALE** — נמדד ב-4cf28f9, HEAD הוא 55598fe9.
 
 פרוסה `incremental` ממקור `jira` מאז 2026-01-01: 10 פריטים, 39.65 שניות בסך הכול. שורה לכל שלב בפייפליין — שלב בלי מדידה נשאר בטבלה ומסומן, ולא נעלם.
 
@@ -393,22 +472,50 @@ P/R/F1 מול זוגות הזהב בלבד (יעד 0.85); מיזוגים שהז�
 
 ### מה נוסף לגרף
 
-| חתך | ערך |
+שורה לכל מדד, בשמו. הרשימה של 645 מזהי הקהילות שהשתנו נספרת כאן ולא מודפסת — היא ב-`data/reports/incremental.json`, וזה המקום לקרוא אותה.
+
+| מדד | ערך |
 |---|---|
-| גרף | slice_census: nodes_with_slice_by_label: Area:base: 24, Chunk:None: 13,846, Commit:base: 6,107, Community:None: 1,297, Component:base: 30, Document:base: 1,391, Entity:None: 9,038, File:None: 8,594, IndexMeta:None: 4, Person:base: 1,214, Person:incremental: 4, PullRequest:base: 6,026, Space:base: 1, Sprint:base: 92, StatusChange:base: 7,607, StatusChange:incremental: 59, Version:base: 86, WorkItem:base: 3,265, WorkItem:incremental: 10, incremental_nodes_by_label: Person: 4, StatusChange: 59, WorkItem: 10, nodes_without_slice_by_label: Chunk: 13,846, Community: 1,297, Entity: 9,038, File: 8,594, IndexMeta: 4, incremental_workitem_keys: KAFKA-20035, KAFKA-20040, KAFKA-20042, KAFKA-20043, KAFKA-20045, KAFKA-20046, KAFKA-20053, KAFKA-20056, KAFKA-20064, KAFKA-20065, chunks_by_slice: None: 13,846, census_after_part1: at: 2026-09-17T09:35:09+00:00, duration_s: 2.63, exit_code: 1, nodes_total: before: 58,622, after: 58,766, edges_total: before: 161,985, after: 162,224, nodes_by_label_delta: Chunk: 71, Person: 4, StatusChange: 59, WorkItem: 10, WorkItem/Bug: 5, WorkItem/Improvement: 2, WorkItem/JiraTest: 1, WorkItem/NewFeature: 1, WorkItem/Task: 1, edges_by_type_delta: AFFECTS_VERSION: 3, ASSIGNED_TO: 10, COMMENTED: 33, FIX_VERSION: 10, HAS_CHANGE: 59, HAS_CHUNK: 71, IN_COMPONENT: 19, LINKS_TO: 2, MENTIONS_PERSON: 9, REFERENCES: 13, REPORTED_BY: 10, chunks: before: chunks: 13,846, live: 12,915, embedded: 13,846, missing_embedding: 0, orphaned: 931, orphaned_by_kind: description: 173, section: 758, without_has_chunk: 0, by_kind: comment: 3,629, description: 3,423, message: 4,150, section: 1,713, by_parent_kind: Commit: 4,150, Document: 1,713, WorkItem: 7,052, by_lang: en: 12,915, has_chunk_edges: Document: 2,471, WorkItem: 7,225, Commit: 4,150, has_chunk_total: 13,846, present: כן, pct_embedded: 100.0, live_embedded: 12,915, pct_live_embedded: 100.0, after: chunks: 13,917, live: 12,986, embedded: 13,917, missing_embedding: 0, orphaned: 931, orphaned_by_kind: description: 173, section: 758, without_has_chunk: 0, by_kind: comment: 3,662, description: 3,433, message: 4,150, section: 1,741, by_parent_kind: Commit: 4,150, Document: 1,741, WorkItem: 7,095, by_lang: en: 12,986, has_chunk_edges: Document: 2,499, WorkItem: 7,268, Commit: 4,150, has_chunk_total: 13,917, present: כן, pct_embedded: 100.0, live_embedded: 12,986, pct_live_embedded: 100.0, gate_before: issues: PASS, kips_embedded: PASS, kips_referenced_all_embedded: PASS, commits: PASS, person_resolution_precision: PASS, person_resolution_recall: FAIL, entity_resolution_precision: PASS, entity_resolution_recall: PASS, llm_edges_without_provenance: PASS, all_indexes_online: PASS, make_smoke_green: STALE, lessons_01_09: PASS, progress_complete: PASS, gate_after: issues: PASS, kips_embedded: PASS, kips_referenced_all_embedded: PASS, commits: PASS, person_resolution_precision: PASS, person_resolution_recall: FAIL, entity_resolution_precision: PASS, entity_resolution_recall: PASS, llm_edges_without_provenance: PASS, all_indexes_online: PASS, make_smoke_green: STALE, lessons_01_09: PASS, progress_complete: PASS, note: measured after `brain extract build`; the pipeline's own `index` step (12) has not run — the extractor agent, merge, resolve and communities come first., nodes_by_label_before: WorkItem: 3,265, Document: 1,391, Person: 1,214, Commit: 6,107, PullRequest: 6,026, File: 8,594, StatusChange: 7,607, Component: 30, Version: 86, Sprint: 92, Area: 24, Space: 1, Chunk: 13,846, Entity: 9,038, Community: 1,297, IndexMeta: 4, WorkItem/Bug: 774, WorkItem/Epic: 143, WorkItem/Feature: 121, WorkItem/Improvement: 314, WorkItem/JiraTest: 123, WorkItem/NewFeature: 45, WorkItem/Story: 232, WorkItem/SubTask: 250, WorkItem/Task: 302, WorkItem/Test: 817, WorkItem/TestExecution: 78, WorkItem/TestPlan: 13, WorkItem/TestSet: 44, WorkItem/Wish: 9, nodes_by_label_after: WorkItem: 3,275, Document: 1,391, Person: 1,218, Commit: 6,107, PullRequest: 6,026, File: 8,594, StatusChange: 7,666, Component: 30, Version: 86, Sprint: 92, Area: 24, Space: 1, Chunk: 13,917, Entity: 9,038, Community: 1,297, IndexMeta: 4, WorkItem/Bug: 779, WorkItem/Epic: 143, WorkItem/Feature: 121, WorkItem/Improvement: 316, WorkItem/JiraTest: 124, WorkItem/NewFeature: 46, WorkItem/Story: 232, WorkItem/SubTask: 250, WorkItem/Task: 303, WorkItem/Test: 817, WorkItem/TestExecution: 78, WorkItem/TestPlan: 13, WorkItem/TestSet: 44, WorkItem/Wish: 9, gate_values_delta: issues: before: 1,416, after: 1,426, kips_embedded: before: 267, after: 271, kips_referenced_all_embedded: before: 267/267, after: 271/271, index_before_path: data/reports/index.before-incremental.json, validate_incremental_remaining: —, census_after: before: 58,622, after: 58,560, edges: before: 161,985, after: 162,330, rollback_dry_run: command: uv run brain reset --slice incremental   (no --yes = dry run), exit_code: 1, duration_s: 0.95, applied: לא, output: reset (slice:incremental) — DRY RUN,   the pipeline must be IDLE: a harvest, load, chunk, extract or resolve running against this graph or data dir will write into a half-deleted state.,   incremental would delete       4 records from persons.jsonl,   incremental would delete      10 records from workitems.jsonl,   incremental would delete      43 :Chunk nodes,   incremental would delete       3 :Person nodes,   incremental would delete      59 :StatusChange nodes,   incremental would delete      10 :WorkItem nodes,   incremental would delete      29 entities whose every evidence chunk is in this slice,   incremental would delete 1 resolution-ledger row(s) pointing at a deleted identity,   incremental kept data/raw/<source>/since-*/ is kept; `brain canon` would restore the records from it. Add --data to remove the raw pages too.,   incremental kept Community nodes are kept: the increment changed their membership and only `brain communities build` can put it back.,   census     still present: {'WorkItem': 3275, 'Document': 1391, 'Person': 1217, 'Commit': 6107, 'PullRequest': 6026, 'File': 8594, 'StatusChange': 7666, 'Component': 30, 'Version': 86, 'Sprint': 92, 'Area': 24, 'Space': 1, 'Chunk': 13917, 'IndexMeta': 4, 'Entity': 9064, 'Community': 1066}, reset: nothing was deleted — pass --yes to go ahead., rollback_dry_run_after_fix: command: uv run brain reset --slice incremental   (no --yes = dry run), exit_code: 1, duration_s: 0.47, applied: לא, output: reset (slice:incremental) — DRY RUN,   the pipeline must be IDLE: a harvest, load, chunk, extract or resolve running against this graph or data dir will write into a half-deleted state.,   incremental would delete       4 records from persons.jsonl,   incremental would delete      10 records from workitems.jsonl,   incremental would delete      43 :Chunk nodes,   incremental would delete       3 :Person nodes,   incremental would delete      59 :StatusChange nodes,   incremental would delete      10 :WorkItem nodes,   incremental would delete      26 entities whose every evidence chunk is in this slice,   incremental would delete 1 resolution-ledger row(s) pointing at a deleted identity,   incremental kept data/raw/<source>/since-*/ is kept; `brain canon` would restore the records from it. Add --data to remove the raw pages too.,   incremental kept Community nodes are kept: the increment changed their membership and only `brain communities build` can put it back.,   census     still present: {'WorkItem': 3275, 'Document': 1391, 'Person': 1217, 'Commit': 6107, 'PullRequest': 6026, 'File': 8594, 'StatusChange': 7666, 'Component': 30, 'Version': 86, 'Sprint': 92, 'Area': 24, 'Space': 1, 'Chunk': 13917, 'IndexMeta': 4, 'Entity': 9064, 'Community': 1066}, reset: nothing was deleted — pass --yes to go ahead. |
-| chunks | — |
-| ישויות | entities_total_before: 9,038, entities_total_after: 9,064, entities_minted_here: 26, entities_attached_to_an_existing_one: 3, attached_to: Technology\|AdminApiDriver, Technology\|Kafka-clients, Technology\|lz4-java, minted_by_kind: Decision: 1, Feature: 2, Problem: 12, Risk: 2, Technology: 9, edges_written_by_this_batch: DECIDES: 1, DEPENDS_ON: 1, INTRODUCES_RISK: 2, MENTIONS: 29, MOTIVATED_BY: 2, provenance_complete_entities: 26/26, provenance_complete_edges: 35/35, batch_id_collision: by_run: corpus_run: 61, incremental_run: 26, note: the incremental batch is ALSO called shard-01/001 — batch ids are unique inside a root, not across roots, so provenance cannot tell the corpus's first batch from the increment's without `extracted_at`. Reported, not fixed: the fix is to prefix the id with the slice in build.PlannedBatch.batch_id., names_in_batch: 29, provenance_overwrite_bug: what: `brain extract merge` OVERWRITES an existing entity's `evidence_chunk_ids`, `batch_id` and `batch_ids` with only the batches of the current run, instead of unioning them. `extracted_at` survives (ON CREATE only), which is how the damage is visible at all., why_it_never_showed: a full-corpus merge re-plans every batch, so the current run's aggregate IS the whole truth and overwrite == union. `--slice` is the first partial merge this pipeline has ever run., damage_in_the_live_graph: 3, damaged: entity: Technology\|AdminApiDriver, was_extracted: 2026-09-06T15:11:02+00:00 from corpus batch shard-04/001, evidence chunk c4719fbad58f027f3c61ee88de55bd94d4211e2e, now_claims: batch_id shard-01/001, evidence [035f6cfcd9a3b837bcdbde447a8aae3606780021] — the description chunk of KAFKA-20064, entity: Technology\|lz4-java, was_extracted: 2026-09-06T15:17:28+00:00 from corpus batch shard-05/003, evidence chunk 334e0a6688517e865ce18b5f64f707d47b7d1f25, now_claims: batch_id shard-01/001, evidence [cef5803e5fe4d03b78b5c4ddb549174f75eb6287] — the description chunk of KAFKA-20043, entity: Technology\|Kafka-clients, was_extracted: 2026-09-06T15:13:47+00:00 (corpus batch not located by name grep; the entity predates this run), now_claims: batch_id shard-01/001, evidence [cef5803e5fe4d03b78b5c4ddb549174f75eb6287], consequence_1: provenance: three base entities cite text that did not produce them. conventions rule 3 says every LLM-derived node carries its evidence; these now carry somebody else's., consequence_2: rollback: `brain reset --slice incremental --yes` deletes entities whose every evidence chunk is in the slice. All 29 now qualify, including these 3 base entities — so the rollback would NOT return the census to index.before-incremental.json, it would go 3 entities below it., made_worse_by: batch ids are not unique across roots: the incremental batch is also `shard-01/001`, so even `batch_ids` cannot show that two different batches contributed., fix: two changes, neither applied here: (1) union `evidence_chunk_ids`/`batch_ids` onto what the node already carries instead of replacing them; (2) prefix a sliced build's batch id with the slice (brain/extract/build.PlannedBatch.batch_id) so the two contributions are distinguishable. Both are design decisions about provenance, which is why they are reported rather than taken., repair_of_the_three: re-running `brain extract merge` (no --slice) over the corpus root restores their base evidence — and then overwrites the incremental contribution, which is the same bug from the other side. They need the union fix first., repair: why: run_merge has no per-batch selector, so corpus batches shard-04/001 and shard-05/003 could not be re-merged alone. Every value written here was read out of the committed .out.json of the batch that minted the entity., rows: key: Technology\|adminapidriver, batch_id: shard-04/001, batch_ids: shard-04/001, shard: shard-04, chunks: c4719fbad58f027f3c61ee88de55bd94d4211e2e, key: Technology\|kafka client, batch_id: shard-05/002, batch_ids: shard-05/002, shard-05/003, shard: shard-05, chunks: 334e0a6688517e865ce18b5f64f707d47b7d1f25, 4d1128bc60b3e98a8c44a49dd1a3332d391feb16, 7a76976b4488f76c59ae6bf5a87b1356a8894e88, key: Technology\|lz4 java, batch_id: shard-05/003, batch_ids: shard-05/003, shard: shard-05, chunks: 334e0a6688517e865ce18b5f64f707d47b7d1f25, before: id: Technology\|adminapidriver, batch_id: shard-04/001, batch_ids: shard-04/001, ev: c4719fbad58f027f3c61ee88de55bd94d4211e2e, id: Technology\|kafka client, batch_id: shard-01/001, batch_ids: shard-01/001, ev: cef5803e5fe4d03b78b5c4ddb549174f75eb6287, id: Technology\|lz4 java, batch_id: shard-01/001, batch_ids: shard-01/001, ev: cef5803e5fe4d03b78b5c4ddb549174f75eb6287, after: id: Technology\|adminapidriver, batch_id: shard-04/001, batch_ids: shard-04/001, ev: c4719fbad58f027f3c61ee88de55bd94d4211e2e, id: Technology\|kafka client, batch_id: shard-05/002, batch_ids: shard-05/002, shard-05/003, ev: 334e0a6688517e865ce18b5f64f707d47b7d1f25, 4d1128bc60b3e98a8c44a49dd1a3332d391feb16, 7a76976b4488f76c59ae6bf5a87b1356a8894e88, id: Technology\|lz4 java, batch_id: shard-05/003, batch_ids: shard-05/003, ev: 334e0a6688517e865ce18b5f64f707d47b7d1f25, counters: nodes_created: 0, nodes_deleted: 0, relationships_created: 0, relationships_deleted: 0, properties_set: 12, labels_added: 0, labels_removed: 0, indexes_added: 0, constraints_added: 0, next: re-merge the incremental root: the union must add the slice's chunk and batch back on top of these, without losing them., union_remerge: first: exit_code: 0, duration_s: 1.06, entities: id: Technology\|adminapidriver, batch_id: shard-04/001, batch_ids: incremental/shard-01/001, shard-04/001, ev: 035f6cfcd9a3b837bcdbde447a8aae3606780021, c4719fbad58f027f3c61ee88de55bd94d4211e2e, id: Technology\|kafka client, batch_id: shard-05/002, batch_ids: incremental/shard-01/001, shard-05/002, shard-05/003, ev: 334e0a6688517e865ce18b5f64f707d47b7d1f25, 4d1128bc60b3e98a8c44a49dd1a3332d391feb16, 7a76976b4488f76c59ae6bf5a87b1356a8894e88, cef5803e5fe4d03b78b5c4ddb549174f75eb6287, id: Technology\|lz4 java, batch_id: shard-05/003, batch_ids: incremental/shard-01/001, shard-05/003, ev: 334e0a6688517e865ce18b5f64f707d47b7d1f25, cef5803e5fe4d03b78b5c4ddb549174f75eb6287, rerun: exit_code: 0, duration_s: 0.9, counters: nodes_created: 0, nodes_deleted: 0, relationships_created: 0, relationships_deleted: 0, properties_set: 4,357, labels_added: 0, labels_removed: 0, indexes_added: 0, constraints_added: 0, written: entities: 29, mentions: 29, relations: 6, arrays_unchanged: כן, entities_total: 9,064, entities_deletable_by_rollback: 26, proof: each of the three carries its Plan 1 batch_id and Plan 1 evidence chunk AND the incremental chunk/batch — the union added, it did not replace., final: exit_code: 0, duration_s: 0.67, batches: found: 1, valid: 1, invalid: 0, expected: 1, envelope_valid_rate: 1.0, envelope_valid_rate_vs_expected: 1.0, reported_failed: 0, missing_count: 1, missing_outputs: shard-01/001, unexpected_outputs: incremental/shard-01/001, previously_merged_now_absent: —, counters: nodes_created: 0, nodes_deleted: 0, relationships_created: 0, relationships_deleted: 0, properties_set: 4,357, labels_added: 0, labels_removed: 0, indexes_added: 0, constraints_added: 0, provenance: required: evidence_chunk_ids, batch_id, model, extracted_at, edges_without_provenance: 0, by_type: — |
-| קהילות | member_hash_changed: 645, member_hash_changed_ids: L0-0, L0-11, L0-113, L0-115, L0-130, L0-131, L0-16, L0-169, L0-188, L0-193, L0-196, L0-20, L0-203, L0-216, L0-239, L0-24, L0-245, L0-249, L0-250, L0-251, L0-254, L0-263, L0-266, L0-268, L0-269, L0-27, L0-275, L0-277, L0-280, L0-281, L0-282, L0-288, L0-289, L0-290, L0-297, L0-301, L0-302, L0-304, L0-305, L0-308, L0-309, L0-313, L0-316, L0-322, L0-330, L0-335, L0-337, L0-343, L0-344, L0-345, L0-355, L0-358, L0-361, L0-364, L0-366, L0-370, L0-373, L0-385, L0-387, L0-388, L0-389, L0-390, L0-399, L0-4, L0-40, L0-403, L0-404, L0-406, L0-410, L0-411, L0-415, L0-416, L0-419, L0-420, L0-422, L0-425, L0-428, L0-430, L0-431, L0-440, L0-444, L0-445, L0-446, L0-451, L0-456, L0-458, L0-460, L0-463, L0-465, L0-466, L0-467, L0-468, L0-469, L0-471, L0-476, L0-477, L0-484, L0-485, L0-493, L0-499, L0-50, L0-502, L0-507, L0-511, L0-512, L0-52, L0-529, L0-532, L0-537, L0-541, L0-542, L0-547, L0-56, L0-562, L0-567, L0-569, L0-571, L0-572, L0-59, L0-6, L0-7, L0-76, L0-77, L0-8, L0-82, L0-85, L0-90, L0-92, L0-94, L1-0, L1-1, L1-10, L1-101, L1-102, L1-103, L1-104, L1-105, L1-107, L1-109, L1-11, L1-110, L1-111, L1-112, L1-113, L1-115, L1-116, L1-117, L1-118, L1-119, L1-12, L1-120, L1-121, L1-122, L1-123, L1-124, L1-125, L1-126, L1-127, L1-128, L1-129, L1-13, L1-130, L1-131, L1-132, L1-133, L1-134, L1-136, L1-137, L1-138, L1-139, L1-14, L1-140, L1-141, L1-142, L1-143, L1-144, L1-145, L1-146, L1-147, L1-148, L1-149, L1-15, L1-150, L1-151, L1-152, L1-153, L1-154, L1-155, L1-156, L1-157, L1-158, L1-159, L1-16, L1-160, L1-161, L1-162, L1-163, L1-164, L1-165, L1-166, L1-167, L1-168, L1-169, L1-17, L1-170, L1-171, L1-172, L1-173, L1-174, L1-175, L1-176, L1-177, L1-178, L1-18, L1-180, L1-182, L1-184, L1-185, L1-186, L1-187, L1-188, L1-189, L1-19, L1-191, L1-193, L1-194, L1-195, L1-196, L1-197, L1-198, L1-199, L1-2, L1-20, L1-200, L1-201, L1-202, L1-203, L1-204, L1-205, L1-206, L1-208, L1-209, L1-21, L1-210, L1-211, L1-212, L1-213, L1-214, L1-215, L1-216, L1-217, L1-218, L1-219, L1-22, L1-220, L1-221, L1-222, L1-223, L1-224, L1-225, L1-226, L1-227, L1-228, L1-229, L1-23, L1-230, L1-231, L1-232, L1-233, L1-234, L1-235, L1-236, L1-237, L1-238, L1-239, L1-24, L1-240, L1-241, L1-242, L1-243, L1-244, L1-245, L1-246, L1-247, L1-248, L1-249, L1-25, L1-251, L1-253, L1-254, L1-255, L1-256, L1-257, L1-258, L1-259, L1-26, L1-260, L1-261, L1-262, L1-263, L1-265, L1-266, L1-267, L1-268, L1-269, L1-27, L1-271, L1-272, L1-273, L1-274, L1-275, L1-276, L1-278, L1-279, L1-28, L1-281, L1-282, L1-283, L1-284, L1-285, L1-286, L1-287, L1-288, L1-289, L1-29, L1-290, L1-291, L1-292, L1-293, L1-294, L1-295, L1-296, L1-297, L1-298, L1-299, L1-3, L1-30, L1-300, L1-301, L1-302, L1-303, L1-304, L1-305, L1-306, L1-307, L1-308, L1-309, L1-31, L1-310, L1-311, L1-312, L1-313, L1-314, L1-315, L1-316, L1-317, L1-318, L1-319, L1-32, L1-320, L1-321, L1-322, L1-323, L1-324, L1-325, L1-326, L1-327, L1-328, L1-329, L1-33, L1-330, L1-331, L1-332, L1-333, L1-334, L1-335, L1-336, L1-337, L1-338, L1-339, L1-34, L1-340, L1-342, L1-343, L1-344, L1-345, L1-347, L1-348, L1-349, L1-35, L1-350, L1-351, L1-352, L1-353, L1-354, L1-355, L1-356, L1-357, L1-358, L1-359, L1-36, L1-360, L1-361, L1-362, L1-363, L1-364, L1-366, L1-367, L1-369, L1-37, L1-370, L1-371, L1-372, L1-374, L1-375, L1-376, L1-378, L1-379, L1-38, L1-380, L1-381, L1-383, L1-384, L1-385, L1-386, L1-387, L1-388, L1-389, L1-39, L1-392, L1-393, L1-394, L1-395, L1-396, L1-397, L1-398, L1-4, L1-40, L1-400, L1-403, L1-404, L1-405, L1-406, L1-407, L1-408, L1-409, L1-41, L1-410, L1-412, L1-413, L1-414, L1-415, L1-416, L1-417, L1-418, L1-419, L1-42, L1-420, L1-421, L1-422, L1-423, L1-424, L1-425, L1-426, L1-427, L1-428, L1-429, L1-43, L1-430, L1-431, L1-432, L1-433, L1-434, L1-435, L1-436, L1-437, L1-438, L1-439, L1-44, L1-440, L1-441, L1-442, L1-443, L1-444, L1-445, L1-446, L1-447, L1-448, L1-449, L1-45, L1-450, L1-451, L1-452, L1-453, L1-454, L1-455, L1-456, L1-457, L1-458, L1-459, L1-46, L1-460, L1-461, L1-462, L1-463, L1-464, L1-465, L1-466, L1-467, L1-468, L1-469, L1-47, L1-470, L1-471, L1-472, L1-473, L1-474, L1-475, L1-476, L1-477, L1-478, L1-479, L1-48, L1-480, L1-481, L1-482, L1-483, L1-484, L1-485, L1-486, L1-487, L1-488, L1-489, L1-49, L1-490, L1-491, L1-492, L1-493, L1-494, L1-495, L1-496, L1-497, L1-498, L1-499, L1-5, L1-50, L1-500, L1-501, L1-502, L1-503, L1-504, L1-505, L1-506, L1-507, L1-508, L1-509, L1-510, L1-511, L1-512, L1-513, L1-514, L1-515, L1-516, L1-517, L1-518, L1-519, L1-52, L1-520, L1-521, L1-522, L1-523, L1-524, L1-525, L1-526, L1-527, L1-528, L1-529, L1-53, L1-530, L1-531, L1-532, L1-533, L1-534, L1-535, L1-536, L1-537, L1-538, L1-539, L1-54, L1-540, L1-541, L1-542, L1-543, L1-544, L1-545, L1-546, L1-547, L1-548, L1-549, L1-55, L1-58, L1-59, L1-6, L1-60, L1-61, L1-62, L1-63, L1-64, L1-65, L1-66, L1-67, L1-68, L1-69, L1-7, L1-70, L1-71, L1-72, L1-73, L1-74, L1-75, L1-76, L1-77, L1-78, L1-79, L1-8, L1-80, L1-81, L1-82, L1-83, L1-84, L1-85, L1-86, L1-87, L1-88, L1-89, L1-9, L1-90, L1-91, L1-92, L1-93, L1-95, L1-96, L1-97, L1-98, L1-99, total_before: 1,297, total_after: 1,066, reports_carried_over: 124, reports_copied_from_another_level: 42, reports_dropped: 62, would_summarize: 33, communities_with_a_report: 124, batches_refused_without_force: כן |
+| צמתים שנוספו | 144 |
+| קשתות שנוספו | 239 |
+| chunks שנוספו | 71 |
+| ישויות חדשות | 26 |
+| קהילות לפני | 1,297 |
+| קהילות אחרי | 1,066 |
+| קהילות שהשתנו (member_hash) | 645 |
+| דוחות קהילה שנשמרו | 124 |
+| דוחות קהילה שאבדו | 62 |
+| כיסוי חברים בקהילה מסוכמת — לפני (%) | 89.41 |
+| כיסוי חברים בקהילה מסוכמת — אחרי (%) | 47.5 |
+
+### rollback — הרצה יבשה
+
+`uv run brain reset --slice incremental   (no --yes = dry run)` — לא הופעל (`applied=לא`). Dry run only. Plan 3 decision 7: the rollback is proven on a slice fixture in `_ResetTest`, not by deleting from the measured graph.
+
+| מה היה נמחק | כמה |
+|---|---|
+| :Chunk nodes | 43 |
+| :Person nodes | 3 |
+| :StatusChange nodes | 59 |
+| :WorkItem nodes | 10 |
+| entities whose every evidence chunk is in this slice | 26 |
+| records from persons.jsonl | 4 |
+| records from workitems.jsonl | 10 |
+| resolution-ledger row(s) pointing at a deleted identity | 1 |
 
 ### חמש השאלות על הפריטים החדשים
 
-| שאלה | ציטוט תקף | פירוט |
-|---|---|---|
-| inc1 | כן | — |
-| inc2 | כן | — |
-| inc3 | כן | — |
-| inc4 | כן | — |
-| inc5 | כן | — |
+מצב A (אחזור קבוע, בלי סוכן) מול מצב B (הסוכן בוחר כלים). `ציטוט תקף` הוא המדד הדטרמיניסטי — כל סוגר מרובע מצביע על צומת שקיים.
+
+| שאלה | סוג | route | אסטרטגיה מובילה | recall | A: ציטוט תקף | B: ציטוטים תקפים | B: ציטוט תקף |
+|---|---|---|---|---|---|---|---|
+| inc1 | temporal | s6 | s6 | 1.0 | כן | 8/8 | כן |
+| inc2 | traceability | s2 | s4 | 0.0 | לא | 31/31 | כן |
+| inc3 | rationale | s3 | s6 | 1.0 | כן | 5/5 | כן |
+| inc4 | rationale | s3 | s6 | 1.0 | כן | 6/6 | כן |
+| inc5 | global | s4 | s4 | 0.0 | לא | 20/20 | כן |
+
+סיכום נגזר: מצב A 3/5 · מצב B 5/5.
 
 > sha b5a0dba is the commit that carries the code every step below was measured on (HEAD when part 1 started). HEAD moved five times during the 30 seconds of pipeline time — three eval agents share this tree — but `git diff --name-only b5a0dba..691e708` touches only brain/eval, brain/retrieve, docs and their tests: nothing under brain/harvest, brain/canon, brain/graph, brain/chunk or brain/extract.
 
@@ -436,13 +543,22 @@ P/R/F1 מול זוגות הזהב בלבד (יעד 0.85); מיזוגים שהז�
 
 הטבלה היחידה בדוח שנגזרת ולא מועתקת: לכל סוג שאלה, מי הובילה ב-recall (שכבה 2), מי הובילה בנכונוּת לפי השופט (שכבה 3), ומה המהלך הזה עלה מול ה-baseline (`s1r`). הפרש חיובי = יקר יותר מה-baseline.
 
-| סוג שאלה | מובילה ב-recall | recall | recall של baseline | מובילה בנכונוּת | נכונוּת | נכונוּת baseline | Δ latency p50 (ms) | Δ tokens p50 | Δ Cypher | הערה |
-|---|---|---|---|---|---|---|---|---|---|---|
-| גלובלי (`global`) | s5 | 0.1888 | 0.0998 | agentic | 2.0 | 1.0 | -1966.0 | 165.0 | -11.0 | — |
-| השפעה (`impact`) | s4 | 0.3636 | 0.0476 | s4 | 1.167 | 0.429 | -1403.0 | 41.0 | -14.0 | — |
-| נימוק (`rationale`) | s3 | 0.3337 | 0.0727 | agentic | 1.25 | 0.5 | -1503.0 | -1014.0 | 18.0 | — |
-| זמני (`temporal`) | s6 | 0.8133 | 0.0833 | agentic | 1.875 | 0.0 | -697.0 | -2103.0 | -8.0 | — |
-| עקיבוּת (`traceability`) | s3 | 0.3707 | 0.0839 | agentic | 1.4 | 0.5 | -1869.0 | -2697.0 | 19.0 | — |
+**4 מתוך 5 סוגי שאלה: מובילת ה-recall אינה מובילת הנכונוּת (global, rationale, temporal, traceability)**
+
+שלוש עמודות ה-Δ שייכות ל**מובילת ה-recall** ולא למובילת הנכונוּת — העמודה "עלות מיוחסת ל" אומרת למי בדיוק. `n` ליד כל מוביל הוא מספר השאלות שהתא נשען עליהן; מתחת ל-3 השורה מסמנת `n<3` ולא קוראת לאסטרטגיה "מובילה".
+
+| סוג שאלה | מובילה ב-recall | recall | recall של baseline | מובילה בנכונוּת | נכונוּת | נכונוּת baseline | עלות מיוחסת ל | Δ latency p50 (ms) | Δ tokens p50 | Δ Cypher | עלות מובילת הנכונוּת | הערה |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| גלובלי (`global`) | `s5` (n=6) | 0.1888 | 0.0998 | —, n<3 (`agentic`, n=1) | 2.0 | 1.0 | `s5` | -1966.0 | 165.0 | -11.0 | — (ל-`agentic` אין תא עלות בשכבה 2 — מצב B לא ארז הקשר ולא נמדד בשעון) | — |
+| השפעה (`impact`) | `s4` (n=7) | 0.3636 | 0.0476 | `s4` (n=6) | 1.167 | 0.429 | `s4` | -1403.0 | 41.0 | -14.0 | Δ latency -1403.0 · Δ tokens 41.0 · Δ Cypher -14.0 | — |
+| נימוק (`rationale`) | `s3` (n=6) | 0.3337 | 0.0727 | `agentic` (n=4) | 1.25 | 0.5 | `s3` | -1503.0 | -1014.0 | 18.0 | — (ל-`agentic` אין תא עלות בשכבה 2 — מצב B לא ארז הקשר ולא נמדד בשעון) | — |
+| זמני (`temporal`) | `s6` (n=5) | 0.8133 | 0.0833 | `agentic` (n=4) | 1.875 | 0.0 | `s6` | -697.0 | -2103.0 | -8.0 | — (ל-`agentic` אין תא עלות בשכבה 2 — מצב B לא ארז הקשר ולא נמדד בשעון) | — |
+| עקיבוּת (`traceability`) | `s3` (n=7) | 0.3707 | 0.0839 | `agentic` (n=5) | 1.4 | 0.5 | `s3` | -1869.0 | -2697.0 | 19.0 | — (ל-`agentic` אין תא עלות בשכבה 2 — מצב B לא ארז הקשר ולא נמדד בשעון) | — |
+
+- מובילת recall ≠ מובילת נכונוּת: `s5` (r=0.1888, n=6) מול `agentic` (c=2.0, n=1)
+- מובילת recall ≠ מובילת נכונוּת: `s3` (r=0.3337, n=6) מול `agentic` (c=1.25, n=4)
+- מובילת recall ≠ מובילת נכונוּת: `s6` (r=0.8133, n=5) מול `agentic` (c=1.875, n=4)
+- מובילת recall ≠ מובילת נכונוּת: `s3` (r=0.3707, n=7) מול `agentic` (c=1.4, n=5)
 
 ---
 

@@ -291,3 +291,40 @@ def test_contexts_for_reports_an_answer_whose_run_file_moved(tmp_path):
     contexts, drift = jb.contexts_for([answer()], runs)
     assert contexts == {}
     assert drift[0]["why"] == "the run file now packs another context"
+
+
+# --------------------------------------------- the manifest is not a file the judge reads
+
+
+def test_the_manifest_is_written_outside_the_batch_tree(tmp_path):
+    """It names the baseline, the challengers and the path of the blind map — all secrets."""
+    build(tmp_path, [answer("q001", "s1r"), answer("q001", "s3")], [row()], pair_with=("s3",))
+    root = tmp_path / "batches" / "judge"
+    assert not list(root.rglob(jb.MANIFEST_NAME))
+    written = tmp_path / "reports" / jb.JUDGE_MANIFEST_NAME
+    assert written.is_file()
+    manifest = json.loads(written.read_text(encoding="utf-8"))
+    assert manifest["pairwise"]["baseline"] == "s1r"
+
+
+def test_a_manifest_left_in_the_tree_by_an_older_build_is_removed(tmp_path):
+    root = tmp_path / "batches" / "judge"
+    root.mkdir(parents=True)
+    (root / jb.MANIFEST_NAME).write_text('{"pairwise": {"baseline": "s1r"}}', encoding="utf-8")
+    build(tmp_path, [answer()], [row()])
+    assert not (root / jb.MANIFEST_NAME).exists()
+
+
+def test_every_json_file_left_in_the_batch_tree_is_blind(tmp_path):
+    answers = [answer("q001", s) for s in ("s1r", "s3")]
+    build(tmp_path, answers, [row("q001")], pair_with=("s3",))
+    blind = jb.read_blind_map(tmp_path / "eval")
+    findings = jb.tree_leaks(tmp_path / "batches" / "judge", blind.secrets)
+    assert findings == []
+
+
+def test_a_secret_planted_in_the_batch_tree_is_found(tmp_path):
+    build(tmp_path, [answer()], [row()])
+    root = tmp_path / "batches" / "judge"
+    (root / "note.json").write_text('{"strategy": "s1r"}', encoding="utf-8")
+    assert jb.tree_leaks(root, {"s1r"})

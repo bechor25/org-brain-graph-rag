@@ -21,6 +21,7 @@ from tests.eval_report_helpers import (
     index,
     without_sha,
     write_agentic,
+    write_questions,
     write_reports,
 )
 
@@ -181,9 +182,10 @@ def test_resolution_falls_back_to_resolve_json_when_the_census_has_none(tmp_path
 
     census = index_fixture()
     census["resolution"] = {"available": False, "source": "data/reports/resolve.json"}
-    rows = build(tmp_path, index=census)["layer01"]["resolution"]["rows"]
-    assert [r["kind"] for r in rows] == ["entity"]
-    assert rows[0]["recall"] == 0.98
+    rows = {r["kind"]: r for r in build(tmp_path, index=census)["layer01"]["resolution"]["rows"]}
+    assert sorted(rows) == ["entity", "person"]
+    assert rows["entity"]["recall"] == 0.98
+    assert rows["entity"]["ungraded_merges_source"] == "data/reports/resolve.json"
 
 
 def test_a_graph_without_communities_is_pending_not_empty(tmp_path):
@@ -261,9 +263,11 @@ def test_the_code_citation_check_is_counted_not_copied(tmp_path):
         "cases": 2,
         "code_valid": 1,
         "code_invalid": 1,
+        "code_valid_in_snapshot": 1,
         "no_citation": 0,
         "not_in_context": 1,
         "not_in_graph": 0,
+        "not_in_snapshot": 0,
     }
 
 
@@ -321,7 +325,8 @@ def test_a_complete_incremental_run_reports_no_problems(tmp_path):
 def test_when_what_picks_a_winner_per_type_and_prices_the_win(tmp_path):
     rows = {r["type"]: r for r in build(tmp_path)["when_what"]["rows"]}
     trace = rows["traceability"]
-    assert trace["best_recall"] == {"strategy": "s3", "value": 0.61}
+    assert trace["best_recall"]["strategy"] == "s3"
+    assert trace["best_recall"]["value"] == 0.61
     assert trace["baseline_recall"] == 0.30
     assert trace["latency_delta_ms"] == 38
     assert trace["tokens_delta"] == 1200
@@ -427,3 +432,151 @@ def test_the_cli_writes_the_document(tmp_path, monkeypatch):
     assert out.is_file()
     assert "מתי לא הייתי משתמש בגרף כאן" in out.read_text(encoding="utf-8")
     assert json.loads((data / "reports" / "index.json").read_text())["nodes"]["total"] == 58622
+
+
+# ------------------------------------------------- denominators and drops (review item 3)
+
+
+def test_every_layer_3_strategy_carries_its_denominator(tmp_path):
+    by_strategy = build(tmp_path)["layer3"]["by_strategy"]
+    assert all("n" in cell for cell in by_strategy.values())
+    assert by_strategy["s3"]["n"] == by_strategy["s3"]["cases"]
+
+
+def test_the_dropped_cases_are_named_with_their_strategy_and_reason(tmp_path):
+    report = eval_answers()
+    report["answers_merge"]["context_drift"] = [
+        {"case_id": "cq16.s1", "why": "the run file now packs a different context"},
+        {"case_id": "cq16.s1r", "why": "the run file now packs a different context"},
+    ]
+    layer3 = build(tmp_path, eval_answers=report)["layer3"]
+    assert layer3["dropped"]["count"] == 2
+    assert layer3["dropped"]["by_strategy"] == {"s1": 1, "s1r": 1}
+    assert layer3["dropped"]["rows"][0]["reason"] == "context_drift"
+
+
+def test_the_answer_counts_are_accepted_and_judged_not_one_number_twice(tmp_path):
+    layer3 = build(tmp_path)["layer3"]
+    assert layer3["answers"]["accepted"] == 184
+    assert layer3["answers"]["judged"] == layer3["judge_merge"]["judgments"]["cases"]
+
+
+# -------------------------------------------------- "מתי מה": whose cost is it (item 4)
+
+
+def diverging(tmp_path):
+    """Layer 2 says s3 retrieves best on traceability; layer 3 says s1r answers it best."""
+    answers = eval_answers()
+    matrix = answers["metrics"]["matrix"]
+    matrix["s1r"]["traceability"]["correctness"] = 2.0
+    matrix["s1r"]["traceability"]["cases"] = 4
+    matrix["s3"]["traceability"]["correctness"] = 0.5
+    matrix["s3"]["traceability"]["cases"] = 4
+    return build(tmp_path, eval_answers=answers)["when_what"]
+
+
+def test_the_cost_delta_names_the_strategy_it_belongs_to(tmp_path):
+    rows = {r["type"]: r for r in diverging(tmp_path)["rows"]}
+    trace = rows["traceability"]
+    assert trace["best_recall"]["strategy"] == "s3"
+    assert trace["cost_attributed_to"] == "s3"
+    assert trace["latency_delta_ms"] == 38
+
+
+def test_the_correctness_leader_without_a_cost_cell_prints_nothing(tmp_path):
+    answers = eval_answers()
+    matrix = answers["metrics"]["matrix"]
+    matrix["s1r"]["traceability"]["correctness"] = 0.5
+    matrix["s3"]["traceability"]["correctness"] = 0.5
+    matrix.setdefault("agentic", {})["traceability"] = {"cases": 5, "correctness": 2.0}
+    rows = {r["type"]: r for r in build(tmp_path, eval_answers=answers)["when_what"]["rows"]}
+    cost = rows["traceability"]["correctness_cost"]
+    assert cost["strategy"] == "agentic"
+    assert cost["available"] is False
+    assert cost["latency_delta_ms"] is None
+
+
+def test_each_leader_carries_its_own_n(tmp_path):
+    rows = {r["type"]: r for r in diverging(tmp_path)["rows"]}
+    assert rows["traceability"]["best_recall"]["n"] == 7
+    assert rows["traceability"]["best_correctness"]["n"] == 4
+
+
+def test_a_divergence_between_the_two_leaders_is_a_generated_line(tmp_path):
+    part = diverging(tmp_path)
+    rows = {r["type"]: r for r in part["rows"]}
+    trace = rows["traceability"]
+    assert trace["leaders_differ"] is True
+    assert "s3" in trace["leaders_line"] and "s1r" in trace["leaders_line"]
+    assert part["diverging_types"] == 1
+    assert "1" in part["divergence_line"]
+
+
+def test_a_leader_measured_on_fewer_than_three_questions_is_not_called_a_leader():
+    layer2 = {
+        "matrix": {"s3": {"global": {"scored": 2, "recall": 0.9}}},
+        "types": ["global"],
+        "baseline": "s1r",
+    }
+    best = rb.when_what(layer2, {"matrix": {}})["rows"][0]["best_recall"]
+    assert best["n"] == 2
+    assert best["enough"] is False
+
+
+# ------------------------------------------- the incremental section, by name (item 5)
+
+
+def test_the_incremental_section_names_its_rows(tmp_path):
+    part = build(tmp_path)["incremental"]
+    summary = part["summary"]
+    assert summary["nodes_added"] == 144
+    assert summary["edges_added"] == 239
+    assert summary["chunks_added"] == 71
+    assert summary["communities_changed"] == 7
+    assert summary["reports_kept"] == 124
+    assert summary["reports_lost"] == 62
+    assert summary["coverage_before"] == 89.41
+    assert summary["coverage_after"] == 47.5
+
+
+def test_the_changed_community_ids_are_a_count_and_not_a_list(tmp_path):
+    part = build(tmp_path)["incremental"]
+    assert "member_hash_changed_ids" not in part["summary"]
+    assert part["summary"]["communities_changed"] == 7
+
+
+def test_the_rollback_dry_run_is_counted_per_label(tmp_path):
+    rollback = build(tmp_path)["incremental"]["rollback"]
+    assert rollback["applied"] is False
+    assert rollback["counts"][":Chunk nodes"] == 43
+
+
+def test_the_five_questions_are_an_a_b_table(tmp_path):
+    questions = build(tmp_path)["incremental"]["questions"]
+    assert len(questions) == 5
+    assert questions[0]["mode_a_citation_valid"] is True
+    assert questions[0]["mode_b_citations_valid"] == 8
+
+
+# ------------------------------------------------- the questions section (item 7)
+
+
+def test_the_gold_source_split_is_a_generated_line(tmp_path):
+    part = build(tmp_path)["questions"]
+    assert part["gold_source_line"] == "gold source: graph 32 / truth 0"
+    assert "truth" in part["gold_source_gap"]
+
+
+def test_a_temporal_gold_that_calls_the_strategys_own_code_path_is_marked(tmp_path):
+    write_questions(tmp_path)
+    part = build(tmp_path)["questions"]
+    assert part["gold_shares_code_path"] == ["cq13", "cq19"]
+    assert "code path" in part["gold_shares_code_path_note"]
+
+
+def test_both_ungraded_merge_counts_are_printed_with_their_source(tmp_path):
+    rows = {r["kind"]: r for r in build(tmp_path)["layer01"]["resolution"]["rows"]}
+    person = rows["person"]
+    assert person["ungraded_merges"] == 1656
+    assert person["ungraded_merges_resolve"] == 1657
+    assert person["ungraded_merges_source"] == "data/reports/index.json"

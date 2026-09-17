@@ -164,6 +164,13 @@ def resolve() -> dict[str, Any]:
                 "gold_pairs": 100,
                 "through_tier_1": {"precision": 1.0, "recall": 0.98, "f1": 0.9899, "tp": 49},
             },
+            # The census counts the merges one tier earlier than `resolve eval` does, so the
+            # two files disagree by one. Both numbers are printed with their source.
+            "person": {
+                "gold_pairs": 633,
+                "through_tier_1": {"precision": 0.9801, "recall": 0.7789, "f1": 0.868, "tp": 444},
+                "through_tier_3": {"ungraded_merges": 1657},
+            },
         },
     }
 
@@ -409,18 +416,28 @@ def judge_sections() -> dict[str, Any]:
             "citations": 2,
             "not_in_context": [],
             "not_in_graph": [],
+            "not_in_snapshot": [],
             "context_checked": True,
             "graph_checked": True,
+            "snapshot_checked": True,
+            "in_graph_now": True,
+            "in_retrieval_snapshot": None,
             "code_valid": True,
+            "code_valid_in_snapshot": True,
             "reason": "every citation is in the context and resolves in the graph",
         },
         "cq02.s3": {
             "citations": 1,
             "not_in_context": ["KAFKA-999"],
             "not_in_graph": [],
+            "not_in_snapshot": [],
             "context_checked": True,
             "graph_checked": True,
+            "snapshot_checked": True,
+            "in_graph_now": True,
+            "in_retrieval_snapshot": None,
             "code_valid": False,
+            "code_valid_in_snapshot": False,
             "reason": "not in the context: KAFKA-999",
         },
     }
@@ -531,16 +548,59 @@ def incremental(*, complete: bool = True) -> dict[str, Any]:
                 "command": f"brain {name}",
                 "started_at": AT,
                 "duration_s": 12.5,
-                "report": {},
+                # `brain index` is where the community coverage before/after is measured.
+                "report": (
+                    {
+                        "communities": {
+                            "before": {"pct_members_in_a_summarised_community": 89.41},
+                            "after": {"pct_members_in_a_summarised_community": 47.5},
+                        }
+                    }
+                    if name == "index"
+                    else {}
+                ),
                 "notes": "",
             }
             for name in names
         ],
-        "graph": {"workitems_added": 10, "edges_added": 34},
-        "chunks": {"added": 41},
-        "entities": {"added": 18},
-        "communities": {"member_hash_changed": 7, "recomputed": False},
-        "questions": [{"qid": f"inc{i}", "citation_valid": i < 4, "note": ""} for i in range(5)],
+        "graph": {
+            "census_after_part1": {
+                "nodes_total": {"before": 58622, "after": 58766},
+                "edges_total": {"before": 161985, "after": 162224},
+                "chunks": {"before": {"chunks": 13846}, "after": {"chunks": 13917}},
+            },
+            "rollback_dry_run_after_fix": {
+                "command": "uv run brain reset --slice incremental   (no --yes = dry run)",
+                "applied": False,
+                "output": [
+                    "reset (slice:incremental) — DRY RUN",
+                    "  incremental would delete      43 :Chunk nodes",
+                    "  incremental would delete      10 :WorkItem nodes",
+                ],
+            },
+        },
+        "chunks": {},
+        "entities": {"entities_minted_here": 26},
+        "communities": {
+            "member_hash_changed": 7,
+            "member_hash_changed_ids": [f"L0-{i}" for i in range(7)],
+            "reports_carried_over": 124,
+            "reports_dropped": 62,
+            "recomputed": False,
+        },
+        "questions": [
+            {
+                "id": f"inc{i}",
+                "type": "temporal",
+                "route": "s6",
+                "best_strategy": "s6",
+                "best_recall": 1.0,
+                "citation_valid": True,
+                "mode_a_citation_valid": i < 4,
+                "mode_b": {"citations": 8, "citations_valid": 8, "citation_valid": True},
+            }
+            for i in range(5)
+        ],
         "warnings": [],
         "errors": [],
     }
@@ -598,3 +658,40 @@ def write_agentic(root: Path, qids=("cq01", "cq02")) -> Path:
             encoding="utf-8",
         )
     return directory
+
+
+#: Four question rows, two of which hand the gold the very function the strategy runs.
+QUESTION_ROWS: tuple[dict[str, Any], ...] = (
+    {
+        "id": "cq13",
+        "type": "temporal",
+        "lang": "en",
+        "gold_source": "graph",
+        "gold_query": "brain.retrieve.temporal.changes_between('clients', '3.7', '3.8')",
+    },
+    {
+        "id": "cq19",
+        "type": "temporal",
+        "lang": "he",
+        "gold_source": "graph",
+        "gold_query": "brain.retrieve.temporal.status_at('KAFKA-15538', '2024-01-16')",
+    },
+    {"id": "q008", "type": "temporal", "lang": "en", "gold_source": "graph", "gold_query": ""},
+    {
+        "id": "cq01",
+        "type": "traceability",
+        "lang": "en",
+        "gold_source": "graph",
+        "gold_query": "MATCH (w:`WorkItem`) RETURN w.key",
+    },
+)
+
+
+def write_questions(root: Path, rows=QUESTION_ROWS) -> Path:
+    """`data/eval/questions.jsonl` as the merge writes it — the file `gold_query` lives in."""
+    path = Path(root) / "eval" / "questions.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n", encoding="utf-8"
+    )
+    return path

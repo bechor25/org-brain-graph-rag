@@ -42,7 +42,15 @@ from brain.eval.answers_batches import (
 from brain.eval.answers_batches import (
     write_section as write_answers_section,
 )
-from brain.eval.blind import BLIND_MAP_NAME, BlindMap, assert_blind, labels, map_is_outside
+from brain.eval.blind import (
+    BLIND_MAP_NAME,
+    BlindError,
+    BlindMap,
+    assert_blind,
+    labels,
+    leaks,
+    map_is_outside,
+)
 from brain.eval.casebatch import Case, PlannedBatch
 from brain.extract.build import MANIFEST_NAME, sha256_of, shard_name, shards_in_flight
 from brain.harvest.base import utc_now_iso, write_json_atomic
@@ -55,6 +63,11 @@ RUBRIC_PATH = Path(__file__).with_name("rubric.md")
 RUBRIC_REF = "brain/eval/rubric.md"
 AGENT_REF = ".claude/agents/eval-judge.md"
 REPORT_NAME = ANSWERS_REPORT_NAME
+#: The build manifest lands here, in `data/reports/`, and **not** beside the batches.
+#: Every other batch builder writes `MANIFEST.json` into its own batch tree; this one
+#: cannot, because the judge is told to read that tree and the manifest names the
+#: baseline, the challengers and where the blind map lives.
+JUDGE_MANIFEST_NAME = "judge_manifest.json"
 
 #: Plan 3 decision 5: two judges.
 DEFAULT_SHARDS = 2
@@ -465,9 +478,40 @@ def run_build(
         sha=sha,
         duration_ms=round((time.perf_counter() - started) * 1000),
     )
-    write_json_atomic(root / MANIFEST_NAME, manifest)
+    manifest_path = Path(reports_dir) / JUDGE_MANIFEST_NAME
+    Path(reports_dir).mkdir(parents=True, exist_ok=True)
+    write_json_atomic(manifest_path, manifest)
+    # Every other batch builder leaves its manifest beside the batches; this one must not.
+    # It names the baseline, the challenger list and the path of the blind map — three of
+    # the four things the blinding exists to withhold — and the judge reads this directory.
+    (root / MANIFEST_NAME).unlink(missing_ok=True)
+    findings = tree_leaks(root, secrets)
+    if findings:
+        raise BlindError("the judge batch tree is not blind — " + "; ".join(findings[:5]))
     write_answers_section(Path(reports_dir), "judge_build", manifest, sha=sha)
     return manifest
+
+
+def tree_leaks(root: Path, secrets: set[str] | Sequence[str]) -> list[str]:
+    """Every structural give-away in every JSON file the judge's directory holds.
+
+    `assert_blind` guards each batch as it is written, which covers the files this builder
+    plans — and covered nothing else. The manifest sat in the same directory, un-checked,
+    naming the baseline and the challengers. So the check is over the *tree*: whatever ends
+    up where the judge reads, including a file some later step drops there, is checked
+    against the same secrets.
+    """
+    root = Path(root)
+    if not root.is_dir():
+        return []
+    found: list[str] = []
+    for path in sorted(root.rglob("*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        found += [f"{path.name}: {finding}" for finding in leaks(payload, secrets)]
+    return found
 
 
 def build_manifest(
@@ -574,6 +618,7 @@ def summarize_build(manifest: Mapping[str, Any]) -> str:
                 f" — OVER BUDGET: {', '.join(sizes['over_budget'])}" if sizes["over_budget"] else ""
             ),
             f"  blind map: {manifest['blind']['map']} (outside the batch tree)",
+            f"  manifest:  data/reports/{JUDGE_MANIFEST_NAME} (outside the batch tree)",
         ]
     )
 
@@ -631,6 +676,7 @@ def load_schema() -> dict[str, Any]:
 
 
 __all__ = [
+    "JUDGE_MANIFEST_NAME",
     "AGENTIC",
     "BASELINE",
     "DEFAULT_BATCH_SIZE",
@@ -652,4 +698,5 @@ __all__ = [
     "run_build",
     "single_payload",
     "summarize_build",
+    "tree_leaks",
 ]

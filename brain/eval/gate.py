@@ -16,13 +16,13 @@ a number that is not allowed to fail the build is still a number the planner has
 from __future__ import annotations
 
 import json
-import subprocess
 from collections import Counter
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from brain.common.stamp import head_sha
 from brain.eval.answers import Answer
 from brain.eval.citations import Citation, find_citations, sentence_stats, unique
 from brain.eval.verify import Verdict
@@ -35,21 +35,6 @@ VALIDITY_TARGET = 90.0
 
 def utc_now_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
-
-
-def head_sha() -> str:
-    """The commit these numbers were measured at, or `""` outside a checkout."""
-    try:
-        done = subprocess.run(  # noqa: S603 - a fixed argv, no shell
-            ["git", "rev-parse", "HEAD"],  # noqa: S607
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return ""
-    return done.stdout.strip() if done.returncode == 0 else ""
 
 
 def load_questions(path: Path) -> list[dict[str, Any]]:

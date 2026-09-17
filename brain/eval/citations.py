@@ -28,7 +28,9 @@ from typing import Literal, get_args
 
 from brain.retrieve.keys import DOCUMENT_KEY_RE, NOT_KEYS, WORKITEM_KEY_RE
 
-CitationKind = Literal["workitem", "document", "chunk", "commit", "person", "community"]
+CitationKind = Literal[
+    "workitem", "document", "chunk", "commit", "person", "community", "statuschange"
+]
 CITATION_KINDS: tuple[str, ...] = get_args(CitationKind)
 
 #: A `Chunk.id` is `sha1(parent_key|kind|position|text)` — 40 hex characters. An agent
@@ -121,7 +123,11 @@ def classify(token: str, start: int = 0, end: int = 0) -> Citation | None:
             )
         return Citation(text, "chunk", value, start, end, problem)
 
-    for prefix, kind in (("person:", "person"), ("community:", "community")):
+    for prefix, kind in (
+        ("person:", "person"),
+        ("community:", "community"),
+        ("statuschange:", "statuschange"),
+    ):
         value = _prefixed(text, prefix)
         if value is not None:
             value = value.strip(WRAPPER_CHARS)

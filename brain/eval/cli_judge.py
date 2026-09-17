@@ -145,6 +145,13 @@ def merge(
         "the report says which checks were performed.",
     ),
     prefix: str = typer.Option("", "--prefix", help="Label namespace to verify citations in."),
+    log: str | None = typer.Option(
+        None,
+        "--log",
+        metavar="PATH",
+        help="The retrieval trace to read mode B's snapshot from "
+        "(default: data/logs/retrieval.jsonl).",
+    ),
 ) -> None:
     """De-blind the judgments and write data/reports/eval_answers.json [Plan 3 Task 3].
 
@@ -162,6 +169,9 @@ def merge(
     settings = get_settings()
     rows = _rows(questions, settings)
     sha = head_sha()
+    from brain.retrieve.log import DEFAULT_LOG
+
+    log_path = Path(log) if log else DEFAULT_LOG
 
     def _run(verify) -> dict:
         return report_mod.run_merge(
@@ -170,6 +180,7 @@ def merge(
             reports_dir=settings.reports_dir,
             rows=rows,
             verify=verify,
+            log_path=log_path,
             sha=sha,
             echo=typer.echo,
         )

@@ -156,8 +156,9 @@ def _header(doc: Mapping[str, Any]) -> list[str]:
     out += _p(
         f'נוצר אוטומטית ע"י `{doc.get("command")}` ב-{_fmt(doc.get("generated_at"))} '
         f"(HEAD `{_short(doc.get('sha'))}`) מתוך דוחות השלבים ב-`{doc.get('reports_dir')}`. "
-        "**אין כאן מספר שהוקלד ביד** — למעט שני הסעיפים האחרונים, שהמתכנן כותב אחרי "
-        "קריאת המספרים ושנשמרים בכל יצירה מחדש."
+        "**המספרים נלקחים מדוחות השלבים** ואין כאן מספר שהוקלד לתוך הדף; "
+        "**הערות השלבים הן פרוזה של המהנדס/ת של השלב** (עמודות `הערות`/`note` שנגררות "
+        'מה-JSON), ושני הסעיפים האחרונים נכתבים ביד ע"י המתכנן ונשמרים בכל יצירה מחדש.'
     )
     out += _p(
         "כל שורה בטבלה הבאה היא קלט של הדוח: מתי נמדד, באיזה commit, והאם ה-commit הזה "
@@ -198,6 +199,9 @@ def _questions(doc: Mapping[str, Any]) -> list[str]:
             f"{_fmt(part.get('questions'))} שאלות מתוך יעד {_fmt(part.get('target'))}. "
             f"רצפת העברית: {_fmt(part.get('hebrew_floor'))}."
         )
+        out += _p(f"`{part.get('gold_source_line')}`.")
+        if part.get("gold_source_gap"):
+            out += _p(f"> {part['gold_source_gap']}")
         out += _table(
             ["חתך", "פירוט"],
             [
@@ -299,7 +303,20 @@ def _resolution(part: Mapping[str, Any]) -> list[str]:
             "לא אומר עליהם דבר נספרים כ-`ungraded` ולא נכנסים לאף צד."
         )
         out += _table(
-            ["סוג", "זוגות זהב", "P", "R", "F1", "TP", "FP", "FN", "לפני", "אחרי", "ungraded"],
+            [
+                "סוג",
+                "זוגות זהב",
+                "P",
+                "R",
+                "F1",
+                "TP",
+                "FP",
+                "FN",
+                "לפני",
+                "אחרי",
+                "ungraded (index.json)",
+                "ungraded (resolve.json)",
+            ],
             [
                 [
                     r["kind"],
@@ -313,9 +330,15 @@ def _resolution(part: Mapping[str, Any]) -> list[str]:
                     r.get("nodes_before"),
                     r.get("nodes_after"),
                     r.get("ungraded_merges"),
+                    r.get("ungraded_merges_resolve"),
                 ]
                 for r in part.get("rows") or []
             ],
+        )
+        out += _p(
+            "שתי עמודות ה-ungraded אינן שגיאה: המפקד סופר את המיזוגים דרך tier אחד פחות "
+            "מ-`brain resolve eval`, ולכן הן נבדלות ב-1 עבור `person`. שתיהן מודפסות עם "
+            "הקובץ שלהן כדי שאיש לא יצטט את אחת מהן כ״המספר״."
         )
         if part.get("note"):
             out += _p(f"> {part['note']}")
@@ -496,6 +519,25 @@ def _cost_table(layer2: Mapping[str, Any]) -> list[str]:
     return out
 
 
+def _shared_code_path(questions: Mapping[str, Any]) -> list[str]:
+    """The footnote under the matrix: which rows are not really measuring retrieval.
+
+    Four `temporal` questions have a `gold_query` that *is* the call the strategy under test
+    makes, so a `recall` of 1.0 on them says the function is deterministic. It stays in the
+    table — dropping it would change the denominator quietly — and is named instead.
+    """
+    shared = list(questions.get("gold_shares_code_path") or [])
+    if not shared:
+        return []
+    types = ", ".join(questions.get("gold_shares_code_path_types") or []) or "—"
+    return _p(
+        f"> **gold shares the strategy's code path** — {len(shared)} שאלות "
+        f"({', '.join(f'`{q}`' for q in shared)}, סוג: {types}): ה-gold שלהן הוא הפלט של "
+        "אותה קריאת `brain.retrieve.temporal.*` שהאסטרטגיה מריצה. השורות שלהן בטבלה "
+        "שלמעלה מודדות דטרמיניזם של הקריאה, לא אחזור."
+    )
+
+
 def _cross_lingual(layer2: Mapping[str, Any]) -> list[str]:
     rows = []
     for pair in layer2.get("cross_lingual") or []:
@@ -590,6 +632,7 @@ def _layer2(doc: Mapping[str, Any]) -> list[str]:
         )
         out += _h(3, "מטריצה: אסטרטגיה × סוג שאלה")
         out += _matrix_table(part)
+        out += _shared_code_path(doc.get("questions") or {})
         out += _h(3, "עלות לפי אסטרטגיה")
         out += _p(
             "`n/a` = האסטרטגיה לא חלה על השאלה, עם סיבה — תא ריק שאיש לא יכול להסביר "
@@ -626,29 +669,126 @@ def _judge_matrix(part: Mapping[str, Any]) -> list[str]:
                 [
                     strategy,
                     _type_label(qtype),
-                    cell.get("cases"),
+                    cell.get("n", cell.get("cases")),
                     *[cell.get(m) for m in metrics],
                 ]
             )
-    return _table(["אסטרטגיה", "סוג שאלה", "מקרים", *[METRIC_HE.get(m, m) for m in metrics]], rows)
+    return _table(["אסטרטגיה", "סוג שאלה", "n", *[METRIC_HE.get(m, m) for m in metrics]], rows)
+
+
+def _by_strategy(part: Mapping[str, Any]) -> list[str]:
+    """The four means per strategy, with the denominator each rests on.
+
+    Printed because the denominators are not equal — `s1` was judged on 26 cases and `s3` on
+    32 — and a column of means with no `n` invites exactly the comparison the drop list
+    below it forbids.
+    """
+    metrics = list(part.get("metrics") or [])
+    by_strategy = part.get("by_strategy") or {}
+    rows = [
+        [name, cell.get("n", cell.get("cases")), *[cell.get(m) for m in metrics]]
+        for name in (part.get("strategies") or [])
+        if (cell := by_strategy.get(name))
+    ]
+    out = _h(3, "ממוצעים לפי אסטרטגיה")
+    out += _p(
+        "`n` = כמה מקרים נשפטו לאסטרטגיה הזו. המכנים אינם שווים, ולכן הפרש בין שני "
+        "ממוצעים אינו בהכרח הפרש בין שתי אסטרטגיות."
+    )
+    out += _table(["אסטרטגיה", "n", *[METRIC_HE.get(m, m) for m in metrics]], rows)
+    return out + _dropped(part)
+
+
+def _dropped(part: Mapping[str, Any]) -> list[str]:
+    """Which answered cases never reached a judge, and why — the missing denominator."""
+    dropped = part.get("dropped") or {}
+    if not dropped.get("count"):
+        return []
+    out = _p(
+        f"**{_fmt(dropped.get('count'))} מקרים שנענו לא הגיעו לשופט** "
+        f"({_fmt(dropped.get('by_strategy'))}). זה ההפרש בין המכנים למעלה, והוא אינו "
+        "מקרי: זרוע ה-baseline ספגה אותו הכי חזק."
+    )
+    return out + _table(
+        ["מקרה", "אסטרטגיה", "סיבה", "פירוט"],
+        [
+            [f"`{r.get('case_id')}`", r.get("strategy"), f"`{r.get('reason')}`", r.get("why")]
+            for r in dropped.get("rows") or []
+        ],
+    )
+
+
+def _citations(part: Mapping[str, Any]) -> list[str]:
+    """Citations per strategy, widened beside strict — the two are not the same number."""
+    rows = part.get("citations") or []
+    if not rows:
+        return []
+    out = _h(3, "ציטוטים לפי אסטרטגיה (רחב מול strict)")
+    out += _p(
+        "`valid` מקבל ציטוט שמצביע על ההורה של פריט ההקשר; `valid_strict` דורש את המזהה "
+        "שההקשר באמת הכיל. ההפרש הוא הרגל של S4: לצטט את פריט העבודה של שורה במקום "
+        "את השורה."
+    )
+    return out + _table(
+        [
+            "אסטרטגיה",
+            "תשובות",
+            "סירובים",
+            "ציטוטים",
+            "valid",
+            "valid strict",
+            "% בהקשר",
+            "% בהקשר strict",
+        ],
+        [
+            [
+                r.get("strategy"),
+                r.get("answers"),
+                r.get("refused"),
+                r.get("citations"),
+                r.get("valid"),
+                r.get("valid_strict"),
+                r.get("in_context_pct"),
+                r.get("in_context_strict_pct"),
+            ]
+            for r in rows
+        ],
+    )
 
 
 def _pairwise(part: Mapping[str, Any]) -> list[str]:
     pairwise = part.get("pairwise") or {}
     out = _h(3, f"pairwise מול ה-baseline (`{pairwise.get('baseline') or DASH}`)")
     out += _p(
-        "אותה שאלה, שתי תשובות, בסדר אקראי, בלי שם אסטרטגיה. `win_rate` סופר תיקו "
-        "כאי-ניצחון; `both_wrong` מדווח בנפרד כי שתי תשובות שגויות שמסכימות אינן תיקו."
+        "אותה שאלה, שתי תשובות, בסדר אקראי, בלי שם אסטרטגיה. **היחידה היא זוג ולא "
+        f"הכרעה:** {_fmt(pairwise.get('verdicts'))} הכרעות על {_fmt(pairwise.get('pairs'))} "
+        "זוגות, כי 20% מהזוגות נשפטו פעמיים. זוג ששני השופטים בחרו בו מנצחים שונים נספר "
+        'כתיקו ומופיע ב"הכרעות מפוצלות" למטה. `win_rate` סופר תיקו כאי-ניצחון; '
+        "`both_wrong` דורש שכל שופט שראה את הזוג יאמר זאת, ומדווח בנפרד כי שתי תשובות "
+        "שגויות שמסכימות אינן תיקו."
     )
-    return out + _table(
-        ["מתמודדת", "מקרים", "ניצחונות", "הפסדים", "תיקו", "שתיהן שגויות", "win rate", "בלי תיקו"],
+    out += _table(
+        [
+            "מתמודדת",
+            "n (זוגות)",
+            "הכרעות",
+            "ניצחונות",
+            "הפסדים",
+            "תיקו",
+            "מפוצלים",
+            "שתיהן שגויות",
+            "win rate",
+            "בלי תיקו",
+        ],
         [
             [
                 name,
-                row.get("cases"),
+                row.get("n", row.get("cases")),
+                row.get("verdicts"),
                 row.get("wins"),
                 row.get("losses"),
                 row.get("ties"),
+                row.get("split"),
                 row.get("both_wrong"),
                 row.get("win_rate"),
                 row.get("win_rate_excluding_ties"),
@@ -656,6 +796,23 @@ def _pairwise(part: Mapping[str, Any]) -> list[str]:
             for name, row in (pairwise.get("by_challenger") or {}).items()
         ],
     )
+    split = pairwise.get("split_verdicts") or []
+    if split:
+        out += _p("הכרעות מפוצלות — שני שופטים, שני מנצחים שונים, לכן תיקו:")
+        out += _table(
+            ["זוג", "שאלה", "מתמודדת", "מי ניצח לפי כל שופט", "shards"],
+            [
+                [
+                    f"`{s.get('pair_id')}`",
+                    s.get("qid"),
+                    s.get("challenger"),
+                    s.get("winners"),
+                    s.get("shards"),
+                ]
+                for s in split
+            ],
+        )
+    return out
 
 
 def _by_lang(part: Mapping[str, Any]) -> list[str]:
@@ -667,11 +824,15 @@ def _by_lang(part: Mapping[str, Any]) -> list[str]:
     """
     metrics = list(part.get("metrics") or [])
     rows = [
-        [LANG_HE.get(lang, lang), cell.get("cases"), *[cell.get(m) for m in metrics]]
+        [
+            LANG_HE.get(lang, lang),
+            cell.get("n", cell.get("cases")),
+            *[cell.get(m) for m in metrics],
+        ]
         for lang, cell in sorted((part.get("by_lang") or {}).items())
     ]
     out = _h(3, "לפי שפת השאלה")
-    return out + _table(["שפה", "מקרים", *[METRIC_HE.get(m, m) for m in metrics]], rows)
+    return out + _table(["שפה", "n", *[METRIC_HE.get(m, m) for m in metrics]], rows)
 
 
 def _agreement(part: Mapping[str, Any]) -> list[str]:
@@ -681,7 +842,8 @@ def _agreement(part: Mapping[str, Any]) -> list[str]:
         f"נמדדת רק על המקרים ששני shards שונים ניקדו: "
         f"{_fmt(agreement.get('overlap_cases'))} מקרים חופפים."
     )
-    return out + _table(
+    pairwise = agreement.get("pairwise") or {}
+    out += _table(
         ["מדד", "הושוו", "זהה", "בהפרש ≤1", "% זהה", "% ≤1", "הפרש ממוצע"],
         [
             [
@@ -694,7 +856,23 @@ def _agreement(part: Mapping[str, Any]) -> list[str]:
                 row.get("mean_abs_diff"),
             ]
             for metric, row in (agreement.get("by_metric") or {}).items()
+        ]
+        + [
+            [
+                "מנצח pairwise",
+                pairwise.get("compared"),
+                pairwise.get("exact"),
+                DASH,
+                pairwise.get("exact_pct"),
+                DASH,
+                DASH,
+            ]
         ],
+    )
+    return out + _p(
+        "השורה האחרונה היא הסולם השני, והיא זו שהטבלה שמעליה נשענת עליה: `win_rate` בנוי "
+        'על "מי ניצח", שאין לו "בהפרש ≤1". ההסכמה עליו נמוכה מההסכמה על הרובריקה — '
+        "כלומר דירוג של שתי תשובות פחות יציב מניקוד של אחת."
     )
 
 
@@ -704,10 +882,21 @@ def _crosscheck(part: Mapping[str, Any]) -> list[str]:
     out = _h(3, "שופט מול בדיקת הקוד (ציטוטים)")
     out += _p(
         "בדיקת הקוד בינארית: כל סוגר מרובע מצביע על משהו שהאחזור החזיר ושהגרף מחזיק. "
-        f"מתוך {_fmt(cross.get('compared'))} מקרים שהושוו, {_fmt(cross.get('agreed'))} "
-        f"בהסכמה ו-{_fmt(len(cross.get('disagreements') or []))} בסתירה "
-        f"({_fmt(cross.get('disagreement_pct'))}%). הסתירה נרשמת רק בקצוות — "
-        "1 של השופט מתיישב עם שתי ההכרעות."
+        "הסתירה נרשמת רק בקצוות — 1 של השופט מתיישב עם שתי ההכרעות. **הגרף זז בין "
+        "האחזור לבדיקה** (הפרוסה האינקרמנטלית עשתה re-partition לקהילות), ולכן סתירה "
+        "שנובעת ממזהה שהאחזור באמת החזיר ושנמחק אחר כך מופרדת מטעות שופט אמיתית."
+    )
+    out += _table(
+        ["פירוק", "מקרים"],
+        [
+            ["הושוו", cross.get("compared")],
+            ["בהסכמה", cross.get("agreed")],
+            ["בסתירה מול הגרף עכשיו", cross.get("disagree_now")],
+            ["מתוכן: היו ב-snapshot של האחזור", cross.get("disagree_but_in_snapshot")],
+            ["מתוכן: טעות שופט אמיתית", cross.get("real_judge_error")],
+            ["אילו", cross.get("real_judge_errors")],
+            ["% סתירה", cross.get("disagreement_pct")],
+        ],
     )
     out += _table(
         ["מדד", "ערך"],
@@ -715,17 +904,25 @@ def _crosscheck(part: Mapping[str, Any]) -> list[str]:
             ["מקרים שנבדקו בקוד", code.get("cases")],
             ["ציטוטים תקפים (קוד)", code.get("code_valid")],
             ["ציטוטים פסולים (קוד)", code.get("code_invalid")],
+            ["מהם תקפים מול ה-snapshot", code.get("code_valid_in_snapshot")],
             ["תשובות בלי ציטוט", code.get("no_citation")],
             ["ציטוט שלא היה בהקשר", code.get("not_in_context")],
-            ["ציטוט שאין לו צומת בגרף", code.get("not_in_graph")],
+            ["ציטוט שאין לו צומת בגרף עכשיו", code.get("not_in_graph")],
+            ["ציטוט שגם ב-snapshot לא היה", code.get("not_in_snapshot")],
         ],
     )
     rows = [
-        [d.get("case_id"), d.get("judge"), d.get("code"), d.get("why")]
+        [
+            d.get("case_id"),
+            d.get("judge"),
+            d.get("code"),
+            "היה ב-snapshot" if d.get("in_snapshot") else "טעות שופט",
+            d.get("why"),
+        ]
         for d in (cross.get("disagreements") or [])
     ]
     if rows:
-        out += _table(["מקרה", "ציון השופט", "הכרעת הקוד", "למה"], rows)
+        out += _table(["מקרה", "ציון השופט", "הכרעת הקוד", "סיווג", "למה"], rows)
     return out
 
 
@@ -769,17 +966,24 @@ def _layer3(doc: Mapping[str, Any]) -> list[str]:
         answers = part.get("answers") or {}
         judge = part.get("judge_merge") or {}
         judgments = judge.get("judgments") or {}
+        dropped = (part.get("dropped") or {}).get("count") or 0
         out = _p(
             f"שיפוט עיוור לפי רובריקה 0–2 על ארבעה מדדים (§5.4). "
             f"{_fmt(judgments.get('total'))} שיפוטים על {_fmt(judgments.get('cases'))} מקרים, "
-            f"{_fmt(judgments.get('pairs'))} השוואות pairwise, "
+            f"{_fmt((part.get('pairwise') or {}).get('verdicts'))} הכרעות pairwise על "
+            f"{_fmt((part.get('pairwise') or {}).get('pairs'))} זוגות, "
             f"{_fmt(judgments.get('rejected'))} נדחו. "
-            f"התשובות: {_fmt(answers.get('accepted'))} התקבלו מתוך "
-            f"{_fmt(answers.get('cases'))} מקרים שנבנו."
+            f"**המסלול של מצב A:** {_fmt(answers.get('cases'))} מקרים נבנו, "
+            f"{_fmt(answers.get('accepted'))} תשובות התקבלו במיזוג, "
+            f"{_fmt(dropped)} נשמטו לפני השיפוט; "
+            f"{_fmt(answers.get('judged'))} מקרים נשפטו בפועל (מצב A + מצב B יחד, "
+            "שכן תשובות מצב B מוזגו בנפרד)."
         )
         out += _h(3, "מטריצה: אסטרטגיה × סוג שאלה (ממוצעי השופטים)")
         out += _judge_matrix(part)
+        out += _by_strategy(part)
         out += _by_lang(part)
+        out += _citations(part)
         out += _pairwise(part)
         out += _agreement(part)
         out += _crosscheck(part)
@@ -800,6 +1004,21 @@ def _layer3(doc: Mapping[str, Any]) -> list[str]:
 
 
 # ------------------------------------------------------------------------- incremental
+
+
+def _rollback(rollback: Mapping[str, Any]) -> list[str]:
+    """What the reset dry run said it would delete, per label — counted, not quoted."""
+    if not rollback.get("present"):
+        return []
+    out = _h(3, "rollback — הרצה יבשה")
+    out += _p(
+        f"`{rollback.get('command')}` — לא הופעל "
+        f"(`applied={_fmt(rollback.get('applied'))}`). {rollback.get('note')}"
+    )
+    return out + _table(
+        ["מה היה נמחק", "כמה"],
+        [[label, count] for label, count in (rollback.get("counts") or {}).items()],
+    )
 
 
 def _incremental(doc: Mapping[str, Any]) -> list[str]:
@@ -825,29 +1044,64 @@ def _incremental(doc: Mapping[str, Any]) -> list[str]:
                 for r in part.get("steps") or []
             ],
         )
+        summary = part.get("summary") or {}
         out += _h(3, "מה נוסף לגרף")
+        out += _p(
+            "שורה לכל מדד, בשמו. הרשימה של 645 מזהי הקהילות שהשתנו נספרת כאן ולא מודפסת — "
+            "היא ב-`data/reports/incremental.json`, וזה המקום לקרוא אותה."
+        )
         out += _table(
-            ["חתך", "ערך"],
+            ["מדד", "ערך"],
             [
-                ["גרף", part.get("graph")],
-                ["chunks", part.get("chunks")],
-                ["ישויות", part.get("entities")],
-                ["קהילות", part.get("communities")],
+                ["צמתים שנוספו", summary.get("nodes_added")],
+                ["קשתות שנוספו", summary.get("edges_added")],
+                ["chunks שנוספו", summary.get("chunks_added")],
+                ["ישויות חדשות", summary.get("entities_minted")],
+                ["קהילות לפני", summary.get("communities_before")],
+                ["קהילות אחרי", summary.get("communities_after")],
+                ["קהילות שהשתנו (member_hash)", summary.get("communities_changed")],
+                ["דוחות קהילה שנשמרו", summary.get("reports_kept")],
+                ["דוחות קהילה שאבדו", summary.get("reports_lost")],
+                ["כיסוי חברים בקהילה מסוכמת — לפני (%)", summary.get("coverage_before")],
+                ["כיסוי חברים בקהילה מסוכמת — אחרי (%)", summary.get("coverage_after")],
             ],
         )
+        out += _rollback(part.get("rollback") or {})
         questions = part.get("questions") or []
         out += _h(3, "חמש השאלות על הפריטים החדשים")
+        out += _p(
+            "מצב A (אחזור קבוע, בלי סוכן) מול מצב B (הסוכן בוחר כלים). `ציטוט תקף` הוא "
+            "המדד הדטרמיניסטי — כל סוגר מרובע מצביע על צומת שקיים."
+        )
         out += _table(
-            ["שאלה", "ציטוט תקף", "פירוט"],
+            [
+                "שאלה",
+                "סוג",
+                "route",
+                "אסטרטגיה מובילה",
+                "recall",
+                "A: ציטוט תקף",
+                "B: ציטוטים תקפים",
+                "B: ציטוט תקף",
+            ],
             [
                 [
-                    q.get("qid") or q.get("id") or q.get("question"),
-                    q.get("citation_valid"),
-                    q.get("note") or q.get("detail"),
+                    q.get("qid"),
+                    q.get("type"),
+                    q.get("route"),
+                    q.get("best_strategy"),
+                    q.get("best_recall"),
+                    q.get("mode_a_citation_valid"),
+                    f"{_fmt(q.get('mode_b_citations_valid'))}/{_fmt(q.get('mode_b_citations'))}",
+                    q.get("mode_b_citation_valid"),
                 ]
                 for q in questions
             ],
         )
+        a_ok = sum(1 for q in questions if q.get("mode_a_citation_valid"))
+        b_ok = sum(1 for q in questions if q.get("mode_b_citation_valid"))
+        if questions:
+            out += _p(f"סיכום נגזר: מצב A {a_ok}/{len(questions)} · מצב B {b_ok}/{len(questions)}.")
         problems = part.get("problems") or []
         if problems:
             out += _p("⚠️ הריצה אינה שלמה לפי `validate_incremental`:")
@@ -881,6 +1135,13 @@ def _when_what(doc: Mapping[str, Any]) -> list[str]:
         out += _p(
             "⚠️ עמודות הנכונוּת ריקות עד ש-`brain eval judge merge` ירוץ; עמודות ה-recall כבר נגזרות."
         )
+    out += _p(f"**{part.get('divergence_line')}**")
+    out += _p(
+        "שלוש עמודות ה-Δ שייכות ל**מובילת ה-recall** ולא למובילת הנכונוּת — העמודה "
+        '"עלות מיוחסת ל" אומרת למי בדיוק. `n` ליד כל מוביל הוא מספר השאלות שהתא נשען '
+        f"עליהן; מתחת ל-{rb_min_leader_n()} השורה מסמנת `n<{rb_min_leader_n()}` ולא קוראת "
+        'לאסטרטגיה "מובילה".'
+    )
     out += _table(
         [
             "סוג שאלה",
@@ -890,29 +1151,68 @@ def _when_what(doc: Mapping[str, Any]) -> list[str]:
             "מובילה בנכונוּת",
             "נכונוּת",
             "נכונוּת baseline",
+            "עלות מיוחסת ל",
             "Δ latency p50 (ms)",
             "Δ tokens p50",
             "Δ Cypher",
+            "עלות מובילת הנכונוּת",
             "הערה",
         ],
         [
             [
                 _type_label(row["type"]),
-                (row.get("best_recall") or {}).get("strategy"),
+                _leader(row.get("best_recall")),
                 (row.get("best_recall") or {}).get("value"),
                 row.get("baseline_recall"),
-                (row.get("best_correctness") or {}).get("strategy"),
+                _leader(row.get("best_correctness")),
                 (row.get("best_correctness") or {}).get("value"),
                 row.get("baseline_correctness"),
+                _code(row.get("cost_attributed_to")),
                 row.get("latency_delta_ms"),
                 row.get("tokens_delta"),
                 row.get("cypher_delta"),
+                _correctness_cost(row.get("correctness_cost") or {}),
                 row.get("note"),
             ]
             for row in part.get("rows") or []
         ],
     )
-    return out
+    lines = [
+        f"- {row['leaders_line']}" for row in part.get("rows") or [] if row.get("leaders_line")
+    ]
+    return out + (lines + [""] if lines else [])
+
+
+def rb_min_leader_n() -> int:
+    from brain.eval.report_build import MIN_LEADER_N
+
+    return MIN_LEADER_N
+
+
+def _code(name: Any) -> str:
+    return f"`{name}`" if name else DASH
+
+
+def _leader(best: Mapping[str, Any] | None) -> str:
+    """A leader's name with its `n`, or a dash when the `n` is too small to mean anything."""
+    if not best:
+        return DASH
+    if not best.get("enough"):
+        return f"{DASH}, n<{rb_min_leader_n()} (`{best.get('strategy')}`, n={_fmt(best.get('n'))})"
+    return f"`{best.get('strategy')}` (n={_fmt(best.get('n'))})"
+
+
+def _correctness_cost(cost: Mapping[str, Any]) -> str:
+    """The correctness leader's own Δ — or a dash and the reason nobody measured it."""
+    if not cost.get("strategy"):
+        return DASH
+    if not cost.get("available"):
+        return f"{DASH} ({cost.get('why')})"
+    return (
+        f"Δ latency {_fmt(cost.get('latency_delta_ms'))} · "
+        f"Δ tokens {_fmt(cost.get('tokens_delta'))} · "
+        f"Δ Cypher {_fmt(cost.get('cypher_delta'))}"
+    )
 
 
 # --------------------------------------------------------------- the planner's two blocks
