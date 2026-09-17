@@ -27,6 +27,14 @@ ADR-0005 §3: the last step of the POC is deleting it. Three scopes, composable:
     slice `sources.yaml` describes — is untouched, which is what makes the incremental
     test of spec §5.5 repeatable: run it, measure it, take it out, run it again.
 
+    It also takes the slice back out of the **provenance** it left on things that survive
+    it. An increment can evidence an edge between two base entities: no endpoint is the
+    slice's, so no `DETACH DELETE` reaches it, and the graph would be left holding an edge
+    whose only evidence is a batch and a chunk that are gone. Such an edge is deleted; one
+    the base corpus also evidences keeps its base batches and loses the slice's from
+    `batch_ids` and `evidence_chunk_ids` — the inverse of the union
+    `brain extract merge --slice` applies on the way in.
+
     Two things it deliberately does **not** do, and says so in the manifest: it keeps
     ``data/raw/<source>/since-*/`` (re-running `brain canon` would bring the records
     straight back — pass ``--data`` to remove the raw pages too), and it keeps the
@@ -59,6 +67,8 @@ from typing import Any
 
 from brain.canon.io import read_jsonl
 from brain.canon.models import BASE_SLICE, INCREMENTAL_SLICE, Container
+from brain.extract.graph import LLM_RELATION_TYPES
+from brain.extract.graph import TOUCHED_LABELS as EXTRACT_LABELS
 from brain.graph.context import GraphContext
 from brain.graph.mapping import CONTAINER_KEY, container_label
 from brain.graph.provenance import LEDGER_FILENAME as SYNTHETIC_LEDGER
@@ -234,6 +244,22 @@ def format_manifest(manifest: Manifest) -> str:
                 f"  {name:<10} {verb} {sl['chunks_orphaned_by_parent']:>7} chunks whose parent "
                 "record is gone"
             )
+        prov = sl.get("provenance") or {}
+        if prov.get("edges_deleted"):
+            lines.append(
+                f"  {name:<10} {verb} {prov['edges_deleted']:>7} LLM edges between surviving "
+                "nodes whose only evidence is this slice"
+            )
+        for key, what in (
+            ("edges_stripped", "LLM edges"),
+            ("entities_stripped", "entities"),
+        ):
+            if prov.get(key):
+                lines.append(
+                    f"  {name:<10} {'stripped' if manifest.applied else 'would strip':<7} "
+                    f"{prov[key]:>7} {what} of this slice's batch ids and evidence chunks "
+                    "(the base corpus still evidences them)"
+                )
         if sl.get("ledger_rows_dropped"):
             lines.append(
                 f"  {name:<10} {verb} {sl['ledger_rows_dropped']} resolution-ledger row(s) "
@@ -730,10 +756,166 @@ def wipe_slice(
     return out
 
 
+#: Rows per provenance transaction. The same budget the node sweep deletes with.
+PROVENANCE_ROWS = 1000
+
+
+def slice_chunk_ids(ctx: GraphContext, slice_: str) -> list[str]:
+    """Every chunk id carrying this slice — read before anything is deleted.
+
+    It is what an edge's `evidence_chunk_ids` has to be stripped of, and after the chunk
+    sweep there is nothing left to read the list off.
+    """
+    if "Chunk" not in existing_labels(ctx):
+        return []
+    rows = ctx.read(
+        f"MATCH (c:{ctx.label('Chunk')}) WHERE c.slice = $slice RETURN c.id AS id ORDER BY id",
+        slice=slice_,
+    )
+    return [str(r["id"]) for r in rows]
+
+
+def _survives(ctx: GraphContext, var: str) -> str:
+    """This node is not one the slice sweep is about to delete.
+
+    Used identically in both modes, which is what makes the dry run's prediction and the
+    apply's count the same number: predicting, the doomed nodes are all still there and
+    this clause excludes them; applying, they are already gone and it excludes nothing.
+    """
+    return (
+        f"coalesce({var}.`slice`, '{BASE_SLICE}') <> $slice "
+        f"AND NOT ({var}:{ctx.label('Entity')} AND {var}.`id` IN $doomed)"
+    )
+
+
+def _llm_edge_match(ctx: GraphContext) -> str:
+    """The edges `brain extract merge` writes, in this namespace and no other.
+
+    Relationship types are not namespaced, so the label list is the only thing keeping a
+    scratch run's `MENTIONS` apart from the real graph's — the same guard
+    `brain.extract.graph.provenance_gaps` uses, and for the same reason.
+    """
+    labelled = " OR ".join(f"a:{ctx.label(label)}" for label in EXTRACT_LABELS)
+    return f"MATCH (a)-[r]->(b)\nWHERE type(r) IN $types AND ({labelled})\n"
+
+
+#: `batch_ids` entries this slice wrote. `brain extract build --slice incremental` puts the
+#: slice in front of every batch id it plans (`incremental/shard-01/001`), so "did this
+#: slice evidence it" is a prefix test and needs no second table.
+def _batch_prefix(slice_: str) -> str:
+    return f"{slice_}/"
+
+
+def slice_provenance(ctx: GraphContext, slice_: str, *, apply: bool) -> dict[str, Any]:
+    """Take the slice back out of the provenance it left on nodes and edges that survive.
+
+    The node sweep cannot see this. An increment can evidence a `DEPENDS_ON` between two
+    *base* entities: the edge hangs off nothing the slice owns, so `DETACH DELETE` never
+    reaches it, and after `brain reset --slice` the graph would still hold an edge whose
+    only evidence is a batch and a chunk that no longer exist. Two rules, the inverse of
+    :func:`brain.extract.graph.union_provenance`:
+
+    * every `batch_ids` entry is this slice's — the slice is the whole reason the edge is
+      there, so the edge goes;
+    * some are and some are not — the base batches still say it, so the edge stays and the
+      slice's batch ids and evidence chunk ids come out of its arrays. `batch_id` and
+      `shard` are re-derived from what is left, because first-seen must not name a batch
+      the reset just removed.
+
+    Entities take the second rule only. An entity whose evidence is *all* in the slice is
+    already :func:`entities_only_in_slice`'s business, decided on surviving chunks rather
+    than on batch ids — one question, one owner.
+    """
+    if "Entity" not in existing_labels(ctx):
+        return {"edges_deleted": 0, "edges_stripped": 0, "entities_stripped": 0}
+    params: dict[str, Any] = {
+        "types": list(LLM_RELATION_TYPES),
+        "slice": slice_,
+        "prefix": _batch_prefix(slice_),
+        "doomed": entities_only_in_slice(ctx, slice_),
+        "chunks": slice_chunk_ids(ctx, slice_),
+    }
+    mine = "any(x IN r.`batch_ids` WHERE x STARTS WITH $prefix)"
+    theirs = "any(x IN r.`batch_ids` WHERE NOT x STARTS WITH $prefix)"
+    scope = (
+        _llm_edge_match(ctx)
+        + f"  AND r.`batch_ids` IS NOT NULL AND {mine}\n"
+        + f"  AND ({_survives(ctx, 'a')}) AND ({_survives(ctx, 'b')})\n"
+    )
+
+    counted = ctx.read(
+        scope + f"RETURN sum(CASE WHEN {theirs} THEN 0 ELSE 1 END) AS only, "
+        f"sum(CASE WHEN {theirs} THEN 1 ELSE 0 END) AS mixed",
+        **params,
+    )
+    row = counted[0] if counted else {}
+    out = {
+        "edges_deleted": int(row.get("only") or 0),
+        "edges_stripped": int(row.get("mixed") or 0),
+        "entities_stripped": _entities_with_mixed_provenance(ctx, params),
+        "types": list(LLM_RELATION_TYPES),
+        "slice_chunks": len(params["chunks"]),
+        "rule": "an edge evidenced only by this slice is deleted; one the base corpus also "
+        "evidences keeps its base batches and loses the slice's from batch_ids and "
+        "evidence_chunk_ids. The inverse of the union `brain extract merge --slice` applies.",
+    }
+    if not apply:
+        return out
+
+    while ctx.write(
+        scope + f"  AND NOT {theirs}\nWITH r LIMIT {PROVENANCE_ROWS} DELETE r", **params
+    ).get("relationships_deleted"):
+        pass
+    _strip(ctx, scope + f"  AND {theirs}\n", "r", params)
+    _strip(ctx, _mixed_entity_match(ctx), "e", params)
+    return out
+
+
+#: Keep what is not this slice's, and re-derive first-seen from it. `batch_ids` is written
+#: sorted by the union, so `head` is the earliest surviving batch — the same `min` the
+#: merge took.
+_STRIP = (
+    "WITH {v}, [x IN {v}.`batch_ids` WHERE NOT x STARTS WITH $prefix] AS kept,\n"
+    "  [c IN coalesce({v}.`evidence_chunk_ids`, []) WHERE NOT c IN $chunks] AS evidence\n"
+    "WITH {v}, kept, evidence LIMIT {n}\n"
+    "SET {v}.`batch_ids` = kept, {v}.`evidence_chunk_ids` = evidence,\n"
+    "  {v}.`batch_id` = head(kept), {v}.`shard` = head(split(head(kept), '/'))"
+)
+
+
+def _strip(ctx: GraphContext, scope: str, var: str, params: dict[str, Any]) -> None:
+    """Trim the slice out of the arrays, in batches, until nothing matches any more.
+
+    The loop terminates because the `SET` is what stops a row matching: once its
+    `batch_ids` holds no entry with the slice prefix, the `any(...)` in `scope` is false.
+    """
+    cypher = scope + _STRIP.format(v=var, n=PROVENANCE_ROWS)
+    while ctx.write(cypher, **params).get("properties_set"):
+        pass
+
+
+def _mixed_entity_match(ctx: GraphContext) -> str:
+    return (
+        f"MATCH (e:{ctx.label('Entity')})\n"
+        "WHERE e.`batch_ids` IS NOT NULL AND NOT e.`id` IN $doomed\n"
+        "  AND any(x IN e.`batch_ids` WHERE x STARTS WITH $prefix)\n"
+        "  AND any(x IN e.`batch_ids` WHERE NOT x STARTS WITH $prefix)\n"
+    )
+
+
+def _entities_with_mixed_provenance(ctx: GraphContext, params: dict[str, Any]) -> int:
+    rows = ctx.read(_mixed_entity_match(ctx) + "RETURN count(e) AS c", **params)
+    return int(rows[0]["c"]) if rows else 0
+
+
 def _wipe_slice_graph(ctx: GraphContext, slice_: str, *, apply: bool) -> dict[str, Any]:
     present = existing_labels(ctx)
     # Before the sweep: once the chunks are gone the evidence question is unanswerable.
     entity_ids = entities_only_in_slice(ctx, slice_)
+    # Same reason, one layer over: the provenance the slice left on nodes and edges that
+    # survive it has to be read — and, applying, removed — while the chunks it names are
+    # still there to be named.
+    provenance = slice_provenance(ctx, slice_, apply=apply)
     by_label: dict[str, int] = {}
     counters: dict[str, int] = {}
 
@@ -769,6 +951,7 @@ def _wipe_slice_graph(ctx: GraphContext, slice_: str, *, apply: bool) -> dict[st
         "chunks_orphaned_by_parent": orphans,
         "entities_only_in_slice": len(entity_ids),
         "entity_ids": entity_ids[:50],
+        "provenance": provenance,
         "counters": counters,
     }
 

@@ -22,17 +22,88 @@ _LIMIT = re.compile(r"WITH n LIMIT (?P<limit>\d+)")
 
 
 class FakeGraph:
-    """Nodes are `(label, key, props)`; edges are `(src_index, dst_index[, type])`."""
+    """Nodes are `(label, key, props)`; edges are `(src_index, dst_index[, type[, props]])`.
+
+    Edge properties matter since `--slice` learned to take its own provenance back out of
+    edges between two surviving nodes: the rule is about `batch_ids` and
+    `evidence_chunk_ids`, not about which nodes an edge happens to join.
+    """
 
     def __init__(self, nodes: list[tuple[str, str, dict[str, Any]]], edges=()) -> None:
         self.nodes = [
             {"label": label, "key": key, "props": dict(props)} for label, key, props in nodes
         ]
-        self.edges = [(e[0], e[1], e[2] if len(e) > 2 else "REL") for e in edges]
+        self.edges = [
+            {
+                "src": e[0],
+                "dst": e[1],
+                "type": e[2] if len(e) > 2 else "REL",
+                "props": dict(e[3]) if len(e) > 3 else {},
+            }
+            for e in edges
+        ]
         self.queries: list[str] = []
 
     def _incoming(self, index: int, rel: str) -> bool:
-        return any(b == index and t == rel for _a, b, t in self.edges)
+        return any(e["dst"] == index and e["type"] == rel for e in self.edges)
+
+    # -- the provenance sweep of `--slice` ---------------------------------
+
+    def _survives(self, index: int, params: dict[str, Any]) -> bool:
+        """The clause `brain.reset._survives` writes, in Python."""
+        node = self.nodes[index]
+        if node.get("deleted"):
+            return False
+        if node["props"].get("slice", "base") == params.get("slice"):
+            return False
+        doomed = set(params.get("doomed") or [])
+        return not (node["label"] == "Entity" and node["props"].get("id", node["key"]) in doomed)
+
+    def _provenance_edges(self, cypher: str, params: dict[str, Any]) -> list[dict[str, Any]]:
+        """Edges in scope for the sweep: our types, our labels, evidenced by this slice."""
+        types = set(params.get("types") or [])
+        labels = set(re.findall(r"a:`([^`]+)`", cypher))
+        prefix = params.get("prefix") or ""
+        out = []
+        for edge in self.edges:
+            batches = edge["props"].get("batch_ids")
+            if edge["type"] not in types or self.nodes[edge["src"]]["label"] not in labels:
+                continue
+            if not batches or not any(b.startswith(prefix) for b in batches):
+                continue
+            if not (self._survives(edge["src"], params) and self._survives(edge["dst"], params)):
+                continue
+            out.append(edge)
+        return out
+
+    def _mixed_entities(self, params: dict[str, Any]) -> list[dict[str, Any]]:
+        prefix = params.get("prefix") or ""
+        doomed = set(params.get("doomed") or [])
+        out = []
+        for node in self._live():
+            batches = node["props"].get("batch_ids")
+            if node["label"] != "Entity" or not batches:
+                continue
+            if node["props"].get("id", node["key"]) in doomed:
+                continue
+            if any(b.startswith(prefix) for b in batches) and any(
+                not b.startswith(prefix) for b in batches
+            ):
+                out.append(node)
+        return out
+
+    @staticmethod
+    def _strip(props: dict[str, Any], params: dict[str, Any]) -> None:
+        """`brain.reset._STRIP`, in Python: keep what is not the slice's, re-derive first-seen."""
+        prefix = params.get("prefix") or ""
+        kept = [b for b in props["batch_ids"] if not b.startswith(prefix)]
+        chunks = set(params.get("chunks") or [])
+        props["batch_ids"] = kept
+        props["evidence_chunk_ids"] = [
+            c for c in props.get("evidence_chunk_ids") or [] if c not in chunks
+        ]
+        props["batch_id"] = kept[0] if kept else None
+        props["shard"] = kept[0].split("/")[0] if kept else None
 
     # -- helpers -----------------------------------------------------------
 
@@ -77,7 +148,9 @@ class FakeGraph:
                     continue
                 if "NOT coalesce(c.synthetic, false)" in cypher and node["props"].get("synthetic"):
                     continue
-                parents = [a for a, b, t in self.edges if b == i and t == "HAS_CHUNK"]
+                parents = [
+                    e["src"] for e in self.edges if e["dst"] == i and e["type"] == "HAS_CHUNK"
+                ]
                 if not parents or all(
                     self.nodes[a]["props"].get("synthetic") is True for a in parents
                 ):
@@ -107,7 +180,9 @@ class FakeGraph:
                     continue
                 if node["props"].get("slice", "base") == wanted:
                     continue
-                parents = [a for a, b, t in self.edges if b == i and t == "HAS_CHUNK"]
+                parents = [
+                    e["src"] for e in self.edges if e["dst"] == i and e["type"] == "HAS_CHUNK"
+                ]
                 if not parents or all(
                     self.nodes[a]["props"].get("slice") == wanted for a in parents
                 ):
@@ -119,7 +194,26 @@ class FakeGraph:
             ours = {
                 i for i, n in enumerate(self.nodes) if n["label"] in labels and not n.get("deleted")
             }
-            return [{"c": sum(1 for a, b, _t in self.edges if a in ours or b in ours)}]
+            return [{"c": sum(1 for e in self.edges if e["src"] in ours or e["dst"] in ours)}]
+        if "RETURN c.id AS id ORDER BY id" in cypher:
+            # the slice's chunk ids, read before the sweep deletes them
+            return sorted(
+                (
+                    {"id": n["props"].get("id", n["key"])}
+                    for n in self._live()
+                    if n["label"] == "Chunk" and n["props"].get("slice") == params.get("slice")
+                ),
+                key=lambda row: row["id"],
+            )
+        if "AS only" in cypher and "AS mixed" in cypher:
+            prefix = params.get("prefix") or ""
+            found = self._provenance_edges(cypher, params)
+            mixed = [
+                e for e in found if any(not b.startswith(prefix) for b in e["props"]["batch_ids"])
+            ]
+            return [{"only": len(found) - len(mixed), "mixed": len(mixed)}]
+        if "any(x IN e.`batch_ids`" in cypher and "RETURN count(e) AS c" in cypher:
+            return [{"c": len(self._mixed_entities(params))}]
         if "e.evidence_chunk_ids" in cypher:
             chunks = {n["key"] for n in self._live() if n["label"] == "Chunk"}
             stranded = [
@@ -137,6 +231,33 @@ class FakeGraph:
     def write(self, cypher: str, **params: Any) -> dict[str, int]:
         self.queries.append(cypher)
         counters = dict.fromkeys(COUNTER_FIELDS, 0)
+        if "DELETE r" in cypher and "DETACH" not in cypher:
+            prefix = params.get("prefix") or ""
+            doomed = [
+                e
+                for e in self._provenance_edges(cypher, params)
+                if all(b.startswith(prefix) for b in e["props"]["batch_ids"])
+            ]
+            self.edges = [e for e in self.edges if e not in doomed]
+            counters["relationships_deleted"] = len(doomed)
+            return counters
+        if "SET r.`batch_ids` = kept" in cypher:
+            prefix = params.get("prefix") or ""
+            mixed = [
+                e
+                for e in self._provenance_edges(cypher, params)
+                if any(not b.startswith(prefix) for b in e["props"]["batch_ids"])
+            ]
+            for edge in mixed:
+                self._strip(edge["props"], params)
+            counters["properties_set"] = 4 * len(mixed)
+            return counters
+        if "SET e.`batch_ids` = kept" in cypher:
+            mixed = self._mixed_entities(params)
+            for node in mixed:
+                self._strip(node["props"], params)
+            counters["properties_set"] = 4 * len(mixed)
+            return counters
         rows = self._match(cypher, params)
         if "DETACH DELETE" in cypher:
             limit = (
@@ -144,7 +265,7 @@ class FakeGraph:
             )
             doomed = rows[:limit]
             indexes = {self.nodes.index(n) for n in doomed}
-            kept = [e for e in self.edges if e[0] not in indexes and e[1] not in indexes]
+            kept = [e for e in self.edges if e["src"] not in indexes and e["dst"] not in indexes]
             counters["relationships_deleted"] = len(self.edges) - len(kept)
             self.edges = kept
             for node in doomed:

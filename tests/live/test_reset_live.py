@@ -419,12 +419,64 @@ def chunk_every_workitem(ctx: GraphContext) -> None:
         )
 
 
-def put_entity(ctx: GraphContext, entity_id: str, chunk_ids: list[str]) -> None:
+#: The batch ids the two halves write. A sliced build puts the slice in front of every id
+#: it plans, which is what makes "did the increment evidence this" a prefix test.
+BASE_BATCH = "shard-01/001"
+SLICE_BATCH = "incremental/shard-01/001"
+
+
+def provenance(batches: list[str], chunk_ids: list[str]) -> dict[str, object]:
+    """Exactly what `union_provenance` leaves on a node or an edge: sorted, first-seen."""
+    return {
+        "batch_ids": sorted(batches),
+        "batch_id": sorted(batches)[0],
+        "shard": sorted(batches)[0].split("/")[0],
+        "evidence_chunk_ids": sorted(chunk_ids),
+        "model": "opus:kg-extractor",
+        "extracted_at": "2026-09-17T00:00:00+00:00",
+    }
+
+
+PROPS = ", ".join(
+    f"x.`{p}` AS `{p}`"
+    for p in ("batch_ids", "batch_id", "shard", "evidence_chunk_ids", "model", "extracted_at")
+)
+
+
+def put_entity(ctx: GraphContext, entity_id: str, batches: list[str], chunks: list[str]) -> None:
     ctx.write(
-        f"MERGE (e:{ctx.label('Entity')} {{id: $id}}) SET e.evidence_chunk_ids = $ids",
+        f"MERGE (e:{ctx.label('Entity')} {{id: $id}}) SET e += $props",
         id=entity_id,
-        ids=chunk_ids,
+        props=provenance(batches, chunks),
     )
+
+
+def put_edge(
+    ctx: GraphContext, src: str, rel: str, dst: str, batches: list[str], chunks: list[str]
+) -> None:
+    """An LLM-derived edge between two `Entity` nodes — the shape the node sweep cannot see."""
+    ctx.write(
+        f"MATCH (a:{ctx.label('Entity')} {{id: $src}}), (b:{ctx.label('Entity')} {{id: $dst}})\n"
+        f"MERGE (a)-[r:`{rel}`]->(b) SET r += $props",
+        src=src,
+        dst=dst,
+        props=provenance(batches, chunks),
+    )
+
+
+def entity_props(ctx: GraphContext, entity_id: str) -> dict:
+    rows = ctx.read(f"MATCH (x:{ctx.label('Entity')} {{id: $id}}) RETURN {PROPS}", id=entity_id)
+    return dict(rows[0])
+
+
+def edge_props(ctx: GraphContext, src: str, rel: str, dst: str) -> list[dict]:
+    rows = ctx.read(
+        f"MATCH (:{ctx.label('Entity')} {{id: $src}})-[x:`{rel}`]->"
+        f"(:{ctx.label('Entity')} {{id: $dst}}) RETURN {PROPS}",
+        src=src,
+        dst=dst,
+    )
+    return [dict(r) for r in rows]
 
 
 def append_incremental_record(canonical: Path) -> None:
@@ -454,9 +506,19 @@ def rollback(ctx, canonical, loaded, tmp_path_factory):
     incremental exists, so the number the reset is compared against is a real earlier
     state of this graph rather than a recomputation after the fact.
     """
+    slice_chunk = f"chunk-{ROLLBACK_KEY}"
     chunk_every_workitem(ctx)
-    put_entity(ctx, "Feature|base", ["chunk-KAFKA-100"])
-    put_entity(ctx, "Feature|touched", ["chunk-KAFKA-101"])
+    put_entity(ctx, "Feature|base", [BASE_BATCH], ["chunk-KAFKA-100"])
+    put_entity(ctx, "Feature|touched", [BASE_BATCH], ["chunk-KAFKA-101"])
+    # An edge the base corpus evidences, which the increment will go on to agree with.
+    put_edge(
+        ctx, "Feature|touched", "MOTIVATED_BY", "Feature|base", [BASE_BATCH], ["chunk-KAFKA-101"]
+    )
+    pre_slice = {
+        "base": entity_props(ctx, "Feature|base"),
+        "touched": entity_props(ctx, "Feature|touched"),
+        "motivated_by": edge_props(ctx, "Feature|touched", "MOTIVATED_BY", "Feature|base"),
+    }
     before = full_census(ctx)
 
     append_incremental_record(canonical)
@@ -470,11 +532,23 @@ def rollback(ctx, canonical, loaded, tmp_path_factory):
     )
     assert code == 0, [c for c in report["checks"] if not c["ok"]]
     chunk_every_workitem(ctx)
-    put_entity(ctx, "Feature|new", [f"chunk-{ROLLBACK_KEY}"])
-    # the increment also cites an entity the base corpus already had: it must survive
-    put_entity(ctx, "Feature|touched", ["chunk-KAFKA-101", f"chunk-{ROLLBACK_KEY}"])
+    put_entity(ctx, "Feature|new", [SLICE_BATCH], [slice_chunk])
+    # the increment also cites an entity the base corpus already had: it must survive, and
+    # its arrays are what `union_provenance` leaves behind
+    put_entity(ctx, "Feature|touched", [BASE_BATCH, SLICE_BATCH], ["chunk-KAFKA-101", slice_chunk])
+    put_edge(
+        ctx,
+        "Feature|touched",
+        "MOTIVATED_BY",
+        "Feature|base",
+        [BASE_BATCH, SLICE_BATCH],
+        ["chunk-KAFKA-101", slice_chunk],
+    )
+    # The gap the review found: an edge between two *base* entities that only the increment
+    # evidences. No endpoint is the slice's, so no `DETACH DELETE` reaches it.
+    put_edge(ctx, "Feature|base", "DEPENDS_ON", "Feature|touched", [SLICE_BATCH], [slice_chunk])
     try:
-        yield {"canonical": canonical, "before": before}
+        yield {"canonical": canonical, "before": before, "pre_slice": pre_slice}
     finally:
         for label in ("Chunk", "Entity"):
             ctx.write(f"MATCH (n:{ctx.label(label)}) DETACH DELETE n")
@@ -511,6 +585,8 @@ def test_the_increment_moves_both_halves_of_the_census(ctx, rollback):
     assert now["nodes"]["Chunk"] == before["nodes"]["Chunk"] + 1
     assert now["nodes"]["Entity"] == before["nodes"]["Entity"] + 1
     assert any(now["edges"][t] > before["edges"].get(t, 0) for t in now["edges"])
+    # the edge between two base entities that only the increment evidences
+    assert now["edges"]["DEPENDS_ON"] == 1 and "DEPENDS_ON" not in before["edges"]
 
 
 def test_a_slice_reset_restores_the_exact_base_census(ctx, rollback, tmp_path):
@@ -549,3 +625,62 @@ def test_the_slice_reset_names_what_it_deleted_and_keeps_the_touched_entity(
     assert not ctx.read(
         f"MATCH (w:{ctx.label('WorkItem')} {{key: $key}}) RETURN w", key=ROLLBACK_KEY
     )
+
+
+def test_an_edge_only_the_increment_evidenced_goes_even_between_two_base_entities(
+    ctx, rollback, tmp_path
+):
+    """The gap the review found. `DEPENDS_ON` runs between two base entities, so the label
+    sweep never touches either end — but its only `batch_ids` entry is the slice's, and
+    after the reset the batch and the chunk it cites are both gone. An edge whose whole
+    evidence has been deleted is not a fact the graph may keep."""
+    reset_slice(ctx, rollback["canonical"], tmp_path)
+
+    assert edge_props(ctx, "Feature|base", "DEPENDS_ON", "Feature|touched") == []
+
+
+def test_an_edge_the_base_corpus_also_evidenced_keeps_only_its_base_provenance(
+    ctx, rollback, tmp_path
+):
+    """The other half of the rule: `MOTIVATED_BY` was there before the increment and the
+    increment agreed with it, so it stays — with exactly the arrays it had before, which is
+    the inverse of the union `brain extract merge --slice` applied on the way in."""
+    pre = rollback["pre_slice"]
+    mixed = edge_props(ctx, "Feature|touched", "MOTIVATED_BY", "Feature|base")
+    assert mixed[0]["batch_ids"] == [SLICE_BATCH, BASE_BATCH]  # the increment is on it now
+
+    reset_slice(ctx, rollback["canonical"], tmp_path)
+
+    assert edge_props(ctx, "Feature|touched", "MOTIVATED_BY", "Feature|base") == pre["motivated_by"]
+
+
+def test_the_entities_the_increment_touched_get_their_pre_slice_arrays_back(
+    ctx, rollback, tmp_path
+):
+    """`Feature|touched` survives either way — it always had base evidence. What it must not
+    keep is a `batch_ids` naming a batch the reset removed and an `evidence_chunk_ids`
+    naming a chunk that no longer exists."""
+    pre = rollback["pre_slice"]
+
+    report, _code = reset_slice(ctx, rollback["canonical"], tmp_path)
+
+    assert entity_props(ctx, "Feature|touched") == pre["touched"]
+    assert entity_props(ctx, "Feature|base") == pre["base"]  # never touched by the increment
+    assert report["slice"]["provenance"] == {
+        **report["slice"]["provenance"],
+        "edges_deleted": 1,
+        "edges_stripped": 1,
+        "entities_stripped": 1,
+    }
+
+
+def test_the_slice_dry_run_predicts_the_provenance_sweep_it_would_apply(ctx, rollback, tmp_path):
+    """The survivor clause is shared by both modes so these two numbers cannot drift:
+    predicting, the doomed nodes are still there and it excludes them; applying, they are
+    already gone and it excludes nothing."""
+    predicted = wipe_slice(rollback["canonical"], "incremental", ctx=ctx, apply=False)
+
+    applied = wipe_slice(rollback["canonical"], "incremental", ctx=ctx, apply=True)
+
+    assert predicted["provenance"] == applied["provenance"]
+    assert predicted["nodes_by_label"] == applied["nodes_by_label"]

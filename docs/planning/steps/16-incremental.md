@@ -63,6 +63,7 @@ uv run brain reset --slice incremental            # dry run: מדפיס ספיר
 uv run brain reset --slice incremental --yes      # מוחק
 ```
 מה נמחק: רשומות עם `slice: "incremental"` מחמשת הקבצים הקנוניים, הצמתים שלהן, ה-chunks שלהן, ישויות שכל chunk-הראיה שלהן בפרוסה הזאת, ושורות ledger שמצביעות על זהות שנמחקה.
+וגם — ה-**provenance** שהפרוסה הותירה על מה ששורד אותה. קשת שהאינקרמנטלי חילץ בין שתי ישויות **בסיס** לא תלויה באף צומת של הפרוסה, ולכן שום `DETACH DELETE` לא מגיע אליה: אם כל ה-`batch_ids` שלה הם של הפרוסה היא נמחקת, ואם הבסיס גם מעיד עליה היא נשארת ומאבדת מה-`batch_ids` ומה-`evidence_chunk_ids` את מה שהפרוסה הוסיפה (`batch_id`/`shard` נגזרים מחדש ממה שנשאר). אותו כלל לישויות עם provenance מעורב. זה ההיפוך של ה-union ש-`brain extract merge --slice` מבצע בכניסה.
 מה **נשאר**, והמניפסט אומר את זה: `data/raw/jira/since-2026-01-01/` (ריצת `brain canon` תחזיר את הרשומות — צריך `--data` כדי למחוק גם את הגלם) וצמתי `Community` (החברות בהן השתנתה, ורק `brain communities build` יודע להחזיר אותה).
 
 **איפה זה מוכח:** השורה עם `--yes` **לא רצה על הגרף האמיתי**. היא מוכחת ב-`tests/live/test_reset_live.py` במרחב ה-labels `_ResetTest`, על fixture שיש בו corpus בסיס + פרוסה אינקרמנטלית אמיתית (רשומה קנונית עם `slice: "incremental"` שנטענת דרך `run_load`, ה-chunks שלה וישות שכל ראיותיה בפרוסה). על הגרף האמיתי ה-rollback נמדד ב-**dry run בלבד** (26 ישויות), וזה מה שדווח.

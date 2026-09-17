@@ -28,7 +28,7 @@ class SliceGraph(FakeGraph):
     """`FakeGraph` plus the derive-and-stamp shape `--stamp-slice` emits."""
 
     def _chunk_slice(self, index: int) -> str:
-        parents = [a for a, b, t in self.edges if b == index and t == "HAS_CHUNK"]
+        parents = [e["src"] for e in self.edges if e["dst"] == index and e["type"] == "HAS_CHUNK"]
         if parents and all(
             self.nodes[a]["props"].get("slice", BASE_SLICE) == INCREMENTAL_SLICE for a in parents
         ):
@@ -116,7 +116,7 @@ def test_a_parentless_chunk_comes_out_base_rather_than_deletable(graph):
 
 def test_a_chunk_of_a_base_parent_and_an_incremental_one_is_base(graph):
     """`widest_slice` in the file, once more in the graph: one base parent makes it base."""
-    graph.edges.append((0, 3, "HAS_CHUNK"))
+    graph.edges.append({"src": 0, "dst": 3, "type": "HAS_CHUNK", "props": {}})
     stamp_slice(ctx(graph), echo=lambda _m: None)
     assert props(graph, "inc-1")["slice"] == BASE_SLICE
 

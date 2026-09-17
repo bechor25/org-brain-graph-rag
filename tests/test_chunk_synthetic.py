@@ -22,7 +22,7 @@ class StampGraph(FakeGraph):
     """`FakeGraph` plus the two derive-and-stamp shapes `--stamp-synthetic` emits."""
 
     def _chunk_syn(self, index: int) -> bool:
-        parents = [a for a, b, t in self.edges if b == index and t == "HAS_CHUNK"]
+        parents = [e["src"] for e in self.edges if e["dst"] == index and e["type"] == "HAS_CHUNK"]
         return bool(parents) and all(
             self.nodes[a]["props"].get("synthetic") is True for a in parents
         )

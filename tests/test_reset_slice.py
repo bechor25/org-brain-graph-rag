@@ -305,3 +305,141 @@ def test_the_cli_takes_slice_as_a_scope_of_its_own(runner):
     result = runner.invoke(app, ["reset"])
     assert result.exit_code == 2
     assert "--slice" in result.output
+
+
+# ------------------------------------------- the provenance the slice leaves behind (16)
+
+BASE_BATCH = "shard-01/001"
+SLICE_BATCH = "incremental/shard-01/001"
+
+
+def prov(batches: list[str], chunks: list[str], **kw) -> dict:
+    """What `union_provenance` leaves: sorted lists, first-seen `batch_id`/`shard`."""
+    first = kw.pop("batch_id", sorted(batches)[0])
+    return {
+        "batch_ids": sorted(batches),
+        "batch_id": first,
+        "shard": first.split("/")[0],
+        "evidence_chunk_ids": sorted(chunks),
+        **kw,
+    }
+
+
+@pytest.fixture
+def provenance_graph() -> FakeGraph:
+    """Two base entities and the three provenance cases the sweep has to tell apart.
+
+    The point of the fixture is that **no node here is in the slice**. Everything the node
+    sweep looks at survives; the only thing naming the increment is what the extraction
+    wrote onto the edges and the entities.
+    """
+    return FakeGraph(
+        nodes=[
+            ("Chunk", "c1", {"slice": "base"}),
+            ("Chunk", "c9", {"slice": "incremental"}),
+            (
+                "Entity",
+                "Feature|classic",
+                {"id": "Feature|classic", **prov([BASE_BATCH], ["c1"])},
+            ),
+            # the increment agreed with an entity the base corpus already had, and its
+            # `batch_id` happens to name the slice — first-seen has to be re-derived
+            (
+                "Entity",
+                "Feature|rebalance",
+                {
+                    "id": "Feature|rebalance",
+                    **prov([BASE_BATCH, SLICE_BATCH], ["c1", "c9"], batch_id=SLICE_BATCH),
+                },
+            ),
+        ],
+        edges=[
+            # only the increment evidences it, and neither end is the slice's
+            (2, 3, "DEPENDS_ON", prov([SLICE_BATCH], ["c9"])),
+            # the base corpus evidences it too, so it stays and loses the slice's half
+            (3, 2, "MOTIVATED_BY", prov([BASE_BATCH, SLICE_BATCH], ["c1", "c9"])),
+            # not this step's edge type: provenance or not, the sweep does not own it
+            (2, 3, "SAME_AS", prov([SLICE_BATCH], ["c9"])),
+        ],
+    )
+
+
+def test_the_dry_run_counts_the_provenance_it_would_take_back(data_dir, provenance_graph):
+    report = wipe_slice(
+        data_dir / "canonical", "incremental", ctx=ctx(provenance_graph), apply=False
+    )
+
+    assert report["provenance"] == {
+        **report["provenance"],
+        "edges_deleted": 1,
+        "edges_stripped": 1,
+        "entities_stripped": 1,
+        "slice_chunks": 1,
+    }
+    assert [e["type"] for e in provenance_graph.edges] == [
+        "DEPENDS_ON",
+        "MOTIVATED_BY",
+        "SAME_AS",
+    ]
+
+
+def test_an_edge_only_the_slice_evidenced_is_deleted_between_two_surviving_nodes(
+    data_dir, provenance_graph
+):
+    """The gap: no `DETACH DELETE` reaches this edge, because neither end is the slice's."""
+    wipe_slice(data_dir / "canonical", "incremental", ctx=ctx(provenance_graph), apply=True)
+
+    assert [e["type"] for e in provenance_graph.edges] == ["MOTIVATED_BY", "SAME_AS"]
+
+
+def test_a_mixed_edge_keeps_its_base_batches_and_re_derives_first_seen(data_dir, provenance_graph):
+    wipe_slice(data_dir / "canonical", "incremental", ctx=ctx(provenance_graph), apply=True)
+    kept = next(e for e in provenance_graph.edges if e["type"] == "MOTIVATED_BY")
+
+    assert kept["props"] == prov([BASE_BATCH], ["c1"])
+
+
+def test_a_mixed_entity_loses_the_slice_from_both_arrays(data_dir, provenance_graph):
+    """And `batch_id` stops naming a batch the reset just removed: it was the slice's."""
+    wipe_slice(data_dir / "canonical", "incremental", ctx=ctx(provenance_graph), apply=True)
+
+    assert provenance_graph.nodes[3]["props"] == {
+        "id": "Feature|rebalance",
+        **prov([BASE_BATCH], ["c1"]),
+    }
+    assert provenance_graph.nodes[2]["props"] == {
+        "id": "Feature|classic",
+        **prov([BASE_BATCH], ["c1"]),
+    }
+
+
+def test_an_edge_this_step_did_not_write_is_not_the_slice_sweep_s_business(
+    data_dir, provenance_graph
+):
+    """`SAME_AS` carries provenance too and is `brain resolve`'s, not extraction's. The
+    sweep is scoped to the closed type set for the same reason every other audit here is:
+    a rule that reaches outside what the step wrote is a rule nobody can review."""
+    wipe_slice(data_dir / "canonical", "incremental", ctx=ctx(provenance_graph), apply=True)
+    same_as = next(e for e in provenance_graph.edges if e["type"] == "SAME_AS")
+
+    assert same_as["props"] == prov([SLICE_BATCH], ["c9"])
+
+
+def test_the_manifest_says_the_provenance_it_took_back(data_dir, provenance_graph):
+    report, _code = run_reset(
+        data_dir=data_dir,
+        canonical_dir=data_dir / "canonical",
+        batches_dir=data_dir / "batches",
+        reports_dir=data_dir / "reports",
+        ctx=ctx(provenance_graph),
+        slice_="incremental",
+        confirmed=False,
+        write_report=False,
+        echo=lambda _m: None,
+    )
+    from brain.reset import Manifest
+
+    text = format_manifest(Manifest(scopes=["slice:incremental"], slice=report["slice"]))
+
+    assert "would delete       1 LLM edges" in text
+    assert "would strip" in text and "1 entities" in text
