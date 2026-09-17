@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from brain.chunk import graph as chunk_graph
+from brain.chunk.chunker import Chunk
 from brain.config import Settings
 from brain.extract import graph as extract_graph
 from brain.extract.build import MAX_BATCH_BYTES, BuildError, run_build
@@ -26,7 +27,18 @@ from brain.graph.client import GraphClient
 from brain.graph.context import GraphContext
 from brain.graph.runner import run_load, wipe
 from brain.graph.schema import apply_schema, drop_schema
-from tests.extract_helpers import MINI, MINI_MIN_CHARS, mini_chunks, write_chunks
+from brain.reset import entities_only_in_slice
+from tests.extract_helpers import (
+    MINI,
+    MINI_MIN_CHARS,
+    batch_input,
+    batch_output,
+    chunk_context,
+    entity,
+    mini_chunks,
+    relation,
+    write_chunks,
+)
 
 pytestmark = pytest.mark.live
 
@@ -456,3 +468,289 @@ def test_sample_prints_each_quote_inside_the_text_it_came_from(merged, graph, tm
         assert f"[[{row['quote']}]]" in row["context"] or row["quote"] in row["context"]
         assert row["supported"] is None  # the human fills this in
     assert any("quote:" in line for line in lines)
+
+
+# ------------------------------------------ a partial merge onto an existing entity (16)
+
+#: A namespace of its own, not `_Extract`: these tests merge twice over one graph and
+#: assert on what the *first* merge left behind, which the shared module fixture cannot
+#: promise once another test has written to it.
+SLICE_PREFIX = "_ExtrTest"
+SLICE = "incremental"
+SLICE_BATCH_ID = f"{SLICE}/shard-01/001"
+DECISION_NAME = "move assignment to the group coordinator"
+#: What `brain chunk --slice incremental` would write for a follow-up record: a new chunk,
+#: carrying the slice, whose text names something the corpus already extracted.
+SLICE_TEXT = (
+    "Follow-up for the Connect workers: move assignment to the group coordinator "
+    "applies to them too, and the Connect worker config gains a rebalance timeout."
+)
+NEW_IN_SLICE = "Connect worker rebalance timeout"
+
+
+@pytest.fixture(scope="module")
+def slice_graph(client, tmp_path_factory):
+    """The mini corpus, its chunks, and the two canned batches merged as the base corpus."""
+    ctx = GraphContext(client, prefix=SLICE_PREFIX)
+    _clean(ctx)
+    reports = tmp_path_factory.mktemp("extr-reports")
+    try:
+        apply_schema(ctx)
+        report, code = run_load(
+            client=client,
+            canonical_dir=MINI,
+            reports_dir=reports,
+            prefix=SLICE_PREFIX,
+            write_report=False,
+            echo=QUIET,
+        )
+        assert code == 0, [c for c in report["checks"] if not c["ok"]]
+        write_chunks(ctx, mini_chunks())
+
+        root = tmp_path_factory.mktemp("extr-base")
+        shutil.copytree(FIXTURES, root / "extract", ignore=shutil.ignore_patterns("README.md"))
+        base, code = run_merge(
+            ctx=ctx, batches_dir=root, reports_dir=reports, write_report=False, echo=QUIET
+        )
+        assert code == 0, base["rejected_batches"]
+        yield ctx
+    finally:
+        _clean(ctx)
+
+
+def slice_chunk_id(ctx: GraphContext) -> str:
+    """Write the increment's one chunk, hung off a work item the base corpus already has."""
+    chunk = Chunk(
+        parent_key="KAFKA-102",
+        parent_kind="WorkItem",
+        kind="description",
+        position=1,
+        text=SLICE_TEXT,
+        slice=SLICE,
+    )
+    write_chunks(ctx, [chunk])
+    return chunk.id
+
+
+def write_slice_batch(root: Path, chunk_id: str) -> Path:
+    """The `.in.json`/`.out.json` pair a sliced `brain extract build` + `kg-extractor` make.
+
+    It re-states one entity and one relation the corpus already holds, from new evidence —
+    which is the whole shape of an incremental extraction, and the shape that overwrote
+    three live entities' Plan 1 provenance before the union went in.
+    """
+    shard_dir = root / "extract" / SLICE / "shard-01"
+    shard_dir.mkdir(parents=True, exist_ok=True)
+    inp = batch_input(
+        [
+            chunk_context(
+                chunk_id=chunk_id,
+                parent_key="KAFKA-102",
+                parent_kind="WorkItem",
+                parent_title="KAFKA-102: Connect worker config changes",
+                position=1,
+                text=SLICE_TEXT,
+            )
+        ],
+        batch_id=SLICE_BATCH_ID,
+    )
+    out = batch_output(
+        batch_id=SLICE_BATCH_ID,
+        entities=[
+            entity(
+                kind="Decision",
+                name=DECISION_NAME,
+                description="Assignment is computed by the coordinator, for Connect too.",
+                quote=DECISION_NAME,
+                chunk_id=chunk_id,
+            ),
+            entity(
+                kind="Feature",
+                name=NEW_IN_SLICE,
+                description="A rebalance timeout added to the Connect worker config.",
+                quote="the Connect worker config gains a rebalance timeout",
+                chunk_id=chunk_id,
+            ),
+        ],
+        relations=[
+            relation(
+                type="DECIDES",
+                source="KIP-5",
+                target=DECISION_NAME,
+                evidence_chunk_id=chunk_id,
+            )
+        ],
+    )
+    (shard_dir / "001.in.json").write_text(json.dumps(inp, indent=2), encoding="utf-8")
+    (shard_dir / "001.out.json").write_text(json.dumps(out, indent=2), encoding="utf-8")
+    return root
+
+
+#: The RETURN clause both reads share, so the entity and the edge are asked exactly the
+#: same question — the union has to hold on both and a difference must not be a typo.
+PROVENANCE = (
+    "x.`evidence_chunk_ids` AS evidence, x.`batch_id` AS batch_id, "
+    "x.`batch_ids` AS batch_ids, x.`shard` AS shard, x.`model` AS model, "
+    "x.`extracted_at` AS extracted_at"
+)
+
+
+def decision_id(ctx: GraphContext) -> str:
+    rows = ctx.read(
+        f"MATCH (e:{ctx.label('Entity')}) WHERE e.kind = 'Decision' AND e.name = $name "
+        "RETURN e.id AS id",
+        name=DECISION_NAME,
+    )
+    assert len(rows) == 1, rows
+    return str(rows[0]["id"])
+
+
+def entity_provenance(ctx: GraphContext, entity_id: str) -> dict:
+    rows = ctx.read(
+        f"MATCH (x:{ctx.label('Entity')} {{id: $id}}) RETURN {PROVENANCE}", id=entity_id
+    )
+    return dict(rows[0])
+
+
+def decides_provenance(ctx: GraphContext, entity_id: str) -> dict:
+    rows = ctx.read(
+        f"MATCH (:{ctx.label('Document')} {{key: 'KIP-5'}})-[x:DECIDES]->"
+        f"(:{ctx.label('Entity')} {{id: $id}}) RETURN {PROVENANCE}",
+        id=entity_id,
+    )
+    assert len(rows) == 1, f"{len(rows)} DECIDES edges — a partial merge must not add one"
+    return dict(rows[0])
+
+
+@pytest.fixture(scope="module")
+def after_slice(slice_graph, tmp_path_factory):
+    """Base provenance, then one sliced merge over it. Returns both sides and the root."""
+    ctx = slice_graph
+    entity_id = decision_id(ctx)
+    before = {
+        "entity": entity_provenance(ctx, entity_id),
+        "decides": decides_provenance(ctx, entity_id),
+    }
+    chunk_id = slice_chunk_id(ctx)
+    root = write_slice_batch(tmp_path_factory.mktemp("extr-slice"), chunk_id)
+    report, code = run_merge(
+        ctx=ctx,
+        batches_dir=root,
+        reports_dir=tmp_path_factory.mktemp("extr-slice-reports"),
+        slice_=SLICE,
+        write_report=False,
+        echo=QUIET,
+    )
+    assert code == 0, report["rejected_batches"]
+    return {
+        "id": entity_id,
+        "chunk_id": chunk_id,
+        "before": before,
+        "root": root,
+        "report": report,
+    }
+
+
+def test_the_base_merge_left_the_decision_citing_one_chunk_and_one_batch(after_slice):
+    """The starting state the union has to preserve. Without it the next test can pass by
+    the entity never having had any provenance to lose."""
+    before = after_slice["before"]
+    assert before["entity"]["batch_ids"] == ["shard-01/002"]
+    assert len(before["entity"]["evidence"]) == 1
+    assert before["decides"]["batch_ids"] == ["shard-01/002"]
+
+
+def test_a_sliced_merge_keeps_the_corpus_evidence_on_the_entity_and_adds_its_own(
+    after_slice, slice_graph
+):
+    """The regression that damaged three live entities on 2026-09-17, through the real
+    `write_entities` — `union_provenance` being right is not the same as it being wired in.
+
+    `SET n += row.props` replaces a list property wholesale, so before the union the
+    entity came out of the slice merge citing only the slice's chunk and only the slice's
+    batch, and its Plan 1 evidence was gone with no record that it had ever been there.
+    """
+    before, after = (
+        after_slice["before"]["entity"],
+        entity_provenance(slice_graph, after_slice["id"]),
+    )
+
+    assert set(after["evidence"]) == set(before["evidence"]) | {after_slice["chunk_id"]}
+    assert after["batch_ids"] == sorted([SLICE_BATCH_ID, "shard-01/002"])
+    # `batch_id` and `shard` are first-seen, so they still name the batch that said it first
+    assert after["batch_id"] == before["batch_id"] == "shard-01/002"
+    assert after["shard"] == before["shard"]
+    assert after["model"] == extract_graph.MODEL
+
+
+def test_a_sliced_merge_keeps_the_corpus_evidence_on_the_edge_it_re_states(
+    after_slice, slice_graph
+):
+    """`write_relations` is the same wiring one layer over, and an edge that loses its
+    evidence loses the only answer `explain_edge` has."""
+    before = after_slice["before"]["decides"]
+    after = decides_provenance(slice_graph, after_slice["id"])
+
+    assert set(after["evidence"]) == set(before["evidence"]) | {after_slice["chunk_id"]}
+    assert after["batch_ids"] == sorted([SLICE_BATCH_ID, "shard-01/002"])
+    assert after["batch_id"] == before["batch_id"]
+
+
+def test_the_mention_the_corpus_wrote_is_not_touched_by_the_slice(after_slice, slice_graph):
+    """Two chunks, two `MENTIONS`: a partial merge adds an edge, it does not move one."""
+    rows = slice_graph.read(
+        f"MATCH (c:{slice_graph.label('Chunk')})-[m:MENTIONS]->"
+        f"(:{slice_graph.label('Entity')} {{id: $id}}) "
+        "RETURN c.id AS chunk, m.batch_id AS batch_id, m.batch_ids AS batch_ids ORDER BY chunk",
+        id=after_slice["id"],
+    )
+    by_chunk = {r["chunk"]: r for r in rows}
+    assert set(by_chunk) == set(after_slice["before"]["entity"]["evidence"]) | {
+        after_slice["chunk_id"]
+    }
+    assert by_chunk[after_slice["chunk_id"]]["batch_ids"] == [SLICE_BATCH_ID]
+    base_chunk = after_slice["before"]["entity"]["evidence"][0]
+    assert by_chunk[base_chunk]["batch_ids"] == ["shard-01/002"]
+
+
+def test_a_second_partial_merge_changes_nothing(after_slice, slice_graph, tmp_path_factory):
+    """Idempotency of the *partial* path. A union that appended rather than set-unioned
+    would grow the arrays on every re-merge and nothing else would notice."""
+    ctx = slice_graph
+    before = {
+        "entity": entity_provenance(ctx, after_slice["id"]),
+        "decides": decides_provenance(ctx, after_slice["id"]),
+        "census": extract_graph.census(ctx),
+    }
+    ctx.counters.update(dict.fromkeys(ctx.counters, 0))
+
+    report, code = run_merge(
+        ctx=ctx,
+        batches_dir=after_slice["root"],
+        reports_dir=tmp_path_factory.mktemp("extr-slice-again"),
+        slice_=SLICE,
+        write_report=False,
+        echo=QUIET,
+    )
+
+    assert code == 0
+    assert report["counters"]["nodes_created"] == 0
+    assert report["counters"]["relationships_created"] == 0
+    assert entity_provenance(ctx, after_slice["id"]) == before["entity"]
+    assert decides_provenance(ctx, after_slice["id"]) == before["decides"]
+    assert extract_graph.census(ctx) == before["census"]
+    assert extract_graph.provenance_gaps(ctx)["total"] == 0
+
+
+def test_after_the_partial_merge_the_slice_reset_does_not_claim_the_corpus_entity(
+    after_slice, slice_graph
+):
+    """Why the union is not a cosmetic fix. `brain reset --slice` deletes the entities whose
+    *every* surviving evidence chunk is in the slice; an entity the merge had stripped down
+    to the slice's one chunk answered that description, and 26 of them were counted for
+    deletion on the live graph. Read-only here — nothing is applied."""
+    doomed = entities_only_in_slice(slice_graph, SLICE)
+
+    assert after_slice["id"] not in doomed
+    assert [d for d in doomed if d.endswith(NEW_IN_SLICE.casefold())] == doomed, doomed
+    assert len(doomed) == 1, "only the entity the increment invented belongs to the increment"
