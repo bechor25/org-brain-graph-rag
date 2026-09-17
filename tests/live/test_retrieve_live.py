@@ -578,6 +578,48 @@ def test_impact_on_a_component_walks_in_component(ctx):
     assert result.items[0].props["anchor_label"] == "Component"
 
 
+def test_impact_on_a_component_counts_every_test_that_covers_it(ctx):
+    """Plan 2 gate: `impact("clients")` reported `0 tests` while 284 tests cover the component.
+
+    The open-items layer could not have promised to find XT-1: it covers KAFKA-100, which
+    is `Resolved`. Coverage of a component is a fact about the component, not about which
+    of its items are still open, so it is counted through `IN_COMPONENT` and counted whole.
+    """
+    result = impact(ctx, "clients", depth=1, log=False)
+    check_envelope(result, "s3", ctx)
+    head = result.items[0]
+    assert head.props["tests_on_component"] == 1, "XT-1 covers KAFKA-100, a clients item"
+    assert head.props["tests_on_component_by_status"] == {"PASS": 1}
+    assert head.props["tests_on_component_failing"] == 0
+    assert "1 tests on the component" in head.snippet
+    summary = [i for i in result.items if i.props.get("category") == "tests_on_component"]
+    assert len(summary) == 1
+    assert summary[0].kind == "Row" and summary[0].key == "tests:clients"
+    assert [p.source_kind for p in summary[0].provenance] == ["row"]
+
+
+def test_a_component_with_no_covering_tests_reports_zero_rather_than_silence(ctx):
+    """`connect` has KAFKA-102 and no test covers it. "0" is an answer; an absent key is not."""
+    result = impact(ctx, "connect", depth=1, log=False)
+    head = result.items[0]
+    assert head.props["tests_on_component"] == 0
+    assert head.props["tests_on_component_by_status"] == {}
+    summary = [i for i in result.items if i.props.get("category") == "tests_on_component"]
+    assert len(summary) == 1 and "0 tests cover work items in connect" in summary[0].snippet
+    assert not [i for i in result.items if i.props.get("category") == "failing_test_on_component"]
+
+
+def test_impact_on_a_work_item_keeps_the_one_test_layer(ctx):
+    """The component layer is for a component anchor; on an issue it would only be noise."""
+    result = impact(ctx, "KAFKA-100", depth=2, log=False)
+    head = result.items[0]
+    assert "tests_on_component" not in head.props
+    assert head.props["tests_on_open_items"] >= 1
+    categories = {i.props.get("category") for i in result.items}
+    assert "tests_on_component" not in categories
+    assert "test" in categories
+
+
 def test_impact_answers_the_same_question_the_same_way_twice(ctx):
     """The file slice used to come off an unordered `collect`: same question, other files."""
     first = impact(ctx, "clients", depth=2, log=False)
