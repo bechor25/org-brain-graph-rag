@@ -12,6 +12,7 @@ would leave one without them is a bug, not a warning.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Sequence
 from typing import Any
 
@@ -41,6 +42,81 @@ LLM_RELATION_TYPES: tuple[str, ...] = (DERIVED_RELATION_TYPE, *RELATION_TYPES)
 PROVENANCE_PROPS: tuple[str, ...] = ("evidence_chunk_ids", "batch_id", "model", "extracted_at")
 
 
+SCHEMA_NAMES: tuple[str, ...] = (
+    "brain_entity_id_key",
+    "brain_entity_kind_idx",
+    "brain_entity_norm_name_idx",
+)
+
+#: How long to wait for those three to come online. The same ceiling the
+#: `CALL db.awaitIndexes(300)` this replaced used — but spent on three named indexes
+#: instead of on every index in the database.
+SCHEMA_TIMEOUT_S = 300.0
+
+
+def schema_states(ctx: GraphContext) -> dict[str, str]:
+    """`{index name: state}` for the three names this step owns, and no others.
+
+    A uniqueness constraint's backing index carries the constraint's own name, so all
+    three appear in `SHOW INDEXES` under exactly the names :data:`SCHEMA_NAMES` declares.
+    A name the server has never heard of reads as `MISSING` rather than vanishing from
+    the answer — "not there yet" and "online" must not look alike to the caller.
+    """
+    names = [f"{ctx.prefix}{name}" for name in SCHEMA_NAMES]
+    rows = ctx.read(
+        "SHOW INDEXES YIELD name, state WHERE name IN $names RETURN name, state", names=names
+    )
+    found = {str(r["name"]): str(r["state"]) for r in rows}
+    return {name: found.get(name, "MISSING") for name in names}
+
+
+def await_extract_schema(
+    ctx: GraphContext, timeout_s: float = SCHEMA_TIMEOUT_S, sleep_s: float = 0.25
+) -> dict[str, Any]:
+    """Wait for *these three* indexes to come online. Never for anyone else's.
+
+    `CALL db.awaitIndexes` is database-wide: it waits for every index the database holds,
+    including the ones the other agents' scratch namespaces left half-built, and it raises
+    on theirs. That is the Plan 1 closing-review rule — a step waits on the names it owns.
+
+    A timeout is *reported*, not raised, and that is the one place this differs from
+    :func:`brain.resolve.graph.await_index`. Resolve reads its index with
+    `db.index.vector.queryNodes`, which answers from a half-built index without saying so,
+    so a wrong answer is indistinguishable from a right one and the step must stop. Here
+    the three are a uniqueness constraint (enforced from the moment it exists, index state
+    or not) and two lookups; a POPULATING one costs the merge a scan, not its correctness.
+    Stopping the merge over it would throw away a valid run, so the state travels into the
+    report instead — `report["schema"]["await"]`.
+    """
+    deadline = time.monotonic() + timeout_s
+    started = time.monotonic()
+    while True:
+        states = schema_states(ctx)
+        not_online = sorted(n for n, s in states.items() if s != "ONLINE")
+        if not not_online or time.monotonic() >= deadline:
+            break
+        time.sleep(sleep_s)
+    waited_ms = round((time.monotonic() - started) * 1000)
+    out: dict[str, Any] = {
+        "states": states,
+        "online": len(states) - len(not_online),
+        "not_online": not_online,
+        "ready": not not_online,
+        "timed_out": bool(not_online),
+        "timeout_s": timeout_s,
+        "waited_ms": waited_ms,
+    }
+    if not_online:
+        out["warning"] = (
+            f"{len(not_online)} of this step's indexes are not ONLINE after {timeout_s:.0f}s: "
+            + ", ".join(f"{n} is {states[n]}" for n in not_online)
+            + ". The merge ran anyway — the constraint is enforced regardless and the two "
+            "lookups only cost a scan — but a MERGE-heavy run against a populating index "
+            "is slow, and a FAILED one is a schema problem to fix before the next step."
+        )
+    return out
+
+
 def apply_extract_schema(ctx: GraphContext) -> dict[str, Any]:
     """`Entity.id` unique plus the two lookups resolve and retrieval will want.
 
@@ -57,15 +133,7 @@ def apply_extract_schema(ctx: GraphContext) -> dict[str, Any]:
     ]
     for cypher in statements:
         ctx.write(cypher)
-    ctx.client.write("CALL db.awaitIndexes(300)")
-    return {"constraints": 1, "indexes": 2}
-
-
-SCHEMA_NAMES: tuple[str, ...] = (
-    "brain_entity_id_key",
-    "brain_entity_kind_idx",
-    "brain_entity_norm_name_idx",
-)
+    return {"constraints": 1, "indexes": 2, "await": await_extract_schema(ctx)}
 
 
 def drop_extract_schema(ctx: GraphContext) -> None:
