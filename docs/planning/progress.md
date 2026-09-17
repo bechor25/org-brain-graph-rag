@@ -50,6 +50,18 @@
 - **הכרעה:** סבב תיקון לפני Task 4 (שני ה-blockers + כל ה-majors + minors זולים), בשני סוכנים עם גבולות קבצים.
 - **סבב התיקון נסגר (38e1f4a…e5c1eb6, 2026-09-17):** S3 — עוגן מוצמד ראשון (9/9 שאלות עם מפתח; שני שאלות KIP-848 כבר לא זהות), גורם fulltext ל-Document/WorkItem; guard — 56/56 נחסמו (`INSERT` + allowlist על כל root + `SHOW` allowlist + backticks), `run_cypher` מקטם props (KIP-932: 66,289→389 tokens, `truncated=true`, `_clipped`), rows עם provenance `source_kind=row`; בנק — dedupe לפי Cypher+שאלה, seed temporal = סוף היום (cq14: S6 ובנק מסכימים "Reopened"), impact seed סופר רק FAIL אמיתי (cq06 = 0 — לשכבה הסינתטית אין ריצות לטסטים האלה), seed ADO עם `source`; 3 מעברים של cypher-author על rationale (הכלל: אין `ORDER BY` לפני `WITH` מצטבר) → **בנק 15 ייחודיות, 4/4/4/3, 15/15 רצות**; אריזה — `truncated` על חריגת budget, קיטום רקורסיבי (169k→1.2k tokens דרך MCP); provenance kinds quote 86 / node-text 73 / row 24; דוחות עם sha + `stale`; `write_report` ממזג; בדיקות `chunk_provenance` 16/18 (לא gated) + **`auditable` 18/18** (gated); cross-lingual: `s3_anchor_identical` **4/4**, top-5 Jaccard 0.917, S1 hybrid 0.524 > vector 0.500 → `partial`; עוגן cq01/cq16 → KAFKA-14649 (3 טסטים, 6 ריצות); impact דטרמיניסטי, Test כ-Row; MCP: לוג פעם אחת, `route` בלי driver, compose `brain-mcp` healthy ב-6s (teardown `rm -sf` — `down` הפיל את Neo4j ל-60s פעם אחת, נחסם בבדיקה). `make check` 1,680; `brain serve --check` 8/8; `brain competency` exit 0. **שער Task 4 מוכן.**
 
+## Plan 3 — הערכה + דוח (התחיל 2026-09-17)
+
+| Task | סטטוס | commit | הערות |
+|---|---|---|---|
+| 1 סט השאלות (כלים + forger ×2) | 🟡 כלים ✅ (2fb8686), forger רץ | 2fb8686 | 12 צורות מסלול (8 גרף + 4 truth), 22 מסלולים → 6 batches ≤38KB ב-2 shards; דפיציט: 13 חדשות (17 מבוקשות עם slack 30%) → 32 = 7/7/6/6/6 לפי סוג, 11 עברית; "8 לכל סוג" בלתי אפשרי ב-32 (5 סוגים × 8 = 40) — **הכרעה: 32 עם החלוקה הכי שווה**; merge: סכמה, ראיות קיימות בגרף/truth, דליפה (מפתחות + 8 מילים רצופות), איזון; 19 הכשירות עם `gold_source: pending` עד שהמתכנן ממלא gold; question-forger עודכן ל-5 סוגים ולשפה לפי `asks[]` |
+| 2 מצב A + שכבה 2 | 🟡 רץ | | |
+| 3 תשובות + שופט עיוור | ⬜ | | |
+| 4 אינקרמנטלי | ⬜ אחרי Task 2 | | |
+| 5 דוח + שער | ⬜ | | |
+
+**כלי שער Plan 2 (Task 4):** `brain eval cite-check` + `gate-report` ✅ (f917e05): regex לציטוטים בסוגריים בלבד (לא בקוד/לינקים), אימות מול הגרף (מפתחות מדויקים; sha/chunk לפי prefix; person לפי suffix רק אם יחיד), ספירה לפי ציטוטים ייחודיים, `planner_verdicts` נשמרים בין ריצות, דוח בעברית עם פסקת מתכנן משומרת. brain-analyst עודכן לפורמטים המדויקים.
+
 ## החלטת תהליך (2026-09-03, המשתמש)
 - מ-Plan 1 והלאה: התכנית = brief + חוזים + קריטריונים. **הסוכנים מתכננים וכותבים את הקוד**; המתכנן סוקר ומכריע. (ב-Plan 0 הקוד היה בתכנית והסוכנים הקלידו.)
 
