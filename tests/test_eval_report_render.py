@@ -143,6 +143,21 @@ def test_no_number_is_typed_by_hand_layer_2(tmp_path):
     assert "no anchor key (1)" in text
 
 
+def test_a_long_list_of_na_reasons_is_capped_but_counted(tmp_path):
+    """Truncating the table is a formatting choice; dropping a reason would not be."""
+    report = eval_retrieval()
+    report["by_strategy"]["s3"]["na_reasons"] = {f"reason {i}": 10 - i for i in range(6)}
+    text = page(tmp_path, eval_retrieval=report)
+    assert "reason 0 (10)" in text and "reason 2 (8)" in text
+    assert "reason 5 (5)" not in text
+    assert "ועוד 3 סיבות ב-JSON" in text
+
+
+def test_a_short_list_of_na_reasons_is_printed_whole(tmp_path):
+    assert "no anchor key (1)" in page(tmp_path)
+    assert "ועוד" not in page(tmp_path).split("### עלות לפי אסטרטגיה")[1].split("###")[0]
+
+
 def test_changing_the_input_changes_the_page(tmp_path):
     """The point of generating it: nobody can edit the document into being wrong."""
     before = page(tmp_path)

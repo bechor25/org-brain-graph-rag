@@ -443,8 +443,17 @@ def order_strategies(names) -> list[str]:
 
 
 def _na_reasons(cell: Mapping[str, Any]) -> list[str]:
+    """Every reason a cell was `n/a`, commonest first — all of them, in count order.
+
+    Order matters because the renderer shows the head of this list: S5 alone produces nine
+    variants of one sentence (the router rule is spelled into the reason), and an
+    alphabetical list would show three arbitrary ones. Sorted by count, the head is the
+    reason, and the tail is the long way of saying it again.
+    """
+    reasons = (cell.get("na_reasons") or {}).items()
     return [
-        f"{reason} ({count})" for reason, count in sorted((cell.get("na_reasons") or {}).items())
+        f"{reason} ({count})"
+        for reason, count in sorted(reasons, key=lambda kv: (-int(kv[1]), str(kv[0])))
     ]
 
 

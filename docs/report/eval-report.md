@@ -1,20 +1,20 @@
 # הערכה — דוח Plan 3
 
-נוצר אוטומטית ע"י `brain eval report` ב-2026-09-17T09:32:17+00:00 (HEAD `77445252`) מתוך דוחות השלבים ב-`data/reports`. **אין כאן מספר שהוקלד ביד** — למעט שני הסעיפים האחרונים, שהמתכנן כותב אחרי קריאת המספרים ושנשמרים בכל יצירה מחדש.
+נוצר אוטומטית ע"י `brain eval report` ב-2026-09-17T09:35:16+00:00 (HEAD `9dba7252`) מתוך דוחות השלבים ב-`data/reports`. **אין כאן מספר שהוקלד ביד** — למעט שני הסעיפים האחרונים, שהמתכנן כותב אחרי קריאת המספרים ושנשמרים בכל יצירה מחדש.
 
 כל שורה בטבלה הבאה היא קלט של הדוח: מתי נמדד, באיזה commit, והאם ה-commit הזה הוא ה-HEAD. `STALE` = המספרים קיימים אבל נמדדו על קוד אחר; `חסר` = הסעיף שמתבסס עליו יופיע כ-**טרם נמדד** עם הפקודה שמייצרת אותו.
 
 | קובץ | מה מביא | מצב | נמדד ב | sha | הפקודה שכותבת | הערה |
 |---|---|---|---|---|---|---|
 | `data/reports/harvest.json` | שכבה 0 — מה נמשך מהמקורות | בלי sha | 2026-09-17T09:30:08+00:00 | — | `brain harvest` | הדוח לא חותם sha — אי אפשר לדעת באיזה commit נמדד |
-| `data/reports/index.json` | שכבה 1 — מפקד, provenance, קהילות | בלי sha | 2026-09-17T09:22:20+00:00 | — | `brain index` | הדוח לא חותם sha — אי אפשר לדעת באיזה commit נמדד |
+| `data/reports/index.json` | שכבה 1 — מפקד, provenance, קהילות | בלי sha | 2026-09-17T09:35:09+00:00 | — | `brain index` | הדוח לא חותם sha — אי אפשר לדעת באיזה commit נמדד |
 | `data/reports/resolve.json` | שכבה 1 — P/R/F1 של איחוד ישויות | בלי sha | 2026-09-07T18:26:35+00:00 | — | `brain resolve eval` | הדוח לא חותם sha — אי אפשר לדעת באיזה commit נמדד |
 | `data/reports/retrieve.json` | תשתית האחזור — reranker ו-guard | בלי sha | 2026-09-17T07:33:52+00:00 | — | `brain cypher-examples check` | הדוח לא חותם sha — אי אפשר לדעת באיזה commit נמדד |
 | `data/reports/eval_questions.json` | סט השאלות | בלי sha | 2026-09-17T09:23:22+00:00 | — | `brain eval questions merge` | הדוח לא חותם sha — אי אפשר לדעת באיזה commit נמדד |
-| `data/reports/eval_retrieval.json` | שכבה 2 | STALE | 2026-09-17T09:23:59+00:00 | 2902bef0 | `brain eval run --mode fixed` | נמדד ב-2902bef0, HEAD הוא 77445252 |
+| `data/reports/eval_retrieval.json` | שכבה 2 | STALE | 2026-09-17T09:32:23+00:00 | e1e28490 | `brain eval run --mode fixed` | נמדד ב-e1e28490, HEAD הוא 9dba7252 |
 | `data/reports/eval_answers.json` | שכבה 3 — תשובות ושיפוט עיוור | STALE | — | — | `brain eval answers merge · brain eval judge merge` | סעיפים ישנים: answers_build |
-| `data/reports/plan2_gate.json` | שער מצב B (ציטוטים) | STALE | 2026-09-17T09:18:15+00:00 | c15b8385 | `brain eval cite-check` | נמדד ב-c15b8385, HEAD הוא 77445252 |
-| `data/reports/incremental.json` | §5.5 — ריצת העדכון האינקרמנטלי (כל הפייפליין) | עדכני | 2026-09-17T09:32:13+00:00 | 7744525 | `brain harvest --since <date> --source jira` | — |
+| `data/reports/plan2_gate.json` | שער מצב B (ציטוטים) | STALE | 2026-09-17T09:18:15+00:00 | c15b8385 | `brain eval cite-check` | נמדד ב-c15b8385, HEAD הוא 9dba7252 |
+| `data/reports/incremental.json` | §5.5 — ריצת העדכון האינקרמנטלי (כל הפייפליין) | עדכני | 2026-09-17T09:35:11+00:00 | 9dba725 | `brain harvest --since <date> --source jira` | — |
 
 ## סט השאלות
 
@@ -67,21 +67,21 @@
 
 ## שכבה 1 — מפקד הגרף
 
-מקור: `data/reports/index.json` · נמדד ב-2026-09-17T09:22:20+00:00. ⚠️ הדוח לא חותם sha — אי אפשר לדעת באיזה commit נמדד.
+מקור: `data/reports/index.json` · נמדד ב-2026-09-17T09:35:09+00:00. ⚠️ הדוח לא חותם sha — אי אפשר לדעת באיזה commit נמדד.
 
-הגרף שעליו נמדד הכול: **58,622** צמתים ו-**161,985** קשתות (147,223 דטרמיניסטיות, 14,762 מ-LLM). שער Plan 1: לא עבר — 11/13, נכשל: person_resolution_recall, make_smoke_green. המפקד המלא: `docs/report/plan1-graph-census.md`.
+הגרף שעליו נמדד הכול: **58,766** צמתים ו-**162,224** קשתות (147,462 דטרמיניסטיות, 14,762 מ-LLM). שער Plan 1: לא עבר — 11/13, נכשל: person_resolution_recall, make_smoke_green. המפקד המלא: `docs/report/plan1-graph-census.md`.
 
 | מדד | ערך |
 |---|---|
-| issues אמיתיים | 1,416 |
+| issues אמיתיים | 1,426 |
 | work items סינתטיים | 1,849 |
 | מסמכי KIP | 1,334 |
-| KIPs מוזכרים | 267 |
+| KIPs מוזכרים | 271 |
 | commits | 6,107 |
-| chunks | 13,846 |
-| מהם חיים | 12,915 |
-| מוטמעים | 13,846 |
-| צמתים יתומים | 176 |
+| chunks | 13,917 |
+| מהם חיים | 12,986 |
+| מוטמעים | 13,917 |
+| צמתים יתומים | 177 |
 
 ### שכבה 1 — איחוד ישויות
 
@@ -98,7 +98,7 @@ P/R/F1 מול זוגות הזהב בלבד (יעד 0.85); מיזוגים שהז�
 
 ### שכבה 1 — כיסוי provenance
 
-מקור: `data/reports/index.json` · נמדד ב-2026-09-17T09:22:20+00:00. ⚠️ הדוח לא חותם sha — אי אפשר לדעת באיזה commit נמדד.
+מקור: `data/reports/index.json` · נמדד ב-2026-09-17T09:35:09+00:00. ⚠️ הדוח לא חותם sha — אי אפשר לדעת באיזה commit נמדד.
 
 כלל הבעלות: conventions rule 3: every LLM-derived node and edge carries ['evidence_chunk_ids', 'batch_id', 'model', 'extracted_at'] with a non-empty evidence list. — 14,762 קשתות מ-LLM, 100.0% מהן עם provenance.
 
@@ -119,7 +119,7 @@ P/R/F1 מול זוגות הזהב בלבד (יעד 0.85); מיזוגים שהז�
 
 ### שכבה 1 — כיסוי קהילות
 
-מקור: `data/reports/index.json` · נמדד ב-2026-09-17T09:22:20+00:00. ⚠️ הדוח לא חותם sha — אי אפשר לדעת באיזה commit נמדד.
+מקור: `data/reports/index.json` · נמדד ב-2026-09-17T09:35:09+00:00. ⚠️ הדוח לא חותם sha — אי אפשר לדעת באיזה commit נמדד.
 
 **1,297** קהילות, מהן 186 מסוכמות (14.34%). 89.41% מהחברים נמצאים בקהילה מסוכמת — זה הכיסוי ש-S5 (חיפוש גלובלי) יכול לראות בכלל.
 
@@ -130,7 +130,7 @@ P/R/F1 מול זוגות הזהב בלבד (יעד 0.85); מיזוגים שהז�
 
 ## שכבה 2 — אחזור (דטרמיניסטי)
 
-מקור: `data/reports/eval_retrieval.json` · נמדד ב-2026-09-17T09:23:59+00:00 · sha `2902bef0`. **STALE** — נמדד ב-2902bef0, HEAD הוא 77445252.
+מקור: `data/reports/eval_retrieval.json` · נמדד ב-2026-09-17T09:32:23+00:00 · sha `e1e28490`. **STALE** — נמדד ב-e1e28490, HEAD הוא 9dba7252.
 
 מצב fixed, k=10, תקציב הקשר 4,000 tokens לכל אסטרטגיה, baseline = `s1r`. 32 שאלות; כיסוי 224/224. כל התא נמדד דטרמיניסטית מול `gold_evidence` — אין כאן שופט.
 
@@ -140,41 +140,41 @@ P/R/F1 מול זוגות הזהב בלבד (יעד 0.85); מיזוגים שהז�
 
 | אסטרטגיה | סוג שאלה | רץ/סה"כ | recall | recall_strict | precision | hit@10 | latency p50 (ms) | tokens p50 |
 |---|---|---|---|---|---|---|---|---|
-| s1 | גלובלי (`global`) | 6/6 | 0.0998 | 0.0238 | 0.2292 | 0.6667 | 144 | 3,561 |
-| s1 | השפעה (`impact`) | 7/7 | 0.0476 | 0.0238 | 0.0464 | 0.2857 | 136 | 3,646 |
-| s1 | נימוק (`rationale`) | 6/6 | 0.0727 | 0.0238 | 0.0995 | 0.5 | 160 | 3,811 |
-| s1 | זמני (`temporal`) | 6/6 | 0.0833 | 0.0 | 0.0167 | 0.1667 | 145 | 3,379 |
-| s1 | עקיבוּת (`traceability`) | 7/7 | 0.0839 | 0.0 | 0.0623 | 0.4286 | 137 | 3,763 |
-| s1r | גלובלי (`global`) | 6/6 | 0.0998 | 0.0238 | 0.2351 | 0.6667 | 2,165 | 3,562 |
-| s1r | השפעה (`impact`) | 7/7 | 0.0476 | 0.0238 | 0.0464 | 0.2857 | 1,448 | 3,794 |
-| s1r | נימוק (`rationale`) | 6/6 | 0.0727 | 0.0238 | 0.125 | 0.5 | 1,746 | 3,808 |
-| s1r | זמני (`temporal`) | 6/6 | 0.0833 | 0.0 | 0.0167 | 0.1667 | 925 | 3,387 |
-| s1r | עקיבוּת (`traceability`) | 7/7 | 0.0839 | 0.0 | 0.0623 | 0.4286 | 2,075 | 3,795 |
+| s1 | גלובלי (`global`) | 6/6 | 0.0998 | 0.0238 | 0.2292 | 0.6667 | 147 | 3,561 |
+| s1 | השפעה (`impact`) | 7/7 | 0.0476 | 0.0238 | 0.0464 | 0.2857 | 144 | 3,646 |
+| s1 | נימוק (`rationale`) | 6/6 | 0.0727 | 0.0238 | 0.0995 | 0.5 | 150 | 3,811 |
+| s1 | זמני (`temporal`) | 6/6 | 0.0833 | 0.0 | 0.0167 | 0.1667 | 141 | 3,379 |
+| s1 | עקיבוּת (`traceability`) | 7/7 | 0.0839 | 0.0 | 0.0623 | 0.4286 | 159 | 3,763 |
+| s1r | גלובלי (`global`) | 6/6 | 0.0998 | 0.0238 | 0.2351 | 0.6667 | 2,086 | 3,562 |
+| s1r | השפעה (`impact`) | 7/7 | 0.0476 | 0.0238 | 0.0464 | 0.2857 | 1,409 | 3,794 |
+| s1r | נימוק (`rationale`) | 6/6 | 0.0727 | 0.0238 | 0.125 | 0.5 | 1,741 | 3,808 |
+| s1r | זמני (`temporal`) | 6/6 | 0.0833 | 0.0 | 0.0167 | 0.1667 | 701 | 3,387 |
+| s1r | עקיבוּת (`traceability`) | 7/7 | 0.0839 | 0.0 | 0.0623 | 0.4286 | 2,074 | 3,795 |
 | s2 | גלובלי (`global`) | 6/6 | 0.0998 | 0.0998 | 0.2472 | 0.6667 | 232 | 3,943 |
-| s2 | השפעה (`impact`) | 7/7 | 0.0 | 0.0 | 0.0 | 0.0 | 237 | 3,856 |
-| s2 | נימוק (`rationale`) | 6/6 | 0.0608 | 0.0608 | 0.25 | 0.5 | 232 | 3,807 |
-| s2 | זמני (`temporal`) | 6/6 | 0.0833 | 0.0833 | 0.0208 | 0.1667 | 209 | 3,661 |
-| s2 | עקיבוּת (`traceability`) | 7/7 | 0.0159 | 0.0159 | 0.0714 | 0.1429 | 241 | 3,940 |
-| s3 | גלובלי (`global`) | 6/6 | 0.0998 | 0.0575 | 0.2333 | 0.6667 | 247 | 2,674 |
-| s3 | השפעה (`impact`) | 7/7 | 0.0974 | 0.0844 | 0.3286 | 0.5714 | 230 | 2,576 |
+| s2 | השפעה (`impact`) | 7/7 | 0.0 | 0.0 | 0.0 | 0.0 | 233 | 3,856 |
+| s2 | נימוק (`rationale`) | 6/6 | 0.0608 | 0.0608 | 0.25 | 0.5 | 237 | 3,807 |
+| s2 | זמני (`temporal`) | 6/6 | 0.0833 | 0.0833 | 0.0208 | 0.1667 | 241 | 3,661 |
+| s2 | עקיבוּת (`traceability`) | 7/7 | 0.0159 | 0.0159 | 0.0714 | 0.1429 | 245 | 3,940 |
+| s3 | גלובלי (`global`) | 6/6 | 0.0998 | 0.0575 | 0.2333 | 0.6667 | 240 | 2,674 |
+| s3 | השפעה (`impact`) | 7/7 | 0.0974 | 0.0844 | 0.3286 | 0.5714 | 241 | 2,576 |
 | s3 | נימוק (`rationale`) | 6/6 | 0.3337 | 0.3337 | 0.8833 | 1.0 | 238 | 2,794 |
-| s3 | זמני (`temporal`) | 6/6 | 0.2463 | 0.2463 | 0.6167 | 0.8333 | 150 | 242 |
-| s3 | עקיבוּת (`traceability`) | 7/7 | 0.3707 | 0.3707 | 0.7429 | 1.0 | 219 | 1,098 |
+| s3 | זמני (`temporal`) | 6/6 | 0.2463 | 0.2463 | 0.6167 | 0.8333 | 160 | 242 |
+| s3 | עקיבוּת (`traceability`) | 7/7 | 0.3707 | 0.3707 | 0.7429 | 1.0 | 205 | 1,098 |
 | s4 | גלובלי (`global`) | 6/6 | 0.0167 | 0.0167 | 0.0208 | 0.1667 | 6 | 1,098 |
-| s4 | השפעה (`impact`) | 7/7 | 0.3636 | 0.3636 | 0.1852 | 0.4286 | 21 | 3,835 |
-| s4 | נימוק (`rationale`) | 6/6 | 0.0 | 0.0 | 0.0 | 0.0 | 5 | 3,736 |
-| s4 | זמני (`temporal`) | 6/6 | 0.1352 | 0.1352 | 0.5 | 0.5 | 12 | 564 |
-| s4 | עקיבוּת (`traceability`) | 7/7 | 0.1869 | 0.1869 | 0.6429 | 0.7143 | 6 | 650 |
-| s5 | גלובלי (`global`) | 6/6 | 0.1888 | 0.1888 | 0.2667 | 1.0 | 129 | 3,727 |
+| s4 | השפעה (`impact`) | 7/7 | 0.3636 | 0.3636 | 0.1852 | 0.4286 | 6 | 3,835 |
+| s4 | נימוק (`rationale`) | 6/6 | 0.0 | 0.0 | 0.0 | 0.0 | 4 | 3,736 |
+| s4 | זמני (`temporal`) | 6/6 | 0.1352 | 0.1352 | 0.5 | 0.5 | 5 | 564 |
+| s4 | עקיבוּת (`traceability`) | 7/7 | 0.1869 | 0.1869 | 0.6429 | 0.7143 | 5 | 650 |
+| s5 | גלובלי (`global`) | 6/6 | 0.1888 | 0.1888 | 0.2667 | 1.0 | 120 | 3,727 |
 | s5 | השפעה (`impact`) | 0/7 | — | — | — | — | — | — |
 | s5 | נימוק (`rationale`) | 0/6 | — | — | — | — | — | — |
 | s5 | זמני (`temporal`) | 0/6 | — | — | — | — | — | — |
 | s5 | עקיבוּת (`traceability`) | 0/7 | — | — | — | — | — | — |
 | s6 | גלובלי (`global`) | 0/6 | — | — | — | — | — | — |
-| s6 | השפעה (`impact`) | 1/7 | 0.0909 | 0.0909 | 0.0556 | 1.0 | 17 | 3,927 |
-| s6 | נימוק (`rationale`) | 6/6 | 0.167 | 0.167 | 0.0979 | 1.0 | 6 | 3,718 |
+| s6 | השפעה (`impact`) | 1/7 | 0.0909 | 0.0909 | 0.0556 | 1.0 | 15 | 3,927 |
+| s6 | נימוק (`rationale`) | 6/6 | 0.167 | 0.167 | 0.0979 | 1.0 | 4 | 3,718 |
 | s6 | זמני (`temporal`) | 5/6 | 0.4667 | 0.4044 | 0.6 | 0.6 | 4 | 1,284 |
-| s6 | עקיבוּת (`traceability`) | 6/7 | 0.3022 | 0.2837 | 0.1592 | 1.0 | 3 | 1,430 |
+| s6 | עקיבוּת (`traceability`) | 6/7 | 0.3022 | 0.2837 | 0.1592 | 1.0 | 8 | 1,430 |
 
 ### עלות לפי אסטרטגיה
 
@@ -182,12 +182,12 @@ P/R/F1 מול זוגות הזהב בלבד (יעד 0.85); מיזוגים שהז�
 
 | אסטרטגיה | ריצות | n/a | latency p50 | latency p95 | tokens p50 | tokens סה"כ | tool calls | Cypher | זמן סוכן | סיבות ל-n/a |
 |---|---|---|---|---|---|---|---|---|---|---|
-| s1 | 32 | 0 | 144 | 163 | 3,761 | 117,299 | 32 | 95 | — | — |
-| s1r | 32 | 0 | 1,798 | 3,706 | 3,794 | 118,652 | 32 | 95 | — | — |
-| s2 | 32 | 0 | 234 | 266 | 3,891 | 127,510 | 32 | 96 | — | — |
-| s3 | 32 | 0 | 233 | 282 | 2,648 | 62,862 | 32 | 180 | — | — |
-| s4 | 32 | 0 | 12 | 45 | 1,279 | 69,109 | 32 | 32 | — | — |
-| s5 | 6 | 26 | 129 | 151 | 3,727 | 22,483 | 6 | 6 | — | S5 reduces community reports into a theme; this question carries no thematic signal (router rule 'changed-in') and is not typed `global` (2), S5 reduces community reports into a theme; this question carries no thematic signal (router rule 'default') and is not typed `global` (4), S5 reduces community reports into a theme; this question carries no thematic signal (router rule 'he-changed') and is not typed `global` (1), S5 reduces community reports into a theme; this question carries no thematic signal (router rule 'he-count') and is not typed `global` (1), S5 reduces community reports into a theme; this question carries no thematic signal (router rule 'iso-date') and is not typed `global` (1), S5 reduces community reports into a theme; this question carries no thematic signal (router rule 'keys') and is not typed `global` (14), S5 reduces community reports into a theme; this question carries no thematic signal (router rule 'over-time') and is not typed `global` (1), S5 reduces community reports into a theme; this question carries no thematic signal (router rule 'superlative') and is not typed `global` (1), S5 reduces community reports into a theme; this question carries no thematic signal (router rule 'which-have') and is not typed `global` (1) |
+| s1 | 32 | 0 | 147 | 179 | 3,761 | 117,299 | 32 | 95 | — | — |
+| s1r | 32 | 0 | 1,792 | 3,586 | 3,794 | 118,652 | 32 | 95 | — | — |
+| s2 | 32 | 0 | 241 | 253 | 3,891 | 127,510 | 32 | 96 | — | — |
+| s3 | 32 | 0 | 234 | 266 | 2,648 | 62,862 | 32 | 180 | — | — |
+| s4 | 32 | 0 | 6 | 18 | 1,279 | 69,109 | 32 | 32 | — | — |
+| s5 | 6 | 26 | 120 | 136 | 3,727 | 22,483 | 6 | 6 | — | S5 reduces community reports into a theme; this question carries no thematic signal (router rule 'keys') and is not typed `global` (14), S5 reduces community reports into a theme; this question carries no thematic signal (router rule 'default') and is not typed `global` (4), S5 reduces community reports into a theme; this question carries no thematic signal (router rule 'changed-in') and is not typed `global` (2) · ועוד 6 סיבות ב-JSON |
 | s6 | 18 | 14 | 6 | 40 | 3,718 | 47,612 | 18 | 56 | — | temporal wording but no key/date/version pair to bind (14) |
 
 ### חוצה-שפות (EN מול HE)
@@ -246,6 +246,8 @@ P/R/F1 מול זוגות הזהב בלבד (יעד 0.85); מיזוגים שהז�
 
 > measured, not improved: relevance is judged in Plan 3 (plan decision 5). A 100% top-1 change rate is what an RRF baseline invites: the fusion scores of ten chunks sit within ~0.002 of each other (1/(60+rank)), so any second opinion reorders them. `top1_source_changed` is the stricter number — how often the reranker moved the answer to a different document.
 
+> The matrix is assembled from every run file on disk, not from the strategies of the last invocation, so a partial `--strategies` rerun refreshes one column and leaves the rest standing. Each column in `columns` carries the commit its own runs were measured at — not at HEAD: s1, s1r, s2, s3, s4, s5, s6.
+
 > `recall` counts a chunk of the gold node as a hit (match kind `parent`); `recall_strict` does not. Both are reported so the vector baseline is not scored against an id scheme only the graph strategies emit.
 
 ## שכבה 3 — תשובות ושיפוט עיוור
@@ -273,17 +275,17 @@ P/R/F1 מול זוגות הזהב בלבד (יעד 0.85); מיזוגים שהז�
 
 ## עדכון אינקרמנטלי (§5.5)
 
-מקור: `data/reports/incremental.json` · נמדד ב-2026-09-17T09:32:13+00:00 · sha `7744525`.
+מקור: `data/reports/incremental.json` · נמדד ב-2026-09-17T09:35:11+00:00 · sha `9dba725`.
 
-פרוסה `incremental` ממקור `jira` מאז 2026-01-01: 10 פריטים, 20.74 שניות בסך הכול. שורה לכל שלב בפייפליין — שלב בלי מדידה נשאר בטבלה ומסומן, ולא נעלם.
+פרוסה `incremental` ממקור `jira` מאז 2026-01-01: 10 פריטים, 29.64 שניות בסך הכול. שורה לכל שלב בפייפליין — שלב בלי מדידה נשאר בטבלה ומסומן, ולא נעלם.
 
 | שלב | פקודה | שניות | נמדד | הערות |
 |---|---|---|---|---|
 | harvest | uv run brain harvest --since 2026-01-01 --source jira --limit 10 --slice incremental | 1.75 | כן | — |
 | canon | uv run brain canon | 10.36 | כן | — |
 | load | uv run brain load | 8.63 | כן | — |
-| chunk | — | — | לא | — |
-| extract build | — | — | לא | — |
+| chunk | uv run brain chunk --kinds all | 7.63 | כן | — |
+| extract build | uv run brain extract build --shards 1 --batch-size 25 --slice incremental | 1.27 | כן | — |
 | extract merge | — | — | לא | — |
 | resolve tier 1 | — | — | לא | — |
 | communities build | — | — | לא | — |
@@ -295,7 +297,7 @@ P/R/F1 מול זוגות הזהב בלבד (יעד 0.85); מיזוגים שהז�
 
 | חתך | ערך |
 |---|---|
-| גרף | — |
+| גרף | slice_census: nodes_with_slice_by_label: Area:base: 24, Chunk:None: 13,846, Commit:base: 6,107, Community:None: 1,297, Component:base: 30, Document:base: 1,391, Entity:None: 9,038, File:None: 8,594, IndexMeta:None: 4, Person:base: 1,214, Person:incremental: 4, PullRequest:base: 6,026, Space:base: 1, Sprint:base: 92, StatusChange:base: 7,607, StatusChange:incremental: 59, Version:base: 86, WorkItem:base: 3,265, WorkItem:incremental: 10, incremental_nodes_by_label: Person: 4, StatusChange: 59, WorkItem: 10, nodes_without_slice_by_label: Chunk: 13,846, Community: 1,297, Entity: 9,038, File: 8,594, IndexMeta: 4, incremental_workitem_keys: KAFKA-20035, KAFKA-20040, KAFKA-20042, KAFKA-20043, KAFKA-20045, KAFKA-20046, KAFKA-20053, KAFKA-20056, KAFKA-20064, KAFKA-20065, chunks_by_slice: None: 13,846, census_after_part1: at: 2026-09-17T09:35:09+00:00, duration_s: 2.63, exit_code: 1, nodes_total: before: 58,622, after: 58,766, edges_total: before: 161,985, after: 162,224, nodes_by_label_delta: —, edges_by_type_delta: AFFECTS_VERSION: 3, ASSIGNED_TO: 10, COMMENTED: 33, FIX_VERSION: 10, HAS_CHANGE: 59, HAS_CHUNK: 71, IN_COMPONENT: 19, LINKS_TO: 2, MENTIONS_PERSON: 9, REFERENCES: 13, REPORTED_BY: 10, chunks: before: chunks: 13,846, live: 12,915, embedded: 13,846, missing_embedding: 0, orphaned: 931, orphaned_by_kind: description: 173, section: 758, without_has_chunk: 0, by_kind: comment: 3,629, description: 3,423, message: 4,150, section: 1,713, by_parent_kind: Commit: 4,150, Document: 1,713, WorkItem: 7,052, by_lang: en: 12,915, has_chunk_edges: Document: 2,471, WorkItem: 7,225, Commit: 4,150, has_chunk_total: 13,846, present: כן, pct_embedded: 100.0, live_embedded: 12,915, pct_live_embedded: 100.0, after: chunks: 13,917, live: 12,986, embedded: 13,917, missing_embedding: 0, orphaned: 931, orphaned_by_kind: description: 173, section: 758, without_has_chunk: 0, by_kind: comment: 3,662, description: 3,433, message: 4,150, section: 1,741, by_parent_kind: Commit: 4,150, Document: 1,741, WorkItem: 7,095, by_lang: en: 12,986, has_chunk_edges: Document: 2,499, WorkItem: 7,268, Commit: 4,150, has_chunk_total: 13,917, present: כן, pct_embedded: 100.0, live_embedded: 12,986, pct_live_embedded: 100.0, gate_before: issues: PASS, kips_embedded: PASS, kips_referenced_all_embedded: PASS, commits: PASS, person_resolution_precision: PASS, person_resolution_recall: FAIL, entity_resolution_precision: PASS, entity_resolution_recall: PASS, llm_edges_without_provenance: PASS, all_indexes_online: PASS, make_smoke_green: STALE, lessons_01_09: PASS, progress_complete: PASS, gate_after: issues: PASS, kips_embedded: PASS, kips_referenced_all_embedded: PASS, commits: PASS, person_resolution_precision: PASS, person_resolution_recall: FAIL, entity_resolution_precision: PASS, entity_resolution_recall: PASS, llm_edges_without_provenance: PASS, all_indexes_online: PASS, make_smoke_green: STALE, lessons_01_09: PASS, progress_complete: PASS, note: measured after `brain extract build`; the pipeline's own `index` step (12) has not run — the extractor agent, merge, resolve and communities come first. |
 | chunks | — |
 | ישויות | — |
 | קהילות | — |
@@ -306,8 +308,6 @@ P/R/F1 מול זוגות הזהב בלבד (יעד 0.85); מיזוגים שהז�
 
 ⚠️ הריצה אינה שלמה לפי `validate_incremental`:
 
-- no row for step 'chunk'
-- no row for step 'extract build'
 - no row for step 'extract merge'
 - no row for step 'resolve tier 1'
 - no row for step 'communities build'
@@ -325,11 +325,11 @@ P/R/F1 מול זוגות הזהב בלבד (יעד 0.85); מיזוגים שהז�
 
 | סוג שאלה | מובילה ב-recall | recall | recall של baseline | מובילה בנכונוּת | נכונוּת | נכונוּת baseline | Δ latency p50 (ms) | Δ tokens p50 | Δ Cypher | הערה |
 |---|---|---|---|---|---|---|---|---|---|---|
-| גלובלי (`global`) | s5 | 0.1888 | 0.0998 | — | — | — | -2036.0 | 165.0 | -11.0 | אין שיפוט |
-| השפעה (`impact`) | s4 | 0.3636 | 0.0476 | — | — | — | -1427.0 | 41.0 | -14.0 | אין שיפוט |
-| נימוק (`rationale`) | s3 | 0.3337 | 0.0727 | — | — | — | -1508.0 | -1014.0 | 18.0 | אין שיפוט |
-| זמני (`temporal`) | s6 | 0.4667 | 0.0833 | — | — | — | -921.0 | -2103.0 | -8.0 | אין שיפוט |
-| עקיבוּת (`traceability`) | s3 | 0.3707 | 0.0839 | — | — | — | -1856.0 | -2697.0 | 19.0 | אין שיפוט |
+| גלובלי (`global`) | s5 | 0.1888 | 0.0998 | — | — | — | -1966.0 | 165.0 | -11.0 | אין שיפוט |
+| השפעה (`impact`) | s4 | 0.3636 | 0.0476 | — | — | — | -1403.0 | 41.0 | -14.0 | אין שיפוט |
+| נימוק (`rationale`) | s3 | 0.3337 | 0.0727 | — | — | — | -1503.0 | -1014.0 | 18.0 | אין שיפוט |
+| זמני (`temporal`) | s6 | 0.4667 | 0.0833 | — | — | — | -697.0 | -2103.0 | -8.0 | אין שיפוט |
+| עקיבוּת (`traceability`) | s3 | 0.3707 | 0.0839 | — | — | — | -1869.0 | -2697.0 | 19.0 | אין שיפוט |
 
 ---
 

@@ -436,6 +436,19 @@ def _matrix_table(layer2: Mapping[str, Any]) -> list[str]:
     )
 
 
+#: How many `n/a` reasons fit in a table cell before the cell stops being readable. S5 spells
+#: the router rule into its reason, so one reason arrives as nine; the rest are counted in
+#: full and named in `eval_retrieval.json`, which is where a reader who wants all nine goes.
+NA_REASONS_SHOWN = 3
+
+
+def _na_cell(reasons: Sequence[str]) -> str:
+    if len(reasons) <= NA_REASONS_SHOWN:
+        return _fmt(list(reasons))
+    rest = len(reasons) - NA_REASONS_SHOWN
+    return _fmt(list(reasons[:NA_REASONS_SHOWN])) + f" · ועוד {rest} סיבות ב-JSON"
+
+
 def _cost_table(layer2: Mapping[str, Any]) -> list[str]:
     return _table(
         [
@@ -463,7 +476,7 @@ def _cost_table(layer2: Mapping[str, Any]) -> list[str]:
                 r.get("tool_calls"),
                 r.get("cypher_total"),
                 r.get("agent_time_ms"),
-                r.get("na_reasons"),
+                _na_cell(r.get("na_reasons") or []),
             ]
             for r in layer2.get("cost") or []
         ],

@@ -204,6 +204,14 @@ def test_the_cost_table_carries_the_reasons_a_cell_is_na(tmp_path):
     assert cost["s1r"]["na_reasons"] == []
 
 
+def test_the_na_reasons_are_ordered_by_how_often_they_happened(tmp_path):
+    """S5 spells the router rule into its reason, so the commonest must sort first."""
+    report = eval_retrieval()
+    report["by_strategy"]["s3"]["na_reasons"] = {"rare": 1, "common": 9, "middling": 4}
+    cost = {r["strategy"]: r for r in build(tmp_path, eval_retrieval=report)["layer2"]["cost"]}
+    assert cost["s3"]["na_reasons"] == ["common (9)", "middling (4)", "rare (1)"]
+
+
 def test_the_retrieval_stack_cost_comes_from_retrieve_json(tmp_path):
     infra = build(tmp_path)["layer2"]["infra"]
     assert infra["rerank"]["cost_p50_ms"] == 1605
