@@ -44,8 +44,15 @@ def finish(
     mode: str = "python",
     log_path: Path | None = None,
     log: bool = True,
+    already_truncated: bool = False,
 ) -> Result:
-    """Pack to the budget, stamp the latency, log the call, return the envelope."""
+    """Pack to the budget, stamp the latency, log the call, return the envelope.
+
+    `already_truncated` is for a strategy that cut something *before* handing its items over
+    — S4 clips a wide column while it builds the row, so the packer finds nothing to clip
+    and would report `truncated=false` about an answer that is demonstrably not whole.
+    `truncated` answers one question, "is this everything?", and whoever cut it knows.
+    """
     for item in items:
         item.provenance = dedupe_provenance(item.provenance)
     packed, truncated = pack(items)
@@ -54,7 +61,7 @@ def finish(
         items=packed,
         cypher_used=_unique(cypher_used or []),
         latency_ms=timer.ms,
-        truncated=truncated,
+        truncated=truncated or already_truncated,
         route=route,
     )
     if log:

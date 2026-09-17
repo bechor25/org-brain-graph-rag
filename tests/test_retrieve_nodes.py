@@ -114,6 +114,14 @@ def test_dedupe_provenance_keeps_entries_without_a_chunk_id() -> None:
     assert len(merged) == 2
 
 
+def test_a_strategy_that_cut_its_own_text_can_say_so(tmp_path) -> None:
+    """S4 clips a wide column while building the row; the packer then has nothing to clip."""
+    items = [Item(kind="Row", key="r1", snippet="short")]
+    assert not finish("s4", items, question="q", timer=Timer(), log=False).truncated
+    clipped = finish("s4", items, question="q", timer=Timer(), log=False, already_truncated=True)
+    assert clipped.truncated
+
+
 def test_finish_packs_dedupes_and_can_stay_out_of_the_log(tmp_path) -> None:
     items = [
         Item(kind="Chunk", key="c1", score=0.9, provenance=[Provenance(chunk_id="x")] * 3),
