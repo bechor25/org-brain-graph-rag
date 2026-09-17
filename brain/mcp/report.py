@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import statistics
+import subprocess
 import sys
 import time
 from datetime import UTC, datetime
@@ -421,6 +422,110 @@ def _dedupe_check(ctx: RetrieveContext, duplicates: list[dict[str, Any]]) -> dic
     }
 
 
+# ------------------------------------------------------------------- the HTTP transport
+
+
+#: Ten minutes. The container builds its environment from `uv.lock` on first start, and a
+#: report that waits forever for that is a report nobody runs twice.
+COMPOSE_CAP_S = 600
+#: What the compose healthcheck polls, and what a client hits.
+CONTAINER_URL = "http://127.0.0.1:8765"
+#: Start the profile, and stop **only** the server it adds. `docker compose down` takes the
+#: whole project with it — including `brain-neo4j`, which every other step and every other
+#: agent on this machine is using. Measured the hard way: it stopped the database mid-round.
+COMPOSE_UP: tuple[str, ...] = ("docker", "compose", "--profile", "mcp", "up", "-d", "--wait")
+COMPOSE_STOP: tuple[str, ...] = ("docker", "compose", "--profile", "mcp", "rm", "-sf", "brain-mcp")
+
+
+def compose_row(
+    *,
+    started: float,
+    ended: float,
+    healthy: bool,
+    health: dict[str, Any],
+    tools: list[str],
+    cap_s: int = COMPOSE_CAP_S,
+    error: str | None = None,
+) -> dict[str, Any]:
+    """One line about the profile nobody had ever started, with its wall clock."""
+    return {
+        "profile": "mcp",
+        "command": " ".join(COMPOSE_UP),
+        "stopped_with": " ".join(COMPOSE_STOP),
+        "cap_s": cap_s,
+        "elapsed_s": round(ended - started),
+        "exceeded_cap": (ended - started) > cap_s,
+        "healthy": healthy,
+        "healthz": health or None,
+        "tools_listed": sorted(tools),
+        "tools": len(tools),
+        "url": f"{CONTAINER_URL}/mcp",
+        "error": error,
+    }
+
+
+def compose_check(cap_s: int = COMPOSE_CAP_S, echo=lambda _m: None) -> dict[str, Any]:
+    """Start the `mcp` profile, ask the container what it serves, and stop it again.
+
+    The container is not left running: this measures that the compose definition works, and
+    a server left listening on 8765 after a report is a side effect nobody asked for. It is
+    removed by name — see `COMPOSE_STOP` for why `down` is the wrong verb here.
+    """
+    started = time.perf_counter()
+    healthy, health, tools, error = False, {}, [], None
+    try:
+        done = subprocess.run(  # noqa: S603 - a fixed argv, no shell
+            list(COMPOSE_UP), capture_output=True, text=True, timeout=cap_s, check=False
+        )
+        if done.returncode != 0:
+            error = (done.stderr or done.stdout or "").strip().splitlines()[-1:][0][:300]
+        else:
+            healthy = True
+            health = _healthz()
+            tools = anyio.run(_tools_over_http, f"{CONTAINER_URL}/mcp")
+    except subprocess.TimeoutExpired:
+        error = f"the build did not finish within the {cap_s}s cap"
+    except Exception as exc:  # noqa: BLE001 - a broken transport is a report line
+        error = f"{type(exc).__name__}: {exc}"
+    ended = time.perf_counter()
+    echo(
+        f"  compose: healthy={healthy} in {round(ended - started)}s"
+        + (f" ({error})" if error else "")
+    )
+    subprocess.run(  # noqa: S603 - always, even when the start failed
+        list(COMPOSE_STOP),
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    return compose_row(
+        started=started,
+        ended=ended,
+        healthy=healthy,
+        health=health,
+        tools=tools,
+        cap_s=cap_s,
+        error=error,
+    )
+
+
+def _healthz() -> dict[str, Any]:
+    import urllib.request
+
+    with urllib.request.urlopen(f"{CONTAINER_URL}/healthz", timeout=10) as answer:  # noqa: S310
+        return json.loads(answer.read().decode("utf-8"))
+
+
+async def _tools_over_http(url: str) -> list[str]:
+    from mcp.client.streamable_http import streamablehttp_client
+
+    async with streamablehttp_client(url) as (read, write, _):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            return [t.name for t in (await session.list_tools()).tools]
+
+
 # --------------------------------------------------------------------------------- write
 
 
@@ -474,7 +579,12 @@ def mcp_checks(mcp_section: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
-def run(*, report_path: Path | None = None, echo=lambda _m: None) -> tuple[dict[str, Any], Path]:
+def run(
+    *,
+    report_path: Path | None = None,
+    compose: bool = False,
+    echo=lambda _m: None,
+) -> tuple[dict[str, Any], Path]:
     """Measure S5 in process, the server over stdio, and merge both into the step report."""
     settings = get_settings()
     with RetrieveContext.open(settings) as ctx:
@@ -488,6 +598,9 @@ def run(*, report_path: Path | None = None, echo=lambda _m: None) -> tuple[dict[
     measured["generated_at"] = datetime.now(UTC).isoformat(timespec="seconds")
     measured["transport"] = "stdio"
     measured["repeats"] = REPEATS
+    if compose:
+        echo("docker compose --profile mcp up -d --wait …")
+        measured["compose"] = compose_check(echo=echo)
 
     sections = {"global": global_part, "mcp": measured}
     path = merge(sections, report_path)

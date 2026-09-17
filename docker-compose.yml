@@ -33,7 +33,13 @@ services:
   # Linux `.venv` over the macOS one the host is using.
   #
   # Profiles keep it out of `make up`: Neo4j is needed by every step, the MCP server only by
-  # a client that wants HTTP. Start it with `docker compose --profile mcp up -d --wait`.
+  # a client that wants HTTP. Start it with `docker compose --profile mcp up -d --wait`
+  # (measured 2026-09-17: healthy in 6 s on a warm image, `uv` builds /opt/venv inside the
+  # container) and stop it with `docker compose --profile mcp rm -sf brain-mcp`.
+  #
+  # NOT `docker compose --profile mcp down`: that stops the whole project, `brain-neo4j`
+  # included, which is the database every other step and every other agent is using. It was
+  # learned the expensive way — the graph went down in the middle of a report round.
   brain-mcp:
     image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim
     container_name: brain-mcp

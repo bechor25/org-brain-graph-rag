@@ -212,3 +212,49 @@ def test_the_server_is_launched_the_same_way_mcp_json_launches_it() -> None:
     command = rep.server_command()
     assert command[-2:] == ["serve", "--stdio"]
     assert command[0].endswith("brain") or command[:3] == ["uv", "run", "brain"]
+
+
+# ------------------------------------------------------------------- the HTTP transport
+
+
+def test_the_teardown_removes_one_service_and_not_the_project() -> None:
+    """`docker compose down` stops `brain-neo4j` too — which every other step is using."""
+    assert rep.COMPOSE_STOP[-1] == "brain-mcp"
+    assert "down" not in rep.COMPOSE_STOP
+    assert rep.compose_row(started=0.0, ended=6.0, healthy=True, health={}, tools=[])[
+        "stopped_with"
+    ].endswith("rm -sf brain-mcp")
+
+
+def test_the_compose_probe_records_a_build_that_ran_out_of_time(tmp_path: Path) -> None:
+    """A ten-minute cap that is hit is a measurement, not a failure to measure."""
+    row = rep.compose_row(
+        started=0.0,
+        ended=612.0,
+        healthy=False,
+        health={},
+        tools=[],
+        cap_s=600,
+        error="timed out waiting for the container to be healthy",
+    )
+    assert row["healthy"] is False
+    assert row["elapsed_s"] == 612
+    assert row["exceeded_cap"] is True
+    assert "timed out" in row["error"]
+
+
+def test_the_compose_probe_records_what_the_container_answered() -> None:
+    row = rep.compose_row(
+        started=0.0,
+        ended=95.0,
+        healthy=True,
+        health={"status": "ok", "graph": "up"},
+        tools=list(TOOL_NAMES),
+        cap_s=600,
+    )
+    assert row["healthy"] is True
+    assert row["exceeded_cap"] is False
+    assert row["healthz"] == {"status": "ok", "graph": "up"}
+    assert row["tools_listed"] == sorted(TOOL_NAMES)
+    assert row["tools"] == 15
+    assert row["error"] is None

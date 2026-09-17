@@ -1231,6 +1231,12 @@ def serve(
         help="Round-trip every tool over stdio, then write the `mcp` and `global` sections "
         "of data/reports/retrieve.json.",
     ),
+    compose: bool = typer.Option(
+        False,
+        "--compose",
+        help="With --check: also start the `mcp` compose profile (10 minute cap), record "
+        "/healthz and tools/list over HTTP from the container, and stop it again.",
+    ),
 ) -> None:
     """Run the MCP server that exposes the retrieval library to an asking agent [Plan 2].
 
@@ -1242,7 +1248,7 @@ def serve(
     if check:
         from brain.mcp.report import run as run_mcp_report
 
-        report, path = run_mcp_report(echo=typer.echo)
+        report, path = run_mcp_report(compose=compose, echo=typer.echo)
         typer.echo(f"report: {path}")
         raise typer.Exit(code=0 if all(c["ok"] for c in report["mcp"]["checks"]) else 1)
     if stdio == http:
