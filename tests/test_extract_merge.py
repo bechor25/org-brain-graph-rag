@@ -558,3 +558,94 @@ def test_the_two_merges_write_two_report_sections():
     assert report_section("merge", "incremental") == "merge.incremental"
     assert report_section("build") == "build"
     assert report_section("build", "incremental") == "build.incremental"
+
+
+# --------------------------------------------------------- provenance is never replaced
+
+
+def test_a_partial_merge_unions_provenance_onto_what_the_node_already_carries():
+    """The bug the incremental slice found (Plan 3 Task 4, 2026-09-17).
+
+    A full-corpus merge re-plans every batch, so the run's aggregate IS the whole truth and
+    `SET n += row.props` overwriting the lists is the same as unioning them. `--slice` is
+    the first partial merge this pipeline ever ran, and it cost three base entities their
+    Plan 1 evidence: `Technology|lz4-java`, extracted from corpus batch shard-05/003, came
+    out claiming the incremental batch and one incremental chunk. `brain reset --slice`
+    then counted it as deletable, because every chunk it still cited was in the slice.
+    """
+    from brain.extract.graph import union_provenance
+
+    existing = {
+        "evidence_chunk_ids": ["334e0a6688517e865ce18b5f64f707d47b7d1f25"],
+        "batch_ids": ["shard-05/003"],
+        "batch_id": "shard-05/003",
+        "shard": "shard-05",
+    }
+    incoming = {
+        "evidence_chunk_ids": ["cef5803e5fe4d03b78b5c4ddb549174f75eb6287"],
+        "batch_ids": ["incremental/shard-01/001"],
+        "batch_id": "incremental/shard-01/001",
+        "shard": "incremental/shard-01",
+        "model": "opus:kg-extractor",
+    }
+    merged = union_provenance(incoming, existing)
+
+    assert merged["evidence_chunk_ids"] == [
+        "334e0a6688517e865ce18b5f64f707d47b7d1f25",
+        "cef5803e5fe4d03b78b5c4ddb549174f75eb6287",
+    ]
+    assert merged["batch_ids"] == ["incremental/shard-01/001", "shard-05/003"]
+    # first seen wins: which batch first stated this fact does not change when a second
+    # batch agrees with it.
+    assert merged["batch_id"] == "shard-05/003"
+    assert merged["shard"] == "shard-05"
+    # everything else is still the incoming run's
+    assert merged["model"] == "opus:kg-extractor"
+
+
+def test_union_is_a_no_op_on_a_node_the_graph_has_never_seen():
+    from brain.extract.graph import union_provenance
+
+    incoming = {"evidence_chunk_ids": ["a" * 40], "batch_ids": ["x/001"], "batch_id": "x/001"}
+    assert union_provenance(incoming, {}) == incoming
+
+
+def test_union_deduplicates_a_rerun_rather_than_growing_the_list():
+    """A re-merge of the same batches must leave the arrays the length they were."""
+    from brain.extract.graph import union_provenance
+
+    props = {"evidence_chunk_ids": ["a" * 40], "batch_ids": ["x/001"], "batch_id": "x/001"}
+    assert union_provenance(props, dict(props)) == props
+
+
+def test_a_sliced_build_puts_the_slice_in_the_batch_id():
+    """Batch ids were unique inside a root and collided across them: the incremental batch
+    was also called shard-01/001, so provenance could not tell it from the corpus's first
+    batch. 61 corpus entities and 26 incremental ones shared the id."""
+    from brain.extract.build import PlannedBatch
+
+    assert PlannedBatch(shard=0, index=1, chunks=[]).batch_id == "shard-01/001"
+    assert (
+        PlannedBatch(shard=0, index=1, chunks=[], slice_="incremental").batch_id
+        == "incremental/shard-01/001"
+    )
+
+
+def test_a_finished_batch_in_a_sliced_root_does_not_look_missing():
+    """`status.json` records the bare index, so the id is rebuilt — and in a sliced root it
+    has to be rebuilt with the slice in front, the way `discover` builds it."""
+    from brain.extract.merge import done_without_output
+    from brain.extract.validate import Batch
+
+    status = {"shard-01": {"done": ["001"], "failed": []}}
+    done = [
+        Batch(
+            batch_id="incremental/shard-01/001",
+            shard="shard-01",
+            index=1,
+            path=Path("x"),
+            sha256="0" * 64,
+        )
+    ]
+    assert done_without_output(status, done, "incremental") == []
+    assert done_without_output(status, done) == ["shard-01/001"]

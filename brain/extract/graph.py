@@ -197,12 +197,94 @@ def component_names(ctx: GraphContext) -> dict[str, str]:
 # ------------------------------------------------------------------------------ writes
 
 
+#: Provenance lists a merge may only ever add to. `SET n += row.props` replaces a list
+#: property wholesale, which is invisible while every merge re-plans every batch — the
+#: run's aggregate is then the whole truth. `brain extract merge --slice` is the first
+#: partial merge this pipeline runs, and there the aggregate is a *fragment*: without the
+#: union, an entity the corpus extracted comes out citing only the slice's chunk, and
+#: `brain reset --slice` then reads it as deletable. Measured on the live graph on
+#: 2026-09-17: three base entities lost their Plan 1 evidence that way.
+UNIONED_LIST_PROPS: tuple[str, ...] = ("evidence_chunk_ids", "batch_ids")
+
+#: Set once, by whoever said it first. "Which batch first stated this fact" does not change
+#: when a later batch agrees, and `shard` is derived from it, so the two move together.
+FIRST_SEEN_PROPS: tuple[str, ...] = ("batch_id", "shard")
+
+
+def union_provenance(props: dict[str, Any], existing: dict[str, Any]) -> dict[str, Any]:
+    """One row's props, merged onto the provenance the node or edge already carries.
+
+    Pure and total: with an empty `existing` it returns `props` unchanged, which is what
+    a full-corpus merge and a first sighting both want. Deduplicated and sorted, so a
+    re-merge of the same batches leaves the arrays exactly the length they were.
+    """
+    merged = dict(props)
+    for key in UNIONED_LIST_PROPS:
+        both = set(existing.get(key) or []) | set(props.get(key) or [])
+        if both:
+            merged[key] = sorted(both)
+    for key in FIRST_SEEN_PROPS:
+        prior = existing.get(key)
+        if prior:
+            merged[key] = prior
+    return merged
+
+
+PROVENANCE_RETURN = ", ".join(f"x.`{p}` AS `{p}`" for p in (*UNIONED_LIST_PROPS, *FIRST_SEEN_PROPS))
+
+
+def read_entity_provenance(ctx: GraphContext, ids: Sequence[str]) -> dict[str, dict[str, Any]]:
+    """What the graph already records for these entities. Empty for ones it has not seen."""
+    if not ids:
+        return {}
+    rows = ctx.read(
+        f"MATCH (x:{ctx.label(ENTITY_LABEL)}) WHERE x.`{ENTITY_KEY}` IN $ids "
+        f"RETURN x.`{ENTITY_KEY}` AS key, {PROVENANCE_RETURN}",
+        ids=list(ids),
+    )
+    return {r["key"]: {k: v for k, v in r.items() if k != "key"} for r in rows}
+
+
+def read_edge_provenance(
+    ctx: GraphContext,
+    src: tuple[str, str],
+    rel: str,
+    dst: tuple[str, str],
+    rows: Sequence[dict[str, Any]],
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """The same, for the edges these rows would MERGE, keyed by (src, dst)."""
+    if not rows:
+        return {}
+    src_label, src_key = src
+    dst_label, dst_key = dst
+    found = ctx.read(
+        "UNWIND $pairs AS pair\n"
+        f"MATCH (a:{ctx.label(src_label)} {{`{src_key}`: pair.src}})"
+        f"-[x:`{rel}`]->"
+        f"(b:{ctx.label(dst_label)} {{`{dst_key}`: pair.dst}})\n"
+        f"RETURN pair.src AS src, pair.dst AS dst, {PROVENANCE_RETURN}",
+        pairs=[{"src": r["src"], "dst": r["dst"]} for r in rows],
+    )
+    return {
+        (r["src"], r["dst"]): {k: v for k, v in r.items() if k not in ("src", "dst")} for r in found
+    }
+
+
 def write_entities(ctx: GraphContext, rows: Sequence[dict[str, Any]]) -> int:
-    """MERGE on `Entity.id` (= `kind|norm_name`). `extracted_at` is set once, on create."""
+    """MERGE on `Entity.id` (= `kind|norm_name`). `extracted_at` is set once, on create.
+
+    The provenance lists are unioned with what the node already carries rather than
+    replaced — see :data:`UNIONED_LIST_PROPS`.
+    """
     if not rows:
         return 0
-    ctx.write_rows(node_merge(ctx, ENTITY_LABEL, ENTITY_KEY, on_create=True), rows)
-    return len(rows)
+    existing = read_entity_provenance(ctx, [r["key"] for r in rows])
+    merged = [
+        {**row, "props": union_provenance(row["props"], existing.get(row["key"], {}))}
+        for row in rows
+    ]
+    ctx.write_rows(node_merge(ctx, ENTITY_LABEL, ENTITY_KEY, on_create=True), merged)
+    return len(merged)
 
 
 def write_mentions(ctx: GraphContext, rows_by_label: dict[str, list[dict[str, Any]]]) -> int:
@@ -215,17 +297,18 @@ def write_mentions(ctx: GraphContext, rows_by_label: dict[str, list[dict[str, An
     for label, rows in sorted(rows_by_label.items()):
         if not rows:
             continue
-        ctx.write_rows(
-            edge_merge(
-                ctx,
-                (CHUNK_LABEL, CHUNK_KEY),
-                DERIVED_RELATION_TYPE,
-                (label, NODE_KEYS[label]),
-                set_props=True,
-            ),
-            rows,
-        )
-        total += len(rows)
+        src = (CHUNK_LABEL, CHUNK_KEY)
+        dst = (label, NODE_KEYS[label])
+        existing = read_edge_provenance(ctx, src, DERIVED_RELATION_TYPE, dst, rows)
+        merged = [
+            {
+                **row,
+                "props": union_provenance(row["props"], existing.get((row["src"], row["dst"]), {})),
+            }
+            for row in rows
+        ]
+        ctx.write_rows(edge_merge(ctx, src, DERIVED_RELATION_TYPE, dst, set_props=True), merged)
+        total += len(merged)
     return total
 
 
@@ -235,17 +318,18 @@ def write_relations(ctx: GraphContext, grouped: dict[tuple[str, str, str], list[
     for (rel_type, src_label, dst_label), rows in sorted(grouped.items()):
         if not rows:
             continue
-        ctx.write_rows(
-            edge_merge(
-                ctx,
-                (src_label, NODE_KEYS[src_label]),
-                rel_type,
-                (dst_label, NODE_KEYS[dst_label]),
-                set_props=True,
-            ),
-            rows,
-        )
-        total += len(rows)
+        src = (src_label, NODE_KEYS[src_label])
+        dst = (dst_label, NODE_KEYS[dst_label])
+        existing = read_edge_provenance(ctx, src, rel_type, dst, rows)
+        merged = [
+            {
+                **row,
+                "props": union_provenance(row["props"], existing.get((row["src"], row["dst"]), {})),
+            }
+            for row in rows
+        ]
+        ctx.write_rows(edge_merge(ctx, src, rel_type, dst, set_props=True), merged)
+        total += len(merged)
     return total
 
 

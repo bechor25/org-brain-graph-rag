@@ -122,10 +122,21 @@ class PlannedBatch:
     shard: int
     index: int
     chunks: list[SelectedChunk]
+    #: The slice this batch belongs to, which rides its id.
+    slice_: str | None = None
 
     @property
     def batch_id(self) -> str:
-        return f"{shard_name(self.shard)}/{self.index:03d}"
+        """`shard-NN/NNN` for the corpus, `<slice>/shard-NN/NNN` for a slice.
+
+        Ids were unique inside a root and collided across them: the incremental build's
+        first batch was also called `shard-01/001`, so `Entity.batch_id` could not tell it
+        from the corpus's first batch — 61 corpus entities and 26 incremental ones shared
+        the id on the live graph, and only `extracted_at` could separate them. A batch id
+        that does not identify a batch is not provenance.
+        """
+        plain = f"{shard_name(self.shard)}/{self.index:03d}"
+        return f"{self.slice_}/{plain}" if self.slice_ else plain
 
 
 def envelope(
@@ -163,6 +174,7 @@ def pack(
     max_bytes: int = MAX_BATCH_BYTES,
     generated_at: str = "",
     schema_sha: str = "",
+    slice_: str | None = None,
 ) -> list[PlannedBatch]:
     """Greedy packing against the *serialised* size, so "40 KB" is measured, not guessed.
 
@@ -174,12 +186,20 @@ def pack(
 
     def close() -> None:
         if current:
-            batches.append(PlannedBatch(shard=shard, index=len(batches) + 1, chunks=list(current)))
+            batches.append(
+                PlannedBatch(
+                    shard=shard,
+                    index=len(batches) + 1,
+                    chunks=list(current),
+                    slice_=slice_,
+                )
+            )
             current.clear()
 
     def size(candidate: Sequence[SelectedChunk]) -> int:
+        plain = f"{shard_name(shard)}/{len(batches) + 1:03d}"
         payload = envelope(
-            batch_id=f"{shard_name(shard)}/{len(batches) + 1:03d}",
+            batch_id=f"{slice_}/{plain}" if slice_ else plain,
             shard=shard_name(shard),
             index=len(batches) + 1,
             chunks=candidate,
@@ -204,7 +224,13 @@ def pack(
 
 
 def plan_batches(
-    selection: Selection, *, shards: int, batch_size: int, generated_at: str, schema_sha: str
+    selection: Selection,
+    *,
+    shards: int,
+    batch_size: int,
+    generated_at: str,
+    schema_sha: str,
+    slice_: str | None = None,
 ) -> list[PlannedBatch]:
     parents = group_by_parent(selection.chunks)
     planned: list[PlannedBatch] = []
@@ -217,6 +243,7 @@ def plan_batches(
                 batch_size=batch_size,
                 generated_at=generated_at,
                 schema_sha=schema_sha,
+                slice_=slice_,
             )
         )
     return planned
@@ -410,6 +437,7 @@ def run_build(
         batch_size=batch_size,
         generated_at=generated_at,
         schema_sha=schema_sha,
+        slice_=slice_,
     )
 
     written: list[dict[str, Any]] = []

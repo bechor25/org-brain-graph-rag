@@ -443,12 +443,23 @@ def agent_failures(status: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-def done_without_output(status: dict[str, dict[str, Any]], batches: Sequence[Batch]) -> list[str]:
+def done_without_output(
+    status: dict[str, dict[str, Any]],
+    batches: Sequence[Batch],
+    slice_: str | None = None,
+) -> list[str]:
+    """Batches an agent marked done that left no `.out.json`.
+
+    `status.json` records the bare index (`"001"`), so the id is rebuilt here — and in a
+    sliced root it has to be rebuilt the same way `discover` builds it, with the slice in
+    front, or every finished batch looks missing.
+    """
     seen = {b.batch_id for b in batches}
+    prefix = f"{slice_}/" if slice_ else ""
     out: list[str] = []
     for shard, data in sorted(status.items()):
         for name in data.get("done") or []:
-            batch_id = str(name) if "/" in str(name) else f"{shard}/{name}"
+            batch_id = str(name) if "/" in str(name) else f"{prefix}{shard}/{name}"
             if batch_id not in seen:
                 out.append(batch_id)
     return sorted(out)
@@ -520,7 +531,7 @@ def run_merge(
         )
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
 
-    batches = validate_mod.discover(root)
+    batches = validate_mod.discover(root, slice_)
     for batch in batches:
         validate_mod.parse_batch(batch, schema)
 
@@ -637,7 +648,7 @@ def run_merge(
         counters=dict(ctx.counters),
         manifest=load_manifest(batches_dir, slice_),
         reported_failures=agent_failures(status),
-        done_missing=done_without_output(status, batches),
+        done_missing=done_without_output(status, batches, slice_),
         gone=sorted(previously_merged - {b.batch_id for b in valid}),
         duration_ms=round((time.perf_counter() - started) * 1000),
         prefix=ctx.prefix,

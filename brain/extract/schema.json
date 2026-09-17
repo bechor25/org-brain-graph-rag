@@ -9,8 +9,8 @@
   "properties": {
     "batch_id": {
       "type": "string",
-      "description": "Exactly the `batch_id` of the .in.json this answers, e.g. \"shard-01/003\".",
-      "pattern": "^shard-[0-9]{2}/[0-9]{3}$"
+      "description": "Exactly the `batch_id` of the .in.json this answers, e.g. \"shard-01/003\" for the corpus or \"incremental/shard-01/001\" for a slice. A slice gets its own root, and the prefix is what keeps the id unique across roots — without it two different batches are both called shard-01/001 and provenance cannot tell them apart.",
+      "pattern": "^(?:[a-z][a-z0-9-]*/)?shard-[0-9]{2}/[0-9]{3}$"
     },
     "entities": {
       "type": "array",

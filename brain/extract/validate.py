@@ -168,15 +168,21 @@ class Batch:
         return found
 
 
-def discover(root: Path) -> list[Batch]:
-    """Every `<shard>/NNN.out.json`, in shard then batch order."""
+def discover(root: Path, slice_: str | None = None) -> list[Batch]:
+    """Every `<shard>/NNN.out.json`, in shard then batch order.
+
+    `slice_` prefixes the id, matching what a sliced `brain extract build` wrote into the
+    envelope. Ids are unique inside a root; the prefix is what makes them unique across
+    roots, so `Entity.batch_id` names one batch and not two.
+    """
     found: list[Batch] = []
     for path in sorted(root.glob("shard-[0-9][0-9]/[0-9][0-9][0-9].out.json")):
         shard = path.parent.name
         index = int(path.name.split(".", 1)[0])
+        plain = f"{shard}/{index:03d}"
         found.append(
             Batch(
-                batch_id=f"{shard}/{index:03d}",
+                batch_id=f"{slice_}/{plain}" if slice_ else plain,
                 shard=shard,
                 index=index,
                 path=path,
