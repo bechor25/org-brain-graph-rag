@@ -154,7 +154,13 @@ def _temporal(
     log: bool,
     route: dict[str, Any],
 ) -> Result:
-    """Bind the temporal tool the sentence is actually asking for. Falls back to S2."""
+    """Bind the temporal tool the sentence is actually asking for. Falls back to S2.
+
+    A document key is as good an anchor as a work item key: `temporal.py` derives a KIP's
+    history from the commits that implement it and the work items that reference it, so
+    "who was assigned to KIP-848 over time" binds instead of refusing. Work items still
+    come first — when a sentence names both, the item is the more specific anchor.
+    """
     keys = find_keys(question)
     item_key = (keys.workitems or keys.documents or ("",))[0]
     tool_args = {"log_mode": log_mode, "log_path": log_path, "log": log, "route": route}

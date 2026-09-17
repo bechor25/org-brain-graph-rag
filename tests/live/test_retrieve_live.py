@@ -14,6 +14,8 @@ needs no database at all.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 from pathlib import Path
 
@@ -356,6 +358,156 @@ def test_assignees_over_time_marks_the_open_interval_as_current(ctx):
     assert people and any(i.props["current"] for i in people)
 
 
+# ------------------------------------------------------------------ S6 on a KIP anchor
+#
+# `KIP-5` is a `Document`: no changelog, no assignee, no fix version of its own. Its
+# history is derived from the commits that implement it and from the work items that
+# reference it — `KAFKA-100` (two status changes, fix version 3.7.0) and `KAFKA-101`
+# (three status changes, none).
+
+#: sha256 of `Result.model_dump()` as the *committed* S6 produced it on this corpus before
+#: a Document could be an anchor (captured from `git show 0b73a80:brain/retrieve/temporal.py`
+#: and run against this same fixture). Regenerated from the live result on every run.
+GOLDEN_WORKITEM_S6: dict[str, str] = {
+    "timeline(KAFKA-100)": "e947d43f99f00c8ffd450e9a2fe32879448918a330126eada410770bd57bb4ec",
+    "status_at(KAFKA-100,2024-01-20)": (
+        "d715aa63d82fe7da24597cef7dd9bae47f37a6bc6256051d340b921c9516e892"
+    ),
+    "assignees_over_time(KAFKA-100)": (
+        "6882f58e46998ca75cfbd386fa41f3f8bd9111bf378b09ebc04cbb6613c0fe49"
+    ),
+    "assignees_over_time(XT-1)": "fb7ef9ef454bdfc4ad63a052bb3e83c9cb736080a9d2310b0fb7a195e896d40a",
+}
+
+
+def _digest(result: Result) -> str:
+    """The answer hashed with `score` dropped and the items in key order.
+
+    Not the raw dump, because the raw dump is not stable: three of KAFKA-100's changelog
+    rows carry the same timestamp, `ORDER BY s.at` does not break that tie, and `timeline`
+    scores a row by its position — so which tied row is item 3, and what it scores, differs
+    between runs of the *unchanged* code. What must not move is the set of rows, their
+    text, their provenance and the Cypher that produced them.
+    """
+    dump = result.model_dump()
+    dump.pop("latency_ms")
+    dump["items"] = sorted(
+        ({k: v for k, v in item.items() if k != "score"} for item in dump["items"]),
+        key=lambda item: item["key"],
+    )
+    return hashlib.sha256(json.dumps(dump, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
+def test_a_work_items_own_temporal_answer_did_not_move(ctx):
+    """The Document anchor is an addition, not a change: same rows, same Cypher, same scores.
+
+    `XT-1` is in here because "this item has no assignee" is the case the Document branch
+    is reached *through*, and a work item with no interval must still get the old sentence.
+    """
+    result = timeline(ctx, "KAFKA-100", limit=60, log=False)
+    assert sorted((i.title, i.snippet) for i in result.items if i.kind == "Row") == [
+        ("2024-01-12T08:00:00Z · assignee", "None → Dana Lee (by jrao)"),
+        ("2024-01-15T08:00:00Z · status", "Open → In Progress (by dlee)"),
+        ("2024-03-02T10:00:00Z · Fix Version", "None → 3.7.0 (by dlee)"),
+        ("2024-03-02T10:00:00Z · resolution", "None → Fixed (by dlee)"),
+        ("2024-03-02T10:00:00Z · status", "In Progress → Resolved (by dlee)"),
+    ]
+    assert sorted(i.score for i in result.items) == [0.2, 0.4, 0.6, 0.8, 1.0, 1.0]
+    assert {
+        "timeline(KAFKA-100)": _digest(result),
+        "status_at(KAFKA-100,2024-01-20)": _digest(
+            status_at(ctx, "KAFKA-100", "2024-01-20", log=False)
+        ),
+        "assignees_over_time(KAFKA-100)": _digest(assignees_over_time(ctx, "KAFKA-100", log=False)),
+        "assignees_over_time(XT-1)": _digest(assignees_over_time(ctx, "XT-1", log=False)),
+    } == GOLDEN_WORKITEM_S6
+
+
+def test_a_kips_timeline_is_its_commits_and_the_movement_of_what_references_it(ctx):
+    result = timeline(ctx, "KIP-5", log=False)
+    check_envelope(result, "s6", ctx)
+    head = result.items[0]
+    assert head.kind == "Document" and head.key == "KIP-5"
+    assert head.props["derived_from"] == ["IMPLEMENTS_KIP", "REFERENCES"]
+    assert (head.props["commits"], head.props["referencing_work_items"]) == (1, 2)
+
+    rows = [i for i in result.items if i.kind == "Row"]
+    stamps = [r.props["at"] for r in rows]
+    assert stamps == sorted(stamps), "a derived timeline is still a timeline"
+    assert sorted(r.props["event"] for r in rows) == [
+        "commit",
+        "fix_version",
+        "status",
+        "status",
+        "status",
+        "status",
+        "status",
+    ]
+    commit = next(r for r in rows if r.props["event"] == "commit")
+    assert commit.key == "a1b2c3d4" and commit.props["via"] == "IMPLEMENTS_KIP"
+    fix = next(r for r in rows if r.props["event"] == "fix_version")
+    assert fix.key == "KAFKA-100@3.7.0" and fix.props["dated_by"] == "changelog"
+    assert {r.props["work_item"] for r in rows if r.props["event"] == "status"} == {
+        "KAFKA-100",
+        "KAFKA-101",
+    }
+
+
+def test_every_derived_row_cites_the_node_it_was_derived_from(ctx):
+    """A derived row is only honest when the derivation is on the record."""
+    rows = [i for i in timeline(ctx, "KIP-5", log=False).items if i.kind == "Row"]
+    assert all(p.source_kind == "row" for r in rows for p in r.provenance)
+    assert {p.source for r in rows for p in r.provenance} == {
+        "KAFKA-100",
+        "KAFKA-101",
+        "a1b2c3d4",
+    }
+    assert {r.props["via"] for r in rows} == {"IMPLEMENTS_KIP", "REFERENCES"}
+
+
+def test_status_at_of_a_kip_answers_for_each_referencing_work_item(ctx):
+    result = status_at(ctx, "KIP-5", "2024-03-05", log=False)
+    check_envelope(result, "s6", ctx)
+    by_key = {i.key: i for i in result.items}
+    assert by_key["KIP-5@2024-03-05"].props["referencing"] == 2
+    assert by_key["KAFKA-100@2024-03-05"].props["status"] == "Resolved"
+    # KAFKA-101 was created that morning and moves for the first time on the 10th: the
+    # answer is the *from* of that first transition, not the status it has today.
+    assert by_key["KAFKA-101@2024-03-05"].props["status"] == "Open"
+    assert "initial status" in by_key["KAFKA-101@2024-03-05"].props["basis"]
+    assert by_key["KIP-5"].kind == "Document"
+
+
+def test_status_at_of_a_kip_before_any_of_its_work_existed_says_so(ctx):
+    result = status_at(ctx, "KIP-5", "2023-12-01", log=False)
+    head = result.items[0]
+    assert (head.props["existed"], head.props["referencing"]) == (0, 2)
+    rows = [i for i in result.items if i.props.get("work_item")]
+    assert all(r.props["status"] is None for r in rows)
+    assert all("did not exist" in r.props["basis"] for r in rows)
+
+
+def test_assignees_of_a_kip_merge_the_referencing_items_intervals(ctx):
+    result = assignees_over_time(ctx, "KIP-5", log=False)
+    check_envelope(result, "s6", ctx)
+    people = [i for i in result.items if i.kind == "Person"]
+    assert [p.key for p in people] == ["jira:dlee"], "one entry per person, not per interval"
+    dana = people[0]
+    assert dana.props["via"] == "REFERENCES" and dana.props["current"] is True
+    assert "KAFKA-100" in dana.props["work_items"]
+    assert all(p.source_kind == "row" for p in dana.provenance)
+    assert {p.source for p in dana.provenance} <= set(dana.props["work_items"])
+
+
+def test_a_key_that_is_neither_a_work_item_nor_a_document_still_raises(ctx):
+    for call in (
+        lambda: timeline(ctx, "KAFKA-999999", log=False),
+        lambda: status_at(ctx, "KAFKA-999999", "2024-01-01", log=False),
+    ):
+        with pytest.raises(RetrieveError):
+            call()
+
+
 # --------------------------------------------------------------------- lookup / explain
 
 
@@ -461,6 +613,8 @@ ASK_CASES = [
     ("What alternatives were rejected in KIP-5 and why?", "s3"),
     ("What was the status of KAFKA-100 on 2024-01-20?", "s6"),
     ("Who was assigned to KAFKA-100 over time?", "s6"),
+    ("Who was assigned to KIP-5 work over time?", "s6"),
+    ("What is the history of KIP-5?", "s6"),
     ("What changed in `clients` between 3.6 and 3.7?", "s6"),
     ("What depends on the group coordinator?", "s2"),
     ("If we change `clients`, which open issues and tests are affected?", "s2"),
