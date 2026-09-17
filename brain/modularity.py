@@ -9,9 +9,11 @@ invisible until a retrieval answer cites a key that moved.
 So this records what the step claims, measured rather than asserted, in the same place
 every other step reports:
 
-* ``canonical`` — sha256 and record count of each of the five canonical files, next to
-  the digests recorded before the refactor. Any difference is a regression, and the
-  report says which file.
+* ``canonical`` — sha1/sha256 and record count of the **base rows** of each of the five
+  canonical files, next to the digests recorded before the refactor. Any difference is a
+  regression, and the report says which file. Rows an incremental pull appended
+  (``slice: "incremental"``) are counted in ``by_slice`` and covered by ``file_sha1``:
+  they are an addition to the corpus the baseline describes, not drift in it.
 * ``rerun`` — the same five files **produced again, now**, by the refactored code from
   the real raw on disk, into a scratch directory. `canonical` compares digests of files
   that were written before the refactor and have not been touched since; only this
@@ -46,6 +48,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from brain.canon.models import BASE_SLICE, INCREMENTAL_SLICE
 from brain.graph.context import GraphContext
 from brain.harvest.base import utc_now_iso, write_json_atomic
 from brain.harvest.registry import Registry, get_registry
@@ -66,18 +69,56 @@ BASELINE_SHA1: dict[str, str] = {
 
 
 def digest(path: Path) -> dict[str, Any]:
-    """sha1, sha256 and the record count of one canonical file.
+    """sha1, sha256 and the record count of one canonical file's **base rows**.
 
     sha1 because that is what `shasum` prints and what the step reports quoted; sha256
     because `brain load` already records canonical inputs that way and the two reports
     should be comparable without re-reading 45 MB.
+
+    Base rows, not the whole file, and that is the whole point of this function. The
+    baseline was recorded on a corpus that had one slice; `brain harvest --slice
+    incremental` appends rows it never saw. A whole-file digest would call those rows
+    drift, and the byte-identity check would fail the first time the pipeline did the
+    thing it exists to do — while saying nothing about whether a base record moved.
+    `sha1`/`sha256`/`bytes`/`records` therefore describe the rows with
+    `slice != "incremental"`; `file_sha1`/`file_bytes` describe the file as it stands, so
+    the increment is visible rather than hidden; and `by_slice` counts both.
+
+    Streamed, in binary, line by line. Never `read_bytes()`: workitems.jsonl is 19 MB,
+    and the concatenation of the base lines is byte-for-byte the file the baseline was
+    taken from — which is exactly what makes the two comparable. Binary iteration splits
+    on `b"\n"` alone, and `json.dumps` escapes a newline inside a string, so a record can
+    never be cut in half (text mode would also split on `\r`).
     """
-    data = path.read_bytes()
+    base_sha1 = hashlib.sha1()  # noqa: S324 - a file identity, not a MAC
+    base_sha256 = hashlib.sha256()
+    file_sha1 = hashlib.sha1()  # noqa: S324 - same
+    by_slice: dict[str, int] = {}
+    base_bytes = base_records = file_bytes = 0
+
+    with path.open("rb") as handle:
+        for raw in handle:
+            file_sha1.update(raw)
+            file_bytes += len(raw)
+            stripped = raw.strip()
+            if stripped:
+                slice_ = json.loads(stripped).get("slice") or BASE_SLICE
+                by_slice[slice_] = by_slice.get(slice_, 0) + 1
+                if slice_ == INCREMENTAL_SLICE:
+                    continue
+                base_records += 1
+            base_sha1.update(raw)
+            base_sha256.update(raw)
+            base_bytes += len(raw)
+
     return {
-        "sha1": hashlib.sha1(data).hexdigest(),  # noqa: S324 - a file identity, not a MAC
-        "sha256": hashlib.sha256(data).hexdigest(),
-        "bytes": len(data),
-        "records": data.count(b"\n"),
+        "sha1": base_sha1.hexdigest(),
+        "sha256": base_sha256.hexdigest(),
+        "bytes": base_bytes,
+        "records": base_records,
+        "file_sha1": file_sha1.hexdigest(),
+        "file_bytes": file_bytes,
+        "by_slice": dict(sorted(by_slice.items())),
     }
 
 
@@ -486,7 +527,8 @@ def rerun_canon(canonical_dir: Path, raw_dir: Path, scratch: Path) -> dict[str, 
         reports_dir=reports,
         echo=lambda _m: None,
     )
-    produced = {name: entry["sha1"] for name, entry in canonical_digests(target).items()}
+    digests = canonical_digests(target)
+    produced = {name: entry["sha1"] for name, entry in digests.items()}
     drift = {
         name: {"expected": BASELINE_SHA1[name], "got": sha}
         for name, sha in produced.items()
@@ -499,6 +541,11 @@ def rerun_canon(canonical_dir: Path, raw_dir: Path, scratch: Path) -> dict[str, 
         "scratch_dir": str(target),
         "exit_code": code,
         "sha1": produced,
+        # What today's code wrote beyond the baseline corpus: the incremental slice it
+        # picked up from `data/raw/<source>/since-*/`. Reported next to the digest so
+        # "reproduces_baseline" cannot quietly mean "produced nothing new either".
+        "by_slice": {name: entry["by_slice"] for name, entry in digests.items()},
+        "file_sha1": {name: entry["file_sha1"] for name, entry in digests.items()},
         "reproduces_baseline": not drift,
         "drift": drift,
         "duration_s": round(time.perf_counter() - started, 2),
@@ -536,9 +583,14 @@ def build_report(
             "baseline_sha1": BASELINE_SHA1,
             "matches_baseline": not drift,
             "drift": drift,
+            "by_slice": {name: entry["by_slice"] for name, entry in digests.items()},
             "note": (
-                "digests of files on disk, written before the registry refactor. That "
-                "today's code still produces them is the `rerun` section, not this one."
+                "digests of the BASE rows of the files on disk (slice != 'incremental'), "
+                "against the baseline recorded before the registry refactor. An "
+                "incremental pull appends rows the baseline never saw; those are counted "
+                "in `by_slice` and digested in each file's `file_sha1`, not called drift. "
+                "That today's code still produces the base rows is the `rerun` section, "
+                "not this one."
             ),
         },
         "synthetic": synthetic_counts(canonical_dir),

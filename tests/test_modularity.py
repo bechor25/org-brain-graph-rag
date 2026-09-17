@@ -126,12 +126,62 @@ def test_the_report_is_written_where_every_other_step_reports(tmp_path):
 def test_the_real_corpus_still_matches_the_pre_refactor_digests():
     """The acceptance criterion: registry-driven canon is byte-identical.
 
+    Byte-identical *for the base slice*, which is the corpus the baseline was recorded on.
+    `brain harvest --slice incremental` appends rows the baseline never saw, so a
+    whole-file digest would report the increment as drift and the check would die the
+    first time the pipeline did the thing it was built to do. The digest therefore covers
+    the rows with `slice != "incremental"`, and `by_slice` says how many were added.
+
     Skipped on a machine that has never harvested — `data/` is not committed. Where it
     does run, it is the only check that covers the real 45 MB.
     """
     report = build_report(REAL)
     assert report["canonical"]["drift"] == {}
     assert report["canonical"]["matches_baseline"] is True
+
+
+def test_an_appended_incremental_row_is_not_drift(tmp_path):
+    """The contract the baseline encodes, stated on a fixture instead of on 45 MB."""
+    import shutil
+
+    for path in sorted(MINI.glob("*.jsonl")):
+        shutil.copy(path, tmp_path / path.name)
+    before = canonical_digests(tmp_path)["workitems.jsonl"]
+
+    row = {"id": "jira:KAFKA-20035", "key": "KAFKA-20035", "slice": "incremental"}
+    with (tmp_path / "workitems.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+    after = canonical_digests(tmp_path)["workitems.jsonl"]
+
+    assert after["sha1"] == before["sha1"] == MINI_SHA1["workitems.jsonl"]
+    assert after["sha256"] == before["sha256"]
+    assert after["records"] == before["records"]
+    assert after["bytes"] == before["bytes"]
+    # the file itself did change, and the report says so rather than hiding it
+    assert after["file_sha1"] != before["file_sha1"]
+    assert after["file_bytes"] > before["file_bytes"]
+    assert after["by_slice"] == {"base": before["records"], "incremental": 1}
+    assert before["by_slice"] == {"base": before["records"]}
+
+
+def test_the_base_digest_is_the_file_when_no_row_is_incremental():
+    """No slice on disk means the two digests are the same number — which is what makes
+    the base-rows digest safe to compare against a baseline recorded before slices."""
+    for entry in canonical_digests(MINI).values():
+        assert entry["sha1"] == entry["file_sha1"]
+        assert entry["bytes"] == entry["file_bytes"]
+
+
+def test_a_canonical_file_is_never_read_whole_to_be_digested(monkeypatch):
+    """45 MB of workitems.jsonl does not go through memory to produce a sha1."""
+    from pathlib import Path as _Path
+
+    def refuse(self, *a, **kw):  # pragma: no cover - the point is that it is not called
+        raise AssertionError(f"{self} was read whole")
+
+    monkeypatch.setattr(_Path, "read_bytes", refuse)
+    monkeypatch.setattr(_Path, "read_text", refuse)
+    assert canonical_digests(MINI)["workitems.jsonl"]["sha1"] == MINI_SHA1["workitems.jsonl"]
 
 
 # ---------------------------------------------------------------- the real canon golden

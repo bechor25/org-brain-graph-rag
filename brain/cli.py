@@ -274,23 +274,41 @@ def chunk(
         "Entity.synthetic from its evidence chunks, then exit. Writes one boolean per "
         "node, deletes nothing, needs no embedder, and a rerun stamps 0 (ADR-0005 §5).",
     ),
+    stamp_slice: bool = typer.Option(
+        False,
+        "--stamp-slice",
+        help="Backfill only: re-derive Chunk.slice from each chunk's parents, then exit. "
+        "brain chunk skips a chunk whose text is unchanged, so a corpus chunked before "
+        "the property existed keeps null forever. Writes one string per node, deletes "
+        "nothing, needs no embedder, and a rerun stamps 0 (Plan 3 decision 6).",
+    ),
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
-        help="With --stamp-synthetic: report what would be stamped and write nothing. "
-        "Exits 1 while anything is still unstamped.",
+        help="With --stamp-synthetic / --stamp-slice: report what would be stamped and "
+        "write nothing. Exits 1 while anything is still unstamped.",
     ),
 ) -> None:
     """Chunk texts, embed with local bge-m3, create :Chunk nodes + vector index [Plan 1]."""
     from brain.chunk.runner import chunk_from_settings, resolve_kinds
     from brain.config import get_settings
 
-    if dry_run and not stamp_synthetic:
+    if stamp_synthetic and stamp_slice:
         raise typer.BadParameter(
-            "--dry-run only applies to --stamp-synthetic", param_hint="--dry-run"
+            "--stamp-synthetic and --stamp-slice are two backfills; run them one at a time "
+            "so each one's report says what it changed",
+            param_hint="--stamp-slice",
         )
-    if stamp_synthetic:
-        from brain.chunk.synthetic import stamp_from_settings
+    if dry_run and not (stamp_synthetic or stamp_slice):
+        raise typer.BadParameter(
+            "--dry-run only applies to --stamp-synthetic or --stamp-slice",
+            param_hint="--dry-run",
+        )
+    if stamp_synthetic or stamp_slice:
+        if stamp_slice:
+            from brain.chunk.slices import stamp_from_settings
+        else:
+            from brain.chunk.synthetic import stamp_from_settings
 
         try:
             _, code = stamp_from_settings(
@@ -454,13 +472,29 @@ def extract_build(
 
 
 @extract_app.command("merge")
-def extract_merge() -> None:
+def extract_merge(
+    slice_: str | None = typer.Option(
+        None,
+        "--slice",
+        metavar="NAME",
+        help="Merge the batches of one slice (`incremental`) from their own root, "
+        "data/batches/extract/<slice>/. Without it the corpus shards are merged, as always.",
+    ),
+) -> None:
     """Validate every NNN.out.json and merge entities/relations into Neo4j with provenance."""
     from brain.config import get_settings
     from brain.extract.merge import MergeError
     from brain.extract.runner import merge_from_settings
 
     settings = get_settings()
+    if slice_ is not None:
+        from brain.reset import SLICES
+
+        if slice_ not in SLICES:
+            raise typer.BadParameter(
+                f"unknown slice {slice_!r}; --slice takes one of {', '.join(SLICES)}",
+                param_hint="--slice",
+            )
     try:
         _, code = merge_from_settings(
             settings.batches_dir,
@@ -468,6 +502,7 @@ def extract_merge() -> None:
             # A re-merge must land on the entities `brain resolve` kept, not recreate the
             # ones it merged away — the ledger is what says which is which.
             canonical_dir=settings.canonical_dir,
+            slice_=slice_,
             echo=typer.echo,
         )
     except (MergeError, OSError, ValueError) as exc:

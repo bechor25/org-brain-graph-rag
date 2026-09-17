@@ -102,12 +102,18 @@ def batch_output(**kw: Any) -> dict[str, Any]:
     return {**base, **kw}
 
 
-def written_batch(tmp_path: Path, *, inp: dict[str, Any], out: dict[str, Any]) -> Path:
-    """Write an `.in.json`/`.out.json` pair where `discover` will find them."""
+def written_batch(
+    tmp_path: Path, *, inp: dict[str, Any], out: dict[str, Any], slice_: str | None = None
+) -> Path:
+    """Write an `.in.json`/`.out.json` pair where `discover` will find them.
+
+    `slice_` puts the pair under `extract/<slice>/`, the root a sliced build writes to.
+    """
     import json
 
     shard, index = inp["batch_id"].split("/")
-    shard_dir = tmp_path / "extract" / shard
+    root = tmp_path / "extract" / slice_ if slice_ else tmp_path / "extract"
+    shard_dir = root / shard
     shard_dir.mkdir(parents=True, exist_ok=True)
     (shard_dir / f"{index}.in.json").write_text(
         json.dumps(inp, ensure_ascii=False, indent=2), encoding="utf-8"

@@ -31,7 +31,13 @@ from typing import Any
 from brain.extract import graph as extract_graph
 from brain.extract import names as names_mod
 from brain.extract import validate as validate_mod
-from brain.extract.build import SCHEMA_PATH, TASK, load_manifest, write_section
+from brain.extract.build import (
+    SCHEMA_PATH,
+    batches_root,
+    load_manifest,
+    report_section,
+    write_section,
+)
 from brain.extract.models import DESCRIPTION_MAX
 from brain.extract.validate import Batch, GraphFacts, Ref
 from brain.graph.context import GraphContext
@@ -492,14 +498,26 @@ def run_merge(
     reports_dir: Path,
     schema_path: Path = SCHEMA_PATH,
     canonical_dir: Path | None = None,
+    slice_: str | None = None,
     write_report: bool = True,
     echo: Callable[[str], None] = print,
 ) -> tuple[dict[str, Any], int]:
-    """Validate every batch output, write what survives, audit the graph, report."""
+    """Validate every batch output, write what survives, audit the graph, report.
+
+    `slice_` merges one slice's root (`data/batches/extract/<slice>/`) — the batches
+    `brain extract build --slice` wrote. It is a different root, not a filter: the ledger
+    of merged batches, the stale sweep and `previously_merged_now_absent` all belong to the
+    set of batches under one root, and pointing them at the corpus's 193 finished outputs
+    would re-merge Phase A under the increment's `extracted_at`.
+    """
     started = time.perf_counter()
-    root = batches_dir / TASK
+    root = batches_root(batches_dir, slice_)
     if not root.is_dir():
-        raise MergeError(f"no batches to merge: {root} does not exist (run `brain extract build`)")
+        raise MergeError(
+            f"no batches to merge: {root} does not exist (run `brain extract build"
+            + (f" --slice {slice_}" if slice_ else "")
+            + "`)"
+        )
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
 
     batches = validate_mod.discover(root)
@@ -617,7 +635,7 @@ def run_merge(
         census=census,
         schema_stats=schema_stats,
         counters=dict(ctx.counters),
-        manifest=load_manifest(batches_dir),
+        manifest=load_manifest(batches_dir, slice_),
         reported_failures=agent_failures(status),
         done_missing=done_without_output(status, batches),
         gone=sorted(previously_merged - {b.batch_id for b in valid}),
@@ -625,7 +643,7 @@ def run_merge(
         prefix=ctx.prefix,
     )
     if write_report:
-        write_section(reports_dir, "merge", report)
+        write_section(reports_dir, report_section("merge", slice_), report)
         echo(f"report: {reports_dir / 'extract.json'}")
     echo(summarize(report))
     return report, (1 if invalid or report["batches"]["reported_failed"] else 0)

@@ -17,6 +17,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from brain.canon.models import BASE_SLICE, INCREMENTAL_SLICE
 from brain.chunk.chunker import Chunk
 from brain.graph.context import GraphContext
 from brain.graph.cypher import edge_merge, node_merge
@@ -250,6 +251,70 @@ def synthetic_drift(ctx: GraphContext) -> dict[str, int]:
         "wrong": int(row.get("wrong") or 0),
         "synthetic_after": int(row.get("synthetic") or 0),
     }
+
+
+#: A chunk's slice is its parents' — `base` unless **every** parent is incremental, which
+#: is `brain.canon.models.widest_slice` said once more, in the graph. A chunk with no
+#: parent comes out `base`: conservative in the same direction as the synthetic rule, so
+#: an unattributable chunk survives `brain reset --slice incremental` and can be removed
+#: later, never the other way around.
+_DERIVE_SLICE = (
+    "OPTIONAL MATCH (p)-[:HAS_CHUNK]->(c)\n"
+    "WITH c, collect(p) AS parents\n"
+    "WITH c, CASE WHEN size(parents) > 0 AND all(p IN parents\n"
+    "  WHERE coalesce(p.slice, $base) = $incremental) THEN $incremental ELSE $base END AS sl\n"
+)
+
+
+def slice_drift(ctx: GraphContext) -> dict[str, int]:
+    """What :func:`stamp_slice` would change, without changing anything.
+
+    `null` is the case this exists for: `brain chunk` writes `slice` when it writes a
+    chunk and skips a chunk whose text is byte-identical, so a corpus chunked before the
+    property existed keeps `null` through every rerun. `wrong` is a chunk whose parent
+    changed slice since, which means something re-ran.
+    """
+    rows = ctx.read(
+        f"MATCH (c:{ctx.label(LABEL)})\n" + _DERIVE_SLICE + "RETURN count(c) AS total,\n"
+        "  count(CASE WHEN c.slice IS NULL THEN 1 END) AS null_flag,\n"
+        "  count(CASE WHEN c.slice IS NOT NULL AND c.slice <> sl THEN 1 END) AS wrong,\n"
+        "  count(CASE WHEN sl = $incremental THEN 1 END) AS incremental",
+        base=BASE_SLICE,
+        incremental=INCREMENTAL_SLICE,
+    )
+    row = rows[0] if rows else {}
+    return {
+        "chunks": int(row.get("total") or 0),
+        "null": int(row.get("null_flag") or 0),
+        "wrong": int(row.get("wrong") or 0),
+        "incremental_after": int(row.get("incremental") or 0),
+    }
+
+
+def stamp_slice(ctx: GraphContext) -> int:
+    """Copy `slice` from each chunk's parents onto the chunk. Returns nodes stamped.
+
+    Idempotent by construction, exactly like :func:`stamp_synthetic`: a chunk is selected
+    only when its stored value differs from the derived one, so the second run selects
+    nothing and reports 0. It writes one string onto nodes whose value is already wrong
+    and converges on what the next `brain chunk` would write — no re-chunking, no
+    re-embedding 14 MB of text for one property.
+    """
+    cypher = (
+        f"MATCH (c:{ctx.label(LABEL)})\n"
+        + _DERIVE_SLICE
+        + "WHERE c.slice IS NULL OR c.slice <> sl\n"
+        f"WITH c, sl LIMIT {STAMP_BATCH}\n"
+        "SET c.slice = sl"
+    )
+    stamped = 0
+    while True:
+        written = ctx.write(cypher, base=BASE_SLICE, incremental=INCREMENTAL_SLICE).get(
+            "properties_set", 0
+        )
+        stamped += written
+        if not written:
+            return stamped
 
 
 def stamp_synthetic(ctx: GraphContext) -> int:

@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from brain.extract.graph import MODEL, PROVENANCE_PROPS
 from brain.extract.merge import drop_missing_chunks, plan
 from brain.extract.models import KINDS, RELATION_TYPES
@@ -507,3 +509,52 @@ def test_the_judged_sample_is_read_from_the_sheet_never_computed(tmp_path):
         "partial": 4,
         "not": 0,
     }
+
+
+# ----------------------------------------------------------------------------- slices
+
+
+def test_merging_a_slice_sees_only_that_slices_outputs(tmp_path):
+    """Plan 3 Task 4 part 2 merges one batch about ten issues. The corpus's eight shards
+    hold 193 finished outputs; discovering them would re-merge the whole Phase A corpus
+    under the increment's `extracted_at`."""
+    from brain.extract.build import batches_root
+    from brain.extract.validate import discover
+
+    written_batch(tmp_path, inp=batch_input(), out=batch_output())
+    written_batch(tmp_path, inp=batch_input(), out=batch_output(), slice_="incremental")
+
+    base = discover(batches_root(tmp_path, None))
+    sliced = discover(batches_root(tmp_path, "incremental"))
+    assert [b.path.relative_to(tmp_path).as_posix() for b in base] == [
+        "extract/shard-01/001.out.json"
+    ]
+    assert [b.path.relative_to(tmp_path).as_posix() for b in sliced] == [
+        "extract/incremental/shard-01/001.out.json"
+    ]
+
+
+def test_merge_with_a_slice_that_was_never_built_refuses_instead_of_falling_back(tmp_path):
+    """The dangerous failure is the quiet one: no incremental root, so merge the corpus."""
+    from brain.extract.merge import MergeError, run_merge
+
+    written_batch(tmp_path, inp=batch_input(), out=batch_output())
+    with pytest.raises(MergeError, match="extract/incremental"):
+        run_merge(
+            ctx=None,  # never reached: the root is checked first
+            batches_dir=tmp_path,
+            reports_dir=tmp_path,
+            slice_="incremental",
+            echo=lambda *_: None,
+        )
+
+
+def test_the_two_merges_write_two_report_sections():
+    """`build`/`merge` already share data/reports/extract.json; a slice must not erase the
+    corpus half of either."""
+    from brain.extract.build import report_section
+
+    assert report_section("merge") == "merge"
+    assert report_section("merge", "incremental") == "merge.incremental"
+    assert report_section("build") == "build"
+    assert report_section("build", "incremental") == "build.incremental"

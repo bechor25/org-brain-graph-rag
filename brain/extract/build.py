@@ -340,9 +340,13 @@ def batches_root(batches_dir: Path, slice_: str | None = None) -> Path:
     return batches_dir / TASK / slice_ if slice_ else batches_dir / TASK
 
 
-def report_section(slice_: str | None = None) -> str:
-    """`build` for the corpus, `build.<slice>` for a slice — never overwriting each other."""
-    return f"build.{slice_}" if slice_ else "build"
+def report_section(section: str, slice_: str | None = None) -> str:
+    """`build` for the corpus, `build.<slice>` for a slice — never overwriting each other.
+
+    Same for `merge`: `data/reports/extract.json` already holds both halves of the step,
+    and a sliced run is a third and fourth half, not a replacement for either.
+    """
+    return f"{section}.{slice_}" if slice_ else section
 
 
 def run_build(
@@ -479,7 +483,7 @@ def run_build(
     echo(f"manifest: {root / MANIFEST_NAME}")
 
     if write_report:
-        write_section(reports_dir, report_section(slice_), manifest)
+        write_section(reports_dir, report_section("build", slice_), manifest)
     return manifest, (1 if oversize else 0)
 
 
