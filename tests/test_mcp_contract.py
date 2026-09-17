@@ -261,3 +261,76 @@ def test_the_analyst_is_wired_to_every_tool_and_nothing_else() -> None:
     tools = [t.strip() for t in line.split(":", 1)[1].split(",")]
     assert set(tools) == {f"mcp__brain__{name}" for name in srv.TOOL_NAMES} | {"Read"}
     assert len(tools) == 16
+
+
+# --------------------------------------------------------- one call, one line, no driver
+
+
+def test_a_guard_refusal_is_logged_once_not_twice(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The library already wrote the refusal, with its reason. The envelope must not repeat it."""
+    log_path = tmp_path / "retrieval.jsonl"
+    monkeypatch.setattr(retrieve_log, "DEFAULT_LOG", log_path)
+    monkeypatch.setattr(srv, "context", lambda: object())
+
+    class Refusal(Exception):
+        """What `cypher_guard.GuardError` looks like from here: it describes itself."""
+
+        reason = "write-verb"
+
+        def as_dict(self) -> dict[str, str]:
+            return {"error": "write verb CREATE", "hint": "read-only", "reason": "write-verb"}
+
+    def refusing_guard(*_args: Any, **kwargs: Any) -> Result:
+        retrieve_log.append(
+            retrieve_log.entry(
+                kwargs.get("question") or "CREATE (n)",
+                Result(strategy="s4", cypher_used=["CREATE (n)"]),
+                mode="mcp",
+                extra={"rejected": "write-verb"},
+            )
+        )
+        raise Refusal()
+
+    import brain.retrieve.cypher_guard as guard
+
+    monkeypatch.setattr(guard, "run_cypher", refusing_guard)
+    payload = anyio.run(lambda: srv.run_cypher("CREATE (n)"))
+
+    assert payload["items"][0]["props"]["error"] == "write verb CREATE"
+    lines = retrieve_log.read_log(log_path)
+    assert len(lines) == 1, [line.get("rejected") for line in lines]
+    assert lines[0]["rejected"] == "write-verb"
+
+
+def test_a_failure_the_library_never_logged_still_leaves_a_trace(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The other half of "log once": a raw exception has no line yet, so the envelope writes it."""
+    log_path = tmp_path / "retrieval.jsonl"
+    monkeypatch.setattr(retrieve_log, "DEFAULT_LOG", log_path)
+    monkeypatch.setattr(srv, "context", lambda: (_ for _ in ()).throw(Boom("no driver")))
+
+    anyio.run(lambda: srv.lookup("KAFKA-1"))
+    lines = retrieve_log.read_log(log_path)
+    assert len(lines) == 1
+    assert lines[0]["strategy"] == "lookup"
+
+
+def test_route_answers_without_opening_a_driver(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`route` is a regex over the question. A Neo4j session for that is a 9 ms tax and a
+    tool that fails when the database is down for a reason that has nothing to do with it."""
+    monkeypatch.setattr(retrieve_log, "DEFAULT_LOG", tmp_path / "retrieval.jsonl")
+
+    def no_driver() -> Any:
+        raise AssertionError("route opened a graph context")
+
+    monkeypatch.setattr(srv, "context", no_driver)
+    payload = anyio.run(lambda: srv.route("Why was the design in KIP-848 chosen?"))
+    result = Result.model_validate(payload)
+    assert result.strategy == "route"
+    assert result.items[0].key == result.route["strategy"]
+    assert len(retrieve_log.read_log(tmp_path / "retrieval.jsonl")) == 1

@@ -129,12 +129,25 @@ HINTS: dict[str, str] = {
 }
 
 
+def already_logged(exc: BaseException) -> bool:
+    """Did the library write this failure to the trace before it raised?
+
+    `cypher_guard.run_cypher` logs every refusal with its `reason` and the Cypher that was
+    refused, and *then* raises. The adapter turning that into an envelope must not append a
+    second, poorer line: one call, one trace line, or the refusal rate in the Plan 2 report
+    counts every rejection twice. `as_dict` is the guard's own contract — an exception that
+    can describe itself is one that has already been recorded.
+    """
+    return callable(getattr(exc, "as_dict", None))
+
+
 def error_result(
     strategy: str,
     question: str,
     exc: BaseException,
     *,
     route: dict[str, Any] | None = None,
+    log: bool | None = None,
 ) -> Result:
     """A failure in the shape of an answer: one `Row` item carrying `error` and `hint`.
 
@@ -159,6 +172,7 @@ def error_result(
         timer=Timer(),
         route=trace,
         mode="mcp",
+        log=not already_logged(exc) if log is None else log,
     )
 
 
@@ -178,6 +192,15 @@ def _blocking(strategy: str, question: str, call: Callable[[RetrieveContext], Re
 async def _tool(strategy: str, question: str, call: Callable[[RetrieveContext], Result]) -> dict:
     """Run one library call off the event loop and return the envelope as plain JSON."""
     return await anyio.to_thread.run_sync(functools.partial(_blocking, strategy, question, call))
+
+
+def _pure(strategy: str, question: str, call: Callable[[], Result]) -> dict:
+    """The same envelope for a tool that touches neither Neo4j nor Ollama."""
+    try:
+        result = call()
+    except Exception as exc:  # noqa: BLE001 - the agent gets an envelope, never a fault
+        result = error_result(strategy, question, exc)
+    return jsonable(result)
 
 
 # ------------------------------------------------------------------------------- S1 / S2
@@ -514,10 +537,11 @@ async def route(question: str) -> dict[str, Any]:
     """The deterministic pre-router's suggestion for a question: which strategy, and why.
 
     Advice, not an instruction (spec §4.2): you choose the tools. It exists so that a trace
-    records what a rule-based router *would* have done next to what you did.
+    records what a rule-based router *would* have done next to what you did. Pure text: it
+    reads no graph, so it answers even when the database does not.
     """
 
-    def _call(_ctx: RetrieveContext) -> Result:
+    def _call() -> Result:
         timer = Timer()
         suggestion = retrieve.route(question)
         item = Item(
@@ -530,7 +554,11 @@ async def route(question: str) -> dict[str, Any]:
         )
         return finish("route", [item], question=question, timer=timer, route=suggestion, mode="mcp")
 
-    return await _tool("route", question, _call)
+    # Not `_tool`: `route()` is a regex over the question, and opening the process-wide
+    # graph context for it would make the one tool that cannot fail fail whenever Neo4j is
+    # down — and would put a connection handshake in front of a 0 ms answer. It stays on the
+    # event loop for the same reason: there is nothing to block on.
+    return _pure("route", question, _call)
 
 
 # --------------------------------------------------------------------------- resources
