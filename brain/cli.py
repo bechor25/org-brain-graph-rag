@@ -15,6 +15,7 @@ from brain.eval.cli_answers import answers_app
 from brain.eval.cli_judge import judge_app
 from brain.eval.cli_questions import questions_app
 from brain.eval.cli_runs import eval_run as _eval_run
+from brain.eval.report_build import eval_report as _eval_report
 
 app = typer.Typer(
     help="Organizational brain — Graph RAG POC CLI",
@@ -1316,6 +1317,8 @@ eval_app.command("run")(_eval_run)
 # Plan 3 Task 3: answers (mode A) and the blind judge, one sub-app each for the same reason.
 eval_app.add_typer(answers_app, name="answers")
 eval_app.add_typer(judge_app, name="judge")
+# Plan 3 Task 5: the report is one verb reading the JSON the other four wrote.
+eval_app.command("report")(_eval_report)
 
 
 @eval_app.command("cite-check")
