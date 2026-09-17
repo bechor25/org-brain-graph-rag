@@ -1,7 +1,8 @@
 """`brain` CLI. Every pipeline step is one idempotent subcommand.
 
-Steps not yet implemented exit with code 2 and say which plan implements them,
-so `brain --help` already documents the whole pipeline.
+Every step in the pipeline is implemented; `brain --help` is the pipeline. `eval` was the
+last stub and became a group in Plan 2 Task 4 (`cite-check`, `gate-report`); Plan 3 adds
+its remaining commands to the same group.
 """
 
 from __future__ import annotations
@@ -16,25 +17,9 @@ app = typer.Typer(
     add_completion=False,
 )
 
+#: What a command exits with when its arguments are wrong — typer's own code for a usage
+#: error, named here because the guards that refuse before opening a driver assert on it.
 NOT_IMPLEMENTED_EXIT = 2
-
-_PLANNED: dict[str, tuple[str, str]] = {
-    "eval": ("Run the evaluation harness and generate the report", "Plan 3"),
-}
-
-
-def _stub(name: str, help_text: str, plan: str):
-    def _cmd() -> None:
-        typer.echo(f"brain {name}: not implemented yet — arrives in {plan}.")
-        raise typer.Exit(code=NOT_IMPLEMENTED_EXIT)
-
-    _cmd.__name__ = name
-    _cmd.__doc__ = help_text
-    return _cmd
-
-
-for _name, (_help, _plan) in _PLANNED.items():
-    app.command(name=_name, help=f"{_help} [{_plan}]")(_stub(_name, _help, _plan))
 
 
 @app.command()
@@ -1210,6 +1195,102 @@ def competency(
     typer.echo(f"report: {path}")
     gated = [c for c in report["checks"] if c.get("gate", True)]
     raise typer.Exit(code=0 if all(c["ok"] for c in gated) else 1)
+
+
+# -------------------------------------------------------------------- evaluation (Plan 2)
+
+eval_app = typer.Typer(
+    help="Check the answers the analyst agents wrote, and render the gate report [Plan 2].",
+    no_args_is_help=True,
+)
+app.add_typer(eval_app, name="eval")
+
+
+@eval_app.command("cite-check")
+def eval_cite_check(
+    answers: str | None = typer.Option(
+        None,
+        "--answers",
+        metavar="DIR",
+        help="Where the analysts wrote <qid>.md (default: data/eval/plan2_answers).",
+    ),
+    questions: str | None = typer.Option(
+        None,
+        "--questions",
+        metavar="PATH",
+        help="The competency set (default: data/eval/competency.jsonl).",
+    ),
+    report: str | None = typer.Option(
+        None, "--report", metavar="PATH", help="Default: data/reports/plan2_gate.json."
+    ),
+) -> None:
+    """Resolve every citation in every answer against the graph [Plan 2].
+
+    Exits 1 when a question has no answer file or an answer has no citation that resolves.
+    The ≥90% validity rate and the `strategy:` line are measured and reported, not gated.
+    """
+    from brain.config import get_settings
+    from brain.eval.runner import ANSWERS_NAME, REPORT_NAME, run_cite_check
+    from brain.retrieve.types import RetrieveError
+
+    settings = get_settings()
+    answers_dir = Path(answers) if answers else settings.eval_dir / ANSWERS_NAME
+    questions_path = Path(questions) if questions else settings.eval_dir / "competency.jsonl"
+    report_path = Path(report) if report else settings.reports_dir / REPORT_NAME
+    if not questions_path.is_file():
+        raise typer.BadParameter(f"{questions_path} does not exist", param_hint="--questions")
+
+    try:
+        _, code = run_cite_check(
+            answers_dir=answers_dir,
+            questions_path=questions_path,
+            report_path=report_path,
+            echo=typer.echo,
+        )
+    except (OSError, ValueError, RetrieveError) as exc:
+        typer.echo(f"eval cite-check: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    raise typer.Exit(code=code)
+
+
+@eval_app.command("gate-report")
+def eval_gate_report(
+    report: str | None = typer.Option(
+        None, "--report", metavar="PATH", help="Default: data/reports/plan2_gate.json."
+    ),
+    out: str | None = typer.Option(
+        None,
+        "--out",
+        metavar="PATH",
+        help="Default: docs/report/plan2-first-questions.md.",
+    ),
+    docs_dir: str = typer.Option("docs", "--docs-dir", metavar="PATH", help="Where docs/ live."),
+) -> None:
+    """Render docs/report/plan2-first-questions.md (Hebrew) from the gate report [Plan 2].
+
+    The planner's verdict paragraph lives between two markers in the page and is carried
+    across every regeneration; everything else on the page comes out of the JSON.
+    """
+    from brain.config import get_settings
+    from brain.eval.runner import DOCUMENT_NAME, REPORT_NAME, run_gate_report
+
+    settings = get_settings()
+    report_path = Path(report) if report else settings.reports_dir / REPORT_NAME
+    out_path = Path(out) if out else Path(docs_dir) / "report" / DOCUMENT_NAME
+    try:
+        path, built = run_gate_report(report_path=report_path, out_path=out_path)
+    except FileNotFoundError as exc:
+        typer.echo(f"eval gate-report: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    except OSError as exc:
+        typer.echo(f"eval gate-report: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    totals = built["totals"]
+    typer.echo(
+        f"document: {path} · {totals['answered']}/{totals['questions']} answered · "
+        f"{totals['citations_valid']}/{totals['citations_found']} citations valid · "
+        f"{len(built.get('planner_verdicts') or {})}/{totals['questions']} judged"
+    )
 
 
 # ------------------------------------------------------------------- MCP server (Plan 2)

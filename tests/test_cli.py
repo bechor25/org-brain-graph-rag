@@ -22,11 +22,12 @@ def test_help_lists_every_pipeline_step(runner):
         assert step in result.output
 
 
-def test_unimplemented_step_exits_2_and_names_plan(runner):
-    """`eval` is the last stub — `serve` stopped being one in Plan 2 Task 3 (see below)."""
-    result = runner.invoke(app, ["eval"])
-    assert result.exit_code == NOT_IMPLEMENTED_EXIT
-    assert "Plan 3" in result.output
+# `test_unimplemented_step_exits_2_and_names_plan` lived here. It asserted that `brain eval`
+# printed "arrives in Plan 3" and exited 2, and `eval` was the last stub it could point at —
+# Plan 2 Task 4 turned it into a group (`cite-check`, `gate-report`), so there is no stub
+# left to aim the test at. Deleted rather than rewritten against a command that is now real;
+# `tests/test_eval_cli.py` asserts the opposite property, that `brain eval` no longer says
+# "not implemented".
 
 
 def test_serve_is_implemented_and_offers_both_transports(runner):
