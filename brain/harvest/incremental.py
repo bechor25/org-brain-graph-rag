@@ -436,7 +436,7 @@ class _Timed:
         self.run = run
         self.step = step
         self.command = command
-        self.row = StepRecord(step=step, command=command, started_at=utc_now_iso())
+        self.row = StepRecord(step=step, command=command, started_at=utc_now_iso(), sha=run.sha)
         self._started = 0.0
 
     def __enter__(self) -> StepRecord:

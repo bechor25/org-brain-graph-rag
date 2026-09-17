@@ -336,12 +336,17 @@ def test_the_report_is_on_disk_after_every_step_not_only_at_the_end(tmp_path):
 
 def test_timed_measures_the_body_and_keeps_the_report(tmp_path):
     ticks = iter([10.0, 14.5])
-    run = IncrementalRun(reports_dir=tmp_path, since="2026-01-01", _clock=lambda: next(ticks))
+    run = IncrementalRun(
+        reports_dir=tmp_path, since="2026-01-01", sha="abc1234", _clock=lambda: next(ticks)
+    )
     with run.timed("chunk", command="uv run brain chunk") as row:
         row.report = {"chunks": 41}
     stored = json.loads((tmp_path / REPORT_NAME).read_text(encoding="utf-8"))["steps"][0]
     assert stored["duration_s"] == 4.5
     assert stored["report"] == {"chunks": 41}
+    # the timed path stamps the sha too, or the steps that were measured are the ones
+    # that cannot say on what.
+    assert stored["sha"] == "abc1234"
 
 
 def test_recording_a_step_twice_replaces_it_rather_than_duplicating(tmp_path):
