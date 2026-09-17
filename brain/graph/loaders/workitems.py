@@ -71,6 +71,7 @@ def node_rows(
             "updated": w.updated,
             "labels": w.labels,
             "synthetic": w.synthetic,
+            "slice": w.slice,
             "raw_url": w.raw_url,
         }
         # the ledger is keyed by canonical id (`xray:XT-10007`), not by `key`
@@ -127,6 +128,7 @@ def _status_change_rows(
                 "at": entry.at,
                 "by": entry.by,
                 "synthetic": w.synthetic,
+                "slice": w.slice,
             }
             props.update(prov.props(w.id))
             nodes[sid] = {"key": sid, "props": props}

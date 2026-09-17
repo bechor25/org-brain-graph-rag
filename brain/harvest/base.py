@@ -410,9 +410,23 @@ class BaseConnector:
     name: str = "base"
     #: file stem for raw pages, e.g. "issues" -> issues-0000.json
     page_stem: str = "page"
+    #: Can this connector answer "what does the base slice not have?" — which means
+    #: rewriting its own query's date window, in its own query language. `brain harvest
+    #: --slice incremental` refuses a source whose connector says False rather than
+    #: quietly running the ordinary `--since` query and labelling the result an increment.
+    supports_new_slice: bool = False
 
-    def __init__(self, raw_dir: Path) -> None:
+    def __init__(self, raw_dir: Path, *, max_records: int | None = None) -> None:
         self.raw_dir = Path(raw_dir)
+        #: `brain harvest --limit N`: stop after this many records. Named `max_records`
+        #: and not `limit` because a connector's `limit` is already its *page* size
+        #: (Confluence's `options.limit`), and the two mean opposite things.
+        #:
+        #: Part of the query *signature*, not a post-filter: a capped pull is its own
+        #: result set, so it gets its own checkpoint and may honestly report itself `done`
+        #: instead of looking like a full pull that stopped early. Dropping the cap changes
+        #: the signature and starts the pull over.
+        self.max_records = int(max_records) if max_records else None
         self.errors: list[dict[str, Any]] = []
 
     # -- layout ------------------------------------------------------------
@@ -538,6 +552,12 @@ class BaseConnector:
             for page in self.fetch(since, checkpoint):
                 result.pages += 1
                 result.records += len(page.records)
+                if self.max_records is not None and checkpoint.records >= self.max_records:
+                    # The cap is in the signature, so "done" is the truth about *this*
+                    # query. A connector that clamps its own page size (Jira) has usually
+                    # said so already; this is the guarantee for the ones that cannot.
+                    checkpoint.finish()
+                    break
         except Exception as exc:  # noqa: BLE001 - one bad source must not sink the others
             # An arbitrary exception from an arbitrary library: assume its message quotes
             # whatever it was given, which for a clone is a URL with the token in it.

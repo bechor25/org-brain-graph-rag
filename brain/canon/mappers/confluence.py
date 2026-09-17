@@ -23,14 +23,14 @@ from __future__ import annotations
 
 import html
 import re
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from typing import Any
 
 from markdownify import markdownify
 
 from brain.canon.mappers.base import Bundle, FieldTracker, parse_dt
 from brain.canon.mentions import extract_refs
-from brain.canon.models import Document
+from brain.canon.models import BASE_SLICE, Document
 from brain.harvest.confluence import default_document_spec, kip_key, spaced_kip_key
 from brain.harvest.registry import DocumentKeySpec, get_registry
 
@@ -223,7 +223,11 @@ def map_pages(
     *,
     document: DocumentKeySpec | None = None,
     space: str | None = None,
+    slice_of: Mapping[str, str] | None = None,
 ) -> Bundle:
+    """`slice_of` maps a raw page **id** to the slice its run directory says it came from
+    (see :func:`brain.canon.mappers.jira.map_issues`); absent, every page is `base`."""
+    slices = slice_of or {}
     # Resolved once per run, and from *this* source's registry entry: the title→key rule
     # (and therefore the test for "is this key one we minted", `KIP-848`, versus "this page
     # has no key of its own", a page id), and the space a page falls back to. Two wikis in
@@ -240,6 +244,8 @@ def map_pages(
     for page in pages:
         tracker.observe(raw_paths(page))
         page_id = str(page.get("id") or "")
+        # Before the space container and the author identity are minted.
+        bundle.slice = slices.get(page_id, BASE_SLICE)
         title = str(page.get("title") or "")
         if not page_id:
             bundle.warn("page_without_id", title=title)
@@ -296,6 +302,7 @@ def map_pages(
                 id=f"{SOURCE}:{page_id}",
                 key=key,
                 source=SOURCE,
+                slice=bundle.slice,
                 kind=spec.kind if is_kip else "Page",
                 space=space,
                 title=title,

@@ -227,6 +227,9 @@ def test_props_carry_exactly_the_briefs_property_set():
         "hash",
         "orphaned",
         "synthetic",
+        # Plan 3 Task 4: which pull the parent record came from, so a slice reset can find
+        # its chunks by their own flag instead of by a parent that is already deleted.
+        "slice",
     }
     assert chunk.props()["char_len"] == 200
     assert chunk.props()["token_est"] == 50

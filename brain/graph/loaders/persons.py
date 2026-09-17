@@ -43,6 +43,7 @@ def node_rows(
             "email": next((i.email for i in p.identities if i.email), None),
             "identity_keys": [f"{i.source}:{i.key}" for i in p.identities],
             "synthetic": p.synthetic,
+            "slice": p.slice,
         }
         props.update(prov.props(p.id))
         if resolution is not None:

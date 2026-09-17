@@ -49,6 +49,11 @@ class FakeGraph:
             rows = [n for n in rows if not self._incoming(self.nodes.index(n), "HAS_CHUNK")]
         if "n.synthetic = true" in cypher:
             rows = [n for n in rows if n["props"].get("synthetic") is True]
+        if "n.slice = $slice" in cypher:
+            rows = [n for n in rows if n["props"].get("slice") == params.get("slice")]
+        if "n.id IN $ids" in cypher:
+            wanted = set(params.get("ids") or [])
+            rows = [n for n in rows if n["props"].get("id", n["key"]) in wanted]
         keep = set(params.get("keep") or [])
         if "NOT n.`name` IN $keep" in cypher:
             rows = [n for n in rows if n["key"] not in keep]
@@ -78,6 +83,36 @@ class FakeGraph:
                 ):
                     out += 1
             return [{"c": out}]
+        if "sum(CASE WHEN c.slice = $slice" in cypher:
+            # The entity sweep of `--slice`: every *surviving* evidence chunk is in the
+            # slice. Asked before anything is deleted, so `alive` is the real list.
+            chunks = {n["key"]: n for n in self._live() if n["label"] == "Chunk"}
+            out = []
+            for node in self._live():
+                if node["label"] != "Entity":
+                    continue
+                ids = node["props"].get("evidence_chunk_ids")
+                if ids is None:
+                    continue
+                alive = [chunks[i] for i in ids if i in chunks]
+                if alive and all(c["props"].get("slice") == params.get("slice") for c in alive):
+                    out.append({"id": node["props"].get("id", node["key"])})
+            return sorted(out, key=lambda row: row["id"])
+        if "all(p IN parents WHERE p.slice = $slice)" in cypher:
+            # The `--slice` dry-run prediction, mirroring the synthetic one above.
+            wanted = params.get("slice")
+            out_n = 0
+            for i, node in enumerate(self.nodes):
+                if node.get("deleted") or node["label"] != "Chunk":
+                    continue
+                if node["props"].get("slice", "base") == wanted:
+                    continue
+                parents = [a for a, b, t in self.edges if b == i and t == "HAS_CHUNK"]
+                if not parents or all(
+                    self.nodes[a]["props"].get("slice") == wanted for a in parents
+                ):
+                    out_n += 1
+            return [{"c": out_n}]
         if "WITH DISTINCT r RETURN count(r) AS c" in cypher:
             # `MATCH (n)-[r]-() WHERE n:`A` OR n:`B` …` — every edge with one of our ends.
             labels = set(re.findall(r"n:`([^`]+)`", cypher))

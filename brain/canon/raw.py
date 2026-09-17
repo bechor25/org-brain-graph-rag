@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from brain.canon.models import BASE_SLICE, INCREMENTAL_SLICE
 from brain.harvest.base import checkpoint_pages
 from brain.harvest.git import COMMITS_FILE
 from brain.harvest.registry import Registry, get_registry
@@ -89,6 +90,20 @@ class RawSlice:
     read: int = 0
     duplicates: int = 0
     superseded: int = 0
+    #: dedupe key -> the slice it belongs to, for the keys that are **not** `base`. Only
+    #: the incremental ones are stored: the base corpus is 19,266 records and a table of
+    #: "base" repeated that many times is a dictionary nobody reads.
+    incremental: dict[str, str] = field(default_factory=dict)
+
+    def slice_of(self) -> dict[str, str]:
+        """The table the mappers take as `slice_of` (`{key: "incremental"}`)."""
+        return dict(self.incremental)
+
+    def by_slice(self) -> dict[str, int]:
+        return {
+            BASE_SLICE: len(self.records) - len(self.incremental),
+            INCREMENTAL_SLICE: len(self.incremental),
+        }
 
     def stats(self) -> dict[str, Any]:
         return {
@@ -97,6 +112,7 @@ class RawSlice:
             "unique": len(self.records),
             "duplicates": self.duplicates,
             "superseded_by_incremental": self.superseded,
+            "by_slice": self.by_slice(),
         }
 
 
@@ -113,6 +129,13 @@ def load_source(raw_dir: Path, source: str, *, source_type: str | None = None) -
 
     `source` is the registry *name* (the directory under `data/raw/`); the dedupe rule
     comes from its *type*, looked up in `sources.yaml` unless given.
+
+    **Slice**, and why it is decided here: a record belongs to the `incremental` slice
+    when the *authoritative* directory never had it — when the first directory it was seen
+    in is a `since-<date>/` one. A record the base pull already had stays `base` even when
+    an incremental pull re-fetched it and its newer copy won, because that is an **update**
+    to the base corpus, not an addition to it, and `brain reset --slice incremental` must
+    not delete it.
     """
     type_ = source_type or get_registry().source(source).type
     key_path, recency_path = DEDUPE[type_]
@@ -128,6 +151,8 @@ def load_source(raw_dir: Path, source: str, *, source_type: str | None = None) -
             if key not in index:
                 index[key] = len(slice_.records)
                 slice_.records.append(record)
+                if incremental:
+                    slice_.incremental[key] = INCREMENTAL_SLICE
                 continue
             slice_.duplicates += 1
             position = index[key]

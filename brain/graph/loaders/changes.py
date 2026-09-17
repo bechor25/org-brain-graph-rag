@@ -39,6 +39,7 @@ def _base_props(c: Change) -> dict[str, Any]:
         "author_email": c.author_email,
         "at": c.at,
         "synthetic": c.synthetic,
+        "slice": c.slice,
         "raw_url": c.raw_url,
     }
 

@@ -12,12 +12,12 @@ POC has exactly one repo; a second one would need `pr:<owner>/<repo>#<N>`.
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from typing import Any
 
 from brain.canon.mappers.base import Bundle, FieldTracker, parse_dt
 from brain.canon.mentions import extract_refs
-from brain.canon.models import Change
+from brain.canon.models import BASE_SLICE, Change
 from brain.harvest.registry import get_registry
 
 SOURCE = "git"
@@ -54,10 +54,18 @@ def commit_message(commit: dict[str, Any]) -> str:
     return f"{subject}\n\n{body}" if body else subject
 
 
-def map_commits(commits: Iterable[dict[str, Any]], *, base_url: str | None = None) -> Bundle:
+def map_commits(
+    commits: Iterable[dict[str, Any]],
+    *,
+    base_url: str | None = None,
+    slice_of: Mapping[str, str] | None = None,
+) -> Bundle:
+    """`slice_of` maps a commit **sha** to the slice its run directory says it came from
+    (see :func:`brain.canon.mappers.jira.map_issues`); absent, every commit is `base`."""
     # Resolved once per run, not once per commit: `Change.raw_url` is the only canonical
     # field that carries the repository's address.
     base_url = (base_url if base_url is not None else commit_base_url()).rstrip("/")
+    slices = slice_of or {}
     bundle = Bundle(source=SOURCE)
     tracker = FieldTracker(mapped=MAPPED)
     # pr number -> the commit that owns it. A backport carries the same `(#N)`, so the
@@ -73,6 +81,8 @@ def map_commits(commits: Iterable[dict[str, Any]], *, base_url: str | None = Non
         if not sha or at is None:
             bundle.warn("commit_without_sha_or_date", sha=sha or None)
             continue
+        # Before the author identity is minted.
+        bundle.slice = slices.get(sha, BASE_SLICE)
 
         email = str(commit.get("author_email") or "").lower()
         name = str(commit.get("author_name") or "")
@@ -88,6 +98,7 @@ def map_commits(commits: Iterable[dict[str, Any]], *, base_url: str | None = Non
             Change(
                 id=sha,
                 kind="commit",
+                slice=bundle.slice,
                 pr=f"pr:{own_pr.group(1)}" if own_pr else None,
                 message=message,
                 author_name=name or None,
@@ -113,11 +124,14 @@ def map_commits(commits: Iterable[dict[str, Any]], *, base_url: str | None = Non
                     pull_requests[number] = commit
 
     for number, commit in pull_requests.items():
+        # A pull request belongs to the commit that owns it, and so does its slice.
+        bundle.slice = slices.get(str(commit.get("sha") or ""), BASE_SLICE)
         subject = str(commit.get("subject") or "")
         bundle.changes.append(
             Change(
                 id=f"pr:{number}",
                 kind="pr",
+                slice=bundle.slice,
                 message=subject,
                 author_name=str(commit.get("author_name") or "") or None,
                 author_email=str(commit.get("author_email") or "").lower() or None,
@@ -130,6 +144,7 @@ def map_commits(commits: Iterable[dict[str, Any]], *, base_url: str | None = Non
             )
         )
 
+    bundle.slice = BASE_SLICE
     commits_n = sum(1 for c in bundle.changes if c.kind == "commit")
     keyed = sum(
         1 for c in bundle.changes if c.kind == "commit" and any(r.kind == "issue" for r in c.refs)

@@ -39,34 +39,97 @@ def harvest(
         help="Incremental pull: Jira/Confluence by updated/lastmodified, git by commit date. "
         "Writes into data/raw/<source>/since-<date>/ so the full pull stays intact.",
     ),
+    slice_: str | None = typer.Option(
+        None,
+        "--slice",
+        metavar="NAME",
+        help="Which slice this pull is for. `incremental` asks for the records the base "
+        "slice does NOT have: the window opens at --since and the base query's end date "
+        "is dropped. Without it, --since keeps meaning 'what changed inside the slice'. "
+        "`brain reset --slice incremental` is what takes the result out again.",
+    ),
+    limit: int | None = typer.Option(
+        None,
+        "--limit",
+        min=1,
+        help="Stop after this many records. Part of the checkpoint signature, so a capped "
+        "pull is its own result set and does not look like a full pull that stopped early.",
+    ),
+    probe_since: str | None = typer.Option(
+        None,
+        "--probe-since",
+        metavar="YYYY-MM-DD",
+        help="Read-only: ask the source how many records it has outside the base slice and "
+        "list the 10 oldest, then stop. Writes data/reports/incremental_probe.json and "
+        "nothing else — no raw pages, no graph. Jira only.",
+    ),
 ) -> None:
     """Fetch raw data from Jira / Confluence / git into data/raw/ [Plan 1]."""
     from datetime import date as _date
 
     from brain.config import get_settings
     from brain.harvest.auth import AuthError
+    from brain.harvest.base import HarvestError
     from brain.harvest.registry import RegistryError
     from brain.harvest.runner import resolve_sources, run_harvest
+
+    def _date_option(value: str, hint: str) -> _date:
+        try:
+            return _date.fromisoformat(value)
+        except ValueError as exc:
+            raise typer.BadParameter(f"{value!r} is not YYYY-MM-DD", param_hint=hint) from exc
 
     try:
         sources = resolve_sources(source)
     except RegistryError as exc:
         raise typer.BadParameter(str(exc), param_hint="--source") from exc
 
-    since_date: _date | None = None
-    if since:
-        try:
-            since_date = _date.fromisoformat(since)
-        except ValueError as exc:
-            raise typer.BadParameter(f"{since!r} is not YYYY-MM-DD", param_hint="--since") from exc
-
     settings = get_settings()
+
+    if probe_since:
+        if len(sources) != 1:
+            raise typer.BadParameter(
+                "--probe-since asks one source one question; name it with --source",
+                param_hint="--probe-since",
+            )
+        from brain.harvest.incremental import run_probe
+
+        try:
+            _, code = run_probe(
+                source=sources[0],
+                since=_date_option(probe_since, "--probe-since"),
+                raw_dir=settings.raw_dir,
+                reports_dir=settings.reports_dir,
+                echo=typer.echo,
+            )
+        except (RegistryError, AuthError, HarvestError) as exc:
+            typer.echo(f"harvest: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+        raise typer.Exit(code=code)
+
+    since_date = _date_option(since, "--since") if since else None
+    if slice_ is not None:
+        from brain.reset import SLICES
+
+        if slice_ not in SLICES:
+            raise typer.BadParameter(
+                f"unknown slice {slice_!r}; --slice takes one of {', '.join(SLICES)}",
+                param_hint="--slice",
+            )
+        if since_date is None:
+            raise typer.BadParameter(
+                "--slice incremental needs --since: the slice IS the window",
+                param_hint="--slice",
+            )
+
     try:
         _, code = run_harvest(
             sources,
             raw_dir=settings.raw_dir,
             reports_dir=settings.reports_dir,
             since=since_date,
+            max_records=limit,
+            slice_=slice_,
             echo=typer.echo,
         )
     except (RegistryError, AuthError) as exc:
@@ -847,6 +910,15 @@ def reset(
         help="Remove only the synthetic Xray/ADO layer: synthetic=true records and nodes, "
         "the merge ledger, the truth file and the synthetic batches. The real corpus stays.",
     ),
+    slice_: str | None = typer.Option(
+        None,
+        "--slice",
+        metavar="NAME",
+        help="Remove only what a `--since` pull added: records carrying slice: <NAME>, the "
+        "nodes they became, their chunks, the entities whose every evidence chunk is in "
+        "that slice, and the ledger rows that go with them. The base corpus stays. "
+        "data/raw/<source>/since-*/ and the Community nodes are kept — the manifest says so.",
+    ),
     all_: bool = typer.Option(False, "--all", help="--graph and --data together."),
     yes: bool = typer.Option(
         False, "--yes", help="Actually delete. Without it the command only prints the manifest."
@@ -854,17 +926,24 @@ def reset(
 ) -> None:
     """Delete the POC's data so real systems can be connected (ADR-0005) [Plan 1]."""
     from brain.config import get_settings
-    from brain.reset import ResetError, run_reset
+    from brain.reset import SLICES, ResetError, run_reset
 
     if all_:
         graph = data = True
-    if not (graph or data or synthetic):
+    if not (graph or data or synthetic or slice_):
         raise typer.BadParameter(
-            "pick a scope: --graph, --data, --synthetic or --all", param_hint="brain reset"
+            "pick a scope: --graph, --data, --synthetic, --slice or --all",
+            param_hint="brain reset",
+        )
+    if slice_ is not None and slice_ not in SLICES:
+        raise typer.BadParameter(
+            f"unknown slice {slice_!r}; --slice takes one of {', '.join(SLICES)}. "
+            "The base corpus is not a slice you reset — that is --graph.",
+            param_hint="--slice",
         )
 
     s = get_settings()
-    needs_graph = graph or synthetic
+    needs_graph = graph or synthetic or slice_ is not None
     client = None
     try:
         if needs_graph:
@@ -884,6 +963,7 @@ def reset(
             graph=graph,
             data=data,
             synthetic=synthetic,
+            slice_=slice_,
             confirmed=yes,
             echo=typer.echo,
         )

@@ -20,7 +20,7 @@ from brain.graph.client import GraphClient
 from brain.graph.context import GraphContext
 from brain.graph.runner import run_load, wipe
 from brain.graph.schema import UNIQUE_KEYS, drop_schema
-from brain.reset import census, wipe_graph, wipe_synthetic
+from brain.reset import census, wipe_graph, wipe_slice, wipe_synthetic
 
 pytestmark = pytest.mark.live
 
@@ -266,3 +266,104 @@ def test_the_report_s_backfill_check_measures_a_real_transition_and_cleans_up(ct
     for label in ("WorkItem", "Chunk", "Entity"):
         left = scratch.read(f"MATCH (n:{scratch.label(label)}) RETURN count(n) AS c")[0]["c"]
         assert left == 0, f"{label} nodes left behind in {MECHANISM_PREFIX}"
+
+
+# ------------------------------------------------- the incremental slice (Plan 3 Task 4)
+
+
+INCREMENTAL_KEYS = ("KAFKA-102",)
+
+
+@pytest.fixture
+def sliced(ctx, canonical, loaded):
+    """One work item of the mini corpus re-labelled as an increment, on disk and in the graph.
+
+    `brain load` would write this from a canonical file whose record carries
+    `slice: "incremental"`; doing it by hand here keeps the fixture the committed mini
+    corpus (which is a *base* corpus and must stay one) while still exercising the real
+    queries against a real database.
+    """
+    path = canonical / "workitems.jsonl"
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+    for row in rows:
+        if row["key"] in INCREMENTAL_KEYS:
+            row["slice"] = "incremental"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+
+    ctx.write(
+        f"MATCH (w:{ctx.label('WorkItem')}) SET w.slice = "
+        "CASE WHEN w.key IN $keys THEN 'incremental' ELSE 'base' END",
+        keys=list(INCREMENTAL_KEYS),
+    )
+    for label in ("Chunk", "Entity"):
+        ctx.write(f"MATCH (n:{ctx.label(label)}) DETACH DELETE n")
+    # One chunk per work item, carrying its parent's slice — what `brain chunk` writes.
+    for row in ctx.read(
+        f"MATCH (w:{ctx.label('WorkItem')}) RETURN w.key AS key, w.slice AS slice ORDER BY key"
+    ):
+        ctx.write(
+            f"MATCH (w:{ctx.label('WorkItem')} {{key: $key}})\n"
+            f"MERGE (c:{ctx.label('Chunk')} {{id: $id}}) SET c.slice = $slice\n"
+            "MERGE (w)-[:HAS_CHUNK]->(c)",
+            key=row["key"],
+            id=f"chunk-{row['key']}",
+            slice=row["slice"],
+        )
+    # Two entities: one the increment invented, one it only touched.
+    ctx.write(
+        f"MERGE (e:{ctx.label('Entity')} {{id: 'Feature|new'}}) SET e.evidence_chunk_ids = $ids",
+        ids=[f"chunk-{k}" for k in INCREMENTAL_KEYS],
+    )
+    ctx.write(
+        f"MERGE (e:{ctx.label('Entity')} {{id: 'Feature|old'}}) SET e.evidence_chunk_ids = $ids",
+        ids=["chunk-KAFKA-100", *(f"chunk-{k}" for k in INCREMENTAL_KEYS)],
+    )
+    try:
+        yield {"keys": INCREMENTAL_KEYS, "canonical": canonical}
+    finally:
+        for label in ("Chunk", "Entity"):
+            ctx.write(f"MATCH (n:{ctx.label(label)}) DETACH DELETE n")
+
+
+def by_slice(ctx: GraphContext, label: str) -> dict[str, int]:
+    rows = ctx.read(
+        f"MATCH (n:{ctx.label(label)}) RETURN coalesce(n.slice, 'base') AS slice, count(n) AS c"
+    )
+    return {r["slice"]: r["c"] for r in rows}
+
+
+def test_the_slice_dry_run_predicts_exactly_what_the_apply_deletes(ctx, sliced):
+    predicted = wipe_slice(sliced["canonical"], "incremental", ctx=ctx, apply=False)
+    before = by_slice(ctx, "WorkItem")
+
+    applied = wipe_slice(sliced["canonical"], "incremental", ctx=ctx, apply=True)
+
+    assert predicted["nodes_by_label"] == applied["nodes_by_label"]
+    assert predicted["entities_only_in_slice"] == applied["entities_only_in_slice"] == 1
+    assert by_slice(ctx, "WorkItem") == {"base": before["base"]}
+    assert "incremental" not in by_slice(ctx, "Chunk")
+
+
+def test_the_slice_reset_keeps_the_entity_the_increment_only_touched(ctx, sliced):
+    wipe_slice(sliced["canonical"], "incremental", ctx=ctx, apply=True)
+    rows = ctx.read(f"MATCH (e:{ctx.label('Entity')}) RETURN e.id AS id ORDER BY id")
+    assert [r["id"] for r in rows] == ["Feature|old"]
+
+
+def test_the_slice_reset_leaves_the_base_corpus_loadable(ctx, sliced, tmp_path_factory):
+    """The point of the whole scope: run the increment, measure it, take it out, reload."""
+    wipe_slice(sliced["canonical"], "incremental", ctx=ctx, apply=True)
+    after = census(ctx)
+    report, code = run_load(
+        client=ctx.client,
+        canonical_dir=sliced["canonical"],
+        reports_dir=tmp_path_factory.mktemp("reports"),
+        prefix=PREFIX,
+        write_report=False,
+        echo=lambda _m: None,
+    )
+    assert code == 0, [c for c in report["checks"] if not c["ok"]]
+    # A reload of the trimmed canonical files creates nothing new: the increment is gone
+    # from the files too, so the graph it rebuilds is the one the reset left behind.
+    assert census(ctx)["WorkItem"] == after["WorkItem"]
+    assert by_slice(ctx, "WorkItem").get("incremental", 0) == 0

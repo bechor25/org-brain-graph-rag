@@ -27,7 +27,15 @@ from brain.canon.mappers.base import Bundle
 from brain.canon.mappers.confluence import map_pages
 from brain.canon.mappers.git import map_commits
 from brain.canon.mappers.jira import map_issues
-from brain.canon.models import Change, Container, Document, Person, WorkItem
+from brain.canon.models import (
+    BASE_SLICE,
+    INCREMENTAL_SLICE,
+    Change,
+    Container,
+    Document,
+    Person,
+    WorkItem,
+)
 from brain.canon.raw import load_source
 from brain.canon.report import build_report, summarize, write_report
 from brain.harvest.registry import (
@@ -135,6 +143,27 @@ def stamp_source_id(bundle: Bundle, config: SourceConfig) -> int:
     for record in records:
         record.source_id = config.id
     return len(records)
+
+
+def slice_census(records: dict[str, list[BaseModel]]) -> dict[str, Any]:
+    """`{file: {base: n, incremental: m}}` plus a total — what the report says about §3.9.
+
+    Counted from the records that were **written**, not from the raw table: a work item
+    whose raw copy came from a `since-` directory can still be `base` (the base pull had
+    it too), and a `Person` is `base` as soon as any base record names it. The file is the
+    only place those rules have already been applied.
+    """
+    out: dict[str, Any] = {}
+    totals = {BASE_SLICE: 0, INCREMENTAL_SLICE: 0}
+    for name, rows in records.items():
+        counts = {BASE_SLICE: 0, INCREMENTAL_SLICE: 0}
+        for record in rows:
+            counts[getattr(record, "slice", BASE_SLICE)] += 1
+        out[name] = counts
+        for key, value in counts.items():
+            totals[key] += value
+    out["total"] = totals
+    return out
 
 
 def natural_key(text: str) -> tuple[object, ...]:
@@ -250,7 +279,9 @@ def run_canon(
         began = time.perf_counter()
         config = registry.source(name)
         raw = load_source(raw_dir, name, source_type=config.type)
-        bundle = MAPPERS[config.type](raw.records, **mapper_kwargs(config))
+        # `slice_of` is empty unless this source has a `since-<date>/` directory, so a
+        # corpus that was never pulled incrementally maps exactly as it always did.
+        bundle = MAPPERS[config.type](raw.records, **mapper_kwargs(config), slice_of=raw.slice_of())
         stamp_source_id(bundle, config)
         bundles[name] = bundle
         slices[name] = raw.stats()
@@ -275,6 +306,18 @@ def run_canon(
         written[name] = write_jsonl(path, merged)
 
     echo("wrote " + ", ".join(f"{n} {name}" for name, n in written.items()))
+    census = slice_census(records)
+    if census["total"][INCREMENTAL_SLICE]:
+        echo(
+            f"slice: {census['total'][INCREMENTAL_SLICE]} record(s) marked "
+            f"{INCREMENTAL_SLICE} ("
+            + ", ".join(
+                f"{n[INCREMENTAL_SLICE]} {name}"
+                for name, n in census.items()
+                if name != "total" and n[INCREMENTAL_SLICE]
+            )
+            + ") — `brain reset --slice incremental` is what takes them out again"
+        )
 
     report_path = reports_dir / "canon.json"
     report = build_report(
@@ -287,6 +330,7 @@ def run_canon(
         duration_s=time.perf_counter() - started,
         existing=_load_json(report_path),
     )
+    report["slices"] = census
     write_report(report_path, report)
     echo(summarize(report))
     echo(f"report: {report_path}")

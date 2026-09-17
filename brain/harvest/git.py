@@ -151,8 +151,9 @@ class GitConnector(BaseConnector):
         source: SourceConfig | None = None,
         runner=_run,
         credentials: Credentials | None = None,
+        max_records: int | None = None,
     ) -> None:
-        super().__init__(raw_dir)
+        super().__init__(raw_dir, max_records=max_records)
         self.source = source or get_registry().source(self.name)
         # The registry id, not the type: `data/raw/<id>/` and the report key.
         self.name = self.source.id
@@ -199,7 +200,11 @@ class GitConnector(BaseConnector):
         return f"git log --since={start}" + (f" --until={end}" if end else "")
 
     def signature(self, since: date | None) -> str:
-        return signature_of({"window": self.window(since), "format": LOG_FORMAT})
+        # `max_records` only when there is a cap: see `JiraConnector.signature`.
+        return signature_of(
+            {"window": self.window(since), "format": LOG_FORMAT}
+            | ({"max_records": self.max_records} if self.max_records is not None else {})
+        )
 
     # -- clone -------------------------------------------------------------
 
@@ -270,6 +275,10 @@ class GitConnector(BaseConnector):
             )
 
         commits = list(parse_git_log(self._log(since)))
+        if self.max_records is not None:
+            # Cut the list, not the loop: `--limit 10` must write 10 commits and then say
+            # `done`, not write a 1,000-commit batch and stop between pages.
+            commits = commits[: self.max_records]
         out = self.commits_path(since)
         out.parent.mkdir(parents=True, exist_ok=True)
         written = _truncate_jsonl(out, checkpoint.records)
@@ -280,8 +289,11 @@ class GitConnector(BaseConnector):
             return
 
         with out.open("a", encoding="utf-8") as f:
-            for start in range(written, len(commits), self.batch):
-                batch = commits[start : start + self.batch]
+            batch_size = (
+                self.batch if self.max_records is None else min(self.batch, self.max_records)
+            )
+            for start in range(written, len(commits), batch_size):
+                batch = commits[start : start + batch_size]
                 for commit in batch:
                     f.write(json.dumps(commit, ensure_ascii=False) + "\n")
                 f.flush()

@@ -13,12 +13,12 @@ issue that declares it, `in` on the other). Collapsing the pair into one edge is
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from typing import Any
 
 from brain.canon.mappers.base import Bundle, FieldTracker, parse_dt
 from brain.canon.mentions import extract_refs, filter_refs
-from brain.canon.models import ChangelogEntry, Comment, Link, WorkItem
+from brain.canon.models import BASE_SLICE, ChangelogEntry, Comment, Link, WorkItem
 
 SOURCE = "jira"
 
@@ -148,11 +148,15 @@ def mint_changelog_persons(bundle: Bundle) -> int:
     """
     before = set(bundle.persons)
     for item in bundle.workitems:
+        # A past assignee only an incremental issue's history names belongs to the
+        # increment; one any base issue names does not (`Bundle.identity` widens).
+        bundle.slice = item.slice
         for entry in item.changelog:
             if entry.field not in PERSON_CHANGELOG_FIELDS:
                 continue
             for key, display in ((entry.from_id, entry.from_), (entry.to_id, entry.to)):
                 bundle.identity(SOURCE, key, display=display)
+    bundle.slice = BASE_SLICE
     return len(set(bundle.persons) - before)
 
 
@@ -182,7 +186,17 @@ def _changelog(issue: dict[str, Any], bundle: Bundle) -> list[ChangelogEntry]:
     return out
 
 
-def map_issues(issues: Iterable[dict[str, Any]]) -> Bundle:
+def map_issues(
+    issues: Iterable[dict[str, Any]], *, slice_of: Mapping[str, str] | None = None
+) -> Bundle:
+    """Raw Jira issues → the canonical bundle.
+
+    `slice_of` maps an issue key to the slice its raw record came from — the table
+    `brain canon` builds from `data/raw/<source>/` (base pull) versus
+    `data/raw/<source>/since-<date>/` (a `--since` pull). Absent, every record is `base`
+    and this mapper produces exactly the bytes it always did.
+    """
+    slices = slice_of or {}
     bundle = Bundle(source=SOURCE)
     tracker = FieldTracker(mapped=MAPPED)
     no_components = 0
@@ -197,6 +211,9 @@ def map_issues(issues: Iterable[dict[str, Any]]) -> Bundle:
         tracker.observe(raw_paths(issue))
         fields = issue.get("fields") or {}
         key = str(issue.get("key") or "")
+        # Set before anything is minted: the components, versions and identities this
+        # issue names inherit it (`Bundle.identity` / `Bundle.container`).
+        bundle.slice = slices.get(key, BASE_SLICE)
         created = parse_dt(fields.get("created"))
         if not key or created is None:
             bundle.warn("issue_without_key_or_created", id=issue.get("id"))
@@ -255,6 +272,7 @@ def map_issues(issues: Iterable[dict[str, Any]]) -> Bundle:
                 id=f"{SOURCE}:{key}",
                 key=key,
                 source=SOURCE,
+                slice=bundle.slice,
                 type=str((fields.get("issuetype") or {}).get("name") or "Task"),
                 title=title,
                 description=description,
@@ -285,6 +303,7 @@ def map_issues(issues: Iterable[dict[str, Any]]) -> Bundle:
             )
         )
 
+    bundle.slice = BASE_SLICE
     persons_from_changelog = mint_changelog_persons(bundle)
 
     n = len(bundle.workitems) or 1

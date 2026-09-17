@@ -19,6 +19,20 @@ ADR-0005 §3: the last step of the POC is deleting it. Three scopes, composable:
     nodes they became, the merge ledger, the truth file and the synthetic batches. What
     survives is the real Kafka corpus, still loaded, still queryable.
 
+``--slice <name>``
+    Only what a `--since` pull added: canonical records carrying ``slice: "<name>"``
+    (`incremental` is the only one the pipeline writes), the nodes they became, their
+    chunks, the entities whose **every** evidence chunk is in that slice, and the
+    resolution-ledger rows naming a person that goes with them. The base corpus — the
+    slice `sources.yaml` describes — is untouched, which is what makes the incremental
+    test of spec §5.5 repeatable: run it, measure it, take it out, run it again.
+
+    Two things it deliberately does **not** do, and says so in the manifest: it keeps
+    ``data/raw/<source>/since-*/`` (re-running `brain canon` would bring the records
+    straight back — pass ``--data`` to remove the raw pages too), and it keeps the
+    `Community` nodes, whose membership the increment changed and which only
+    `brain communities build` can restore.
+
 One rule the code enforces rather than documents: **a shared node is not synthetic.**
 Containers merge on `name`, so `Component {name: "clients"}` is one node that both Jira
 and the synthetic ADO layer claim, and the last writer stamps `synthetic` on it. Deleting
@@ -44,7 +58,7 @@ from pathlib import Path
 from typing import Any
 
 from brain.canon.io import read_jsonl
-from brain.canon.models import Container
+from brain.canon.models import BASE_SLICE, INCREMENTAL_SLICE, Container
 from brain.graph.context import GraphContext
 from brain.graph.mapping import CONTAINER_KEY, container_label
 from brain.graph.provenance import LEDGER_FILENAME as SYNTHETIC_LEDGER
@@ -82,6 +96,10 @@ BATCH_ROWS = 1000
 
 
 LOCK_NAME = "reset.lock"
+
+#: Slices `--slice` accepts. `base` is not one of them on purpose: "delete the corpus" is
+#: `--graph`, and a flag that could be spelled two ways is a flag somebody will mistype.
+SLICES: tuple[str, ...] = (INCREMENTAL_SLICE,)
 
 
 class ResetError(RuntimeError):
@@ -127,6 +145,7 @@ class Manifest:
     graph: dict[str, Any] = field(default_factory=dict)
     data: dict[str, Any] = field(default_factory=dict)
     synthetic: dict[str, Any] = field(default_factory=dict)
+    slice: dict[str, Any] = field(default_factory=dict)
     census_after: dict[str, int] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
@@ -136,7 +155,7 @@ class Manifest:
             "scopes": self.scopes,
             "applied": self.applied,
         }
-        for name in ("graph", "data", "synthetic"):
+        for name in ("graph", "data", "synthetic", "slice"):
             section = getattr(self, name)
             if section:
                 out[name] = section
@@ -196,6 +215,33 @@ def format_manifest(manifest: Manifest) -> str:
         for path in syn.get("files", []):
             lines.append(f"  synthetic  {verb} {path}")
 
+    sl = manifest.slice
+    if sl:
+        name = sl.get("slice", "?")
+        for file_name, count in sorted((sl.get("records") or {}).items()):
+            if count:
+                lines.append(f"  {name:<10} {verb} {count:>7} records from {file_name}.jsonl")
+        for label, count in sorted((sl.get("nodes_by_label") or {}).items()):
+            if count:
+                lines.append(f"  {name:<10} {verb} {count:>7} :{label} nodes")
+        if sl.get("entities_only_in_slice"):
+            lines.append(
+                f"  {name:<10} {verb} {sl['entities_only_in_slice']:>7} entities whose every "
+                "evidence chunk is in this slice"
+            )
+        if sl.get("chunks_orphaned_by_parent"):
+            lines.append(
+                f"  {name:<10} {verb} {sl['chunks_orphaned_by_parent']:>7} chunks whose parent "
+                "record is gone"
+            )
+        if sl.get("ledger_rows_dropped"):
+            lines.append(
+                f"  {name:<10} {verb} {sl['ledger_rows_dropped']} resolution-ledger row(s) "
+                "pointing at a deleted identity"
+            )
+        lines.append(f"  {name:<10} kept {sl['raw_kept']}")
+        lines.append(f"  {name:<10} kept {sl['communities_kept']}")
+
     data = manifest.data
     if data:
         for entry in data.get("dirs", {}).values():
@@ -233,13 +279,14 @@ def census(ctx: GraphContext, labels: Iterable[str] = GRAPH_LABELS) -> dict[str,
     return out
 
 
-def _delete_where(ctx: GraphContext, label: str, where: str = "") -> dict[str, int]:
+def _delete_where(ctx: GraphContext, label: str, where: str = "", **params: Any) -> dict[str, int]:
     """`DETACH DELETE` a label in slices, so one transaction never holds the whole layer."""
     clause = f" WHERE {where}" if where else ""
     totals: dict[str, int] = {}
     while True:
         counters = ctx.write(
-            f"MATCH (n:{ctx.label(label)}){clause} WITH n LIMIT {BATCH_ROWS} DETACH DELETE n"
+            f"MATCH (n:{ctx.label(label)}){clause} WITH n LIMIT {BATCH_ROWS} DETACH DELETE n",
+            **params,
         )
         for key, value in counters.items():
             totals[key] = totals.get(key, 0) + value
@@ -314,8 +361,10 @@ def real_container_names(canonical_dir: Path) -> dict[str, set[str]]:
     return protected
 
 
-def strip_synthetic_records(canonical_dir: Path, *, apply: bool) -> dict[str, int]:
-    """Drop every `synthetic: true` line from the canonical files. Returns per-file counts.
+def strip_records(
+    canonical_dir: Path, doomed: Callable[[dict[str, Any]], bool], *, apply: bool
+) -> dict[str, int]:
+    """Drop every line `doomed` claims from the canonical files. Returns per-file counts.
 
     Line-oriented on purpose: the files are JSONL and each line is one record, so this
     never has to parse (and re-serialize) 45 MB — which would also risk changing bytes the
@@ -341,7 +390,7 @@ def strip_synthetic_records(canonical_dir: Path, *, apply: bool) -> dict[str, in
                         "Refusing to rewrite a file it cannot read — every line it failed "
                         "to parse would be deleted."
                     ) from exc
-                if record.get("synthetic"):
+                if doomed(record):
                     dropped += 1
                 else:
                     kept.append(stripped)
@@ -353,8 +402,29 @@ def strip_synthetic_records(canonical_dir: Path, *, apply: bool) -> dict[str, in
     return removed
 
 
-def synthetic_person_ids(canonical_dir: Path) -> set[str]:
-    """Canonical ids of the synthetic Person records — the rows the ledger may point at."""
+def strip_synthetic_records(canonical_dir: Path, *, apply: bool) -> dict[str, int]:
+    """Drop every `synthetic: true` line from the canonical files."""
+    return strip_records(canonical_dir, lambda r: bool(r.get("synthetic")), apply=apply)
+
+
+def in_slice(record: dict[str, Any], slice_: str) -> bool:
+    """Is this raw canonical line part of `slice_`?
+
+    `slice` is dropped from the JSON when it is `base` (`brain.canon.models.Origin`), so a
+    line with no field at all is a base record — which is every line written before the
+    field existed. The absent case therefore has to mean `base` here too, or the first
+    slice reset after an upgrade would delete the corpus.
+    """
+    return str(record.get("slice") or BASE_SLICE) == slice_
+
+
+def strip_slice_records(canonical_dir: Path, slice_: str, *, apply: bool) -> dict[str, int]:
+    """Drop every line carrying `slice: "<slice_>"` from the canonical files."""
+    return strip_records(canonical_dir, lambda r: in_slice(r, slice_), apply=apply)
+
+
+def person_ids(canonical_dir: Path, doomed: Callable[[dict[str, Any]], bool]) -> set[str]:
+    """Canonical ids of the Person records `doomed` claims — the rows the ledger points at."""
     path = canonical_dir / "persons.jsonl"
     out: set[str] = set()
     if not path.is_file():
@@ -365,9 +435,14 @@ def synthetic_person_ids(canonical_dir: Path) -> set[str]:
             if not line:
                 continue
             record = json.loads(line)
-            if record.get("synthetic") and record.get("id"):
+            if doomed(record) and record.get("id"):
                 out.add(str(record["id"]))
     return out
+
+
+def synthetic_person_ids(canonical_dir: Path) -> set[str]:
+    """Canonical ids of the synthetic Person records."""
+    return person_ids(canonical_dir, lambda r: bool(r.get("synthetic")))
 
 
 def prune_resolution_ledger(canonical_dir: Path, ids: set[str], *, apply: bool) -> int:
@@ -561,6 +636,143 @@ def _entities_without_evidence(ctx: GraphContext) -> int:
     return int(rows[0]["c"]) if rows else 0
 
 
+# --------------------------------------------------------------------------- slice
+
+
+def entities_only_in_slice(ctx: GraphContext, slice_: str) -> list[str]:
+    """`Entity.id` for every entity whose **surviving** evidence is all in `slice_`.
+
+    Asked *before* anything is deleted, because after the chunk sweep the question has no
+    answer left: the evidence would be gone and every entity would look stranded.
+
+    An entity the increment invented has only incremental evidence and goes; one that
+    tier-1 resolution merged a new identity *into* still names the base chunks it always
+    named, so `alive > in_slice` and it stays. That is the whole difference between
+    undoing an increment and amputating the graph — and it is why this is a list of ids
+    computed up front rather than a `WHERE` clause bolted onto the label sweep.
+    """
+    labels = existing_labels(ctx)
+    if "Entity" not in labels or "Chunk" not in labels:
+        return []
+    rows = ctx.read(
+        f"MATCH (e:{ctx.label('Entity')}) WHERE e.evidence_chunk_ids IS NOT NULL\n"
+        f"OPTIONAL MATCH (c:{ctx.label('Chunk')}) WHERE c.id IN e.evidence_chunk_ids\n"
+        "WITH e, count(c) AS alive, sum(CASE WHEN c.slice = $slice THEN 1 ELSE 0 END) AS mine\n"
+        "WHERE alive > 0 AND alive = mine\n"
+        "RETURN e.id AS id ORDER BY id",
+        slice=slice_,
+    )
+    return [str(row["id"]) for row in rows]
+
+
+def _orphaned_slice_chunks(ctx: GraphContext, slice_: str, *, apply: bool) -> int:
+    """Chunks left parentless by the sweep and **not** themselves in `slice_`.
+
+    The same fallback, and the same two-query split, as :func:`_orphaned_chunks`: applying,
+    the parents are already gone and "no incoming HAS_CHUNK" is the answer; predicting, the
+    parents are all still there and the question is which chunks are *about to* lose every
+    one of them. A chunk carrying the slice itself is already counted under `Chunk` in the
+    label sweep and must not be counted twice.
+    """
+    if "Chunk" not in existing_labels(ctx):
+        return 0
+    label = ctx.label("Chunk")
+    if not apply:
+        rows = ctx.read(
+            f"MATCH (c:{label}) WHERE coalesce(c.slice, '{BASE_SLICE}') <> $slice\n"
+            "OPTIONAL MATCH (p)-[:HAS_CHUNK]->(c)\n"
+            "WITH c, collect(p) AS parents\n"
+            "WHERE size(parents) = 0 OR all(p IN parents WHERE p.slice = $slice)\n"
+            "RETURN count(c) AS c",
+            slice=slice_,
+        )
+        return int(rows[0]["c"]) if rows else 0
+    rows = ctx.read(f"MATCH (c:{label}) WHERE NOT ()-[:HAS_CHUNK]->(c) RETURN count(c) AS c")
+    total = int(rows[0]["c"]) if rows else 0
+    if total:
+        while True:
+            counters = ctx.write(
+                f"MATCH (c:{label}) WHERE NOT ()-[:HAS_CHUNK]->(c) "
+                f"WITH c LIMIT {BATCH_ROWS} DETACH DELETE c"
+            )
+            if not counters.get("nodes_deleted"):
+                break
+    return total
+
+
+def wipe_slice(
+    canonical_dir: Path,
+    slice_: str,
+    *,
+    ctx: GraphContext | None,
+    apply: bool,
+) -> dict[str, Any]:
+    """Remove one slice from the canonical files and, if given, from the graph.
+
+    Unlike `--synthetic` there is no protected-names pass here, and that is not an
+    omission: a `Person` or a `Container` that a base record also claims was already
+    written as `base` by `brain canon` (`Bundle.identity` / `Bundle.container` widen to the
+    base slice as soon as any base record names the identity). The shared-node problem is
+    solved one layer earlier, in the file, where it can be read rather than guessed at.
+    """
+    ids = person_ids(canonical_dir, lambda r: in_slice(r, slice_))
+    out: dict[str, Any] = {
+        "slice": slice_,
+        "records": strip_slice_records(canonical_dir, slice_, apply=apply),
+        "ledger_rows_dropped": prune_resolution_ledger(canonical_dir, ids, apply=apply),
+        "raw_kept": "data/raw/<source>/since-*/ is kept; `brain canon` would restore the "
+        "records from it. Add --data to remove the raw pages too.",
+        "communities_kept": "Community nodes are kept: the increment changed their "
+        "membership and only `brain communities build` can put it back.",
+    }
+    if ctx is not None:
+        out.update(_wipe_slice_graph(ctx, slice_, apply=apply))
+    return out
+
+
+def _wipe_slice_graph(ctx: GraphContext, slice_: str, *, apply: bool) -> dict[str, Any]:
+    present = existing_labels(ctx)
+    # Before the sweep: once the chunks are gone the evidence question is unanswerable.
+    entity_ids = entities_only_in_slice(ctx, slice_)
+    by_label: dict[str, int] = {}
+    counters: dict[str, int] = {}
+
+    for label in GRAPH_LABELS:
+        if label not in present:
+            continue
+        rows = ctx.read(
+            f"MATCH (n:{ctx.label(label)}) WHERE n.slice = $slice RETURN count(n) AS c",
+            slice=slice_,
+        )
+        by_label[label] = int(rows[0]["c"]) if rows else 0
+        if apply and by_label[label]:
+            for key, value in _delete_where(ctx, label, "n.slice = $slice", slice=slice_).items():
+                counters[key] = counters.get(key, 0) + value
+
+    orphans = _orphaned_slice_chunks(ctx, slice_, apply=apply)
+
+    if apply and entity_ids and "Entity" in present:
+        while True:
+            deleted = ctx.write(
+                f"MATCH (n:{ctx.label('Entity')}) WHERE n.id IN $ids "
+                f"WITH n LIMIT {BATCH_ROWS} DETACH DELETE n",
+                ids=entity_ids,
+            )
+            for key, value in deleted.items():
+                counters[key] = counters.get(key, 0) + value
+            if not deleted.get("nodes_deleted"):
+                break
+
+    return {
+        "nodes_by_label": {k: v for k, v in by_label.items() if v},
+        "nodes": sum(by_label.values()),
+        "chunks_orphaned_by_parent": orphans,
+        "entities_only_in_slice": len(entity_ids),
+        "entity_ids": entity_ids[:50],
+        "counters": counters,
+    }
+
+
 # --------------------------------------------------------------------------- data
 
 
@@ -612,23 +824,38 @@ def run_reset(
     graph: bool = False,
     data: bool = False,
     synthetic: bool = False,
+    slice_: str | None = None,
     confirmed: bool = False,
     write_report: bool = True,
     echo: Callable[[str], None] = print,
 ) -> tuple[dict[str, Any], int]:
     """Apply the requested scopes and print the manifest. Returns (manifest, exit code).
 
-    Order matters: the synthetic sweep reads the canonical files, so it must run before
-    `--data` deletes them, and it writes to the graph, so it must run before `--graph`
-    empties it. Doing both is not wasted work — it is the difference between a manifest
-    that says what the synthetic layer was and one that only says "everything".
+    Order matters: the synthetic and slice sweeps read the canonical files, so they must
+    run before `--data` deletes them, and they write to the graph, so they must run before
+    `--graph` empties it. Doing both is not wasted work — it is the difference between a
+    manifest that says what the synthetic layer was and one that only says "everything".
     """
     started = time.perf_counter()
-    scopes = [n for n, on in (("graph", graph), ("synthetic", synthetic), ("data", data)) if on]
+    if slice_ is not None and slice_ not in SLICES:
+        raise ResetError(
+            f"unknown slice {slice_!r}; `--slice` takes one of {', '.join(SLICES)}. "
+            "The base corpus is not a slice you reset — that is `--graph`."
+        )
+    scopes = [
+        n
+        for n, on in (
+            ("graph", graph),
+            ("synthetic", synthetic),
+            (f"slice:{slice_}", slice_ is not None),
+            ("data", data),
+        )
+        if on
+    ]
     if not scopes:
-        raise ResetError("nothing to reset: pass --graph, --data, --synthetic or --all")
-    if (graph or synthetic) and ctx is None:
-        raise ResetError("--graph and --synthetic need a graph connection")
+        raise ResetError("nothing to reset: pass --graph, --data, --synthetic, --slice or --all")
+    if (graph or synthetic or slice_) and ctx is None:
+        raise ResetError("--graph, --synthetic and --slice need a graph connection")
 
     manifest = Manifest(scopes=scopes, applied=confirmed)
     apply = confirmed
@@ -640,6 +867,8 @@ def run_reset(
             manifest.synthetic = wipe_synthetic(
                 canonical_dir, ctx=ctx, batches_dir=batches_dir, apply=apply
             )
+        if slice_ is not None:
+            manifest.slice = wipe_slice(canonical_dir, slice_, ctx=ctx, apply=apply)
         if graph:
             manifest.graph = wipe_graph(ctx) if apply else plan_graph(ctx)  # type: ignore[arg-type]
         if data:

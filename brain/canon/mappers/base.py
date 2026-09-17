@@ -20,7 +20,17 @@ from datetime import UTC, datetime
 from typing import Any
 
 from brain.canon.mentions import filter_refs
-from brain.canon.models import Change, Container, Document, Identity, Person, Ref, WorkItem
+from brain.canon.models import (
+    BASE_SLICE,
+    Change,
+    Container,
+    Document,
+    Identity,
+    Person,
+    Ref,
+    WorkItem,
+    widest_slice,
+)
 
 
 def parse_dt(value: Any) -> datetime | None:
@@ -146,6 +156,12 @@ class Bundle:
     warnings: list[dict[str, Any]] = field(default_factory=list)
     stats: dict[str, Any] = field(default_factory=dict)
     refs: RefAudit = field(default_factory=RefAudit)
+    #: Which slice the raw record currently being mapped belongs to. A mapper sets it once
+    #: per raw record, from the `slice_of` table `brain canon` hands it, and everything
+    #: minted while it is set inherits it. It stays `base` when nothing sets it, which is
+    #: every run that has no `since-*` directory to read — so a mapper that ignores the
+    #: argument behaves exactly as it did before the field existed.
+    slice: str = BASE_SLICE
 
     def identity(
         self,
@@ -169,18 +185,28 @@ class Bundle:
             self.persons[pid] = Person(
                 id=pid,
                 identities=[Identity(source=source, key=key, display=display, email=email)],
+                slice=self.slice,
             )
         else:
             ident = person.identities[0]
             ident.display = ident.display or display
             ident.email = ident.email or email
+            # An identity a base record already names is not part of the increment, even
+            # when an incremental record names it too (`widest_slice`).
+            person.slice = widest_slice(person.slice, self.slice)
         return key
 
     def container(self, source: str, kind: str, name: str) -> str | None:
         if not name:
             return None
         cid = f"{source}:{kind}:{name}"
-        self.containers.setdefault(cid, Container(id=cid, source=source, kind=kind, name=name))
+        existing = self.containers.get(cid)
+        if existing is None:
+            self.containers[cid] = Container(
+                id=cid, source=source, kind=kind, name=name, slice=self.slice
+            )
+        else:
+            existing.slice = widest_slice(existing.slice, self.slice)
         return cid
 
     def warn(self, code: str, **detail: Any) -> None:

@@ -14,6 +14,29 @@ from pydantic import BaseModel, ConfigDict, Field, SerializerFunctionWrapHandler
 Source = Literal["jira", "ado", "xray", "confluence", "git", "github"]
 RefKind = Literal["issue", "kip", "pr", "url", "user"]
 
+#: Which *pull* a record came from. `base` is the corpus slice `sources.yaml` describes;
+#: `incremental` is a record a later `--since` pull brought in that the base pull never
+#: had (spec §3.9, §5.5). It is the switch `brain reset --slice incremental` deletes on,
+#: exactly as `synthetic` is for the Xray/ADO layer.
+Slice = Literal["base", "incremental"]
+
+#: The value that is not written to disk. Every comparison in the pipeline is against this
+#: name rather than the string, so "which slice is the default" has one definition.
+BASE_SLICE = "base"
+INCREMENTAL_SLICE = "incremental"
+
+
+def widest_slice(*values: str) -> str:
+    """`base` if any producer is base, else `incremental`.
+
+    A `Person` or a `Container` is minted by every record that names it, so an identity a
+    base work item already claims is **not** part of the increment even when an
+    incremental one names it too. Reset deletes on this field, so the rule has to fail
+    towards keeping: the cost of getting it wrong the other way is a real node, and every
+    edge into it, deleted.
+    """
+    return BASE_SLICE if BASE_SLICE in values else INCREMENTAL_SLICE
+
 
 class Origin(BaseModel):
     """`source_id`: which *registry entry* produced this record.
@@ -42,11 +65,22 @@ class Origin(BaseModel):
 
     source_id: str | None = None
 
+    #: Which pull produced this record (`base` unless a `--since` run brought it in that
+    #: the base pull never had). Serialized by the same rule and for the same reason as
+    #: `source_id`: it is dropped when it carries the default, so the 19,266 canonical
+    #: lines of the base corpus stay byte-identical and the digests in
+    #: `data/reports/modularity.json` keep meaning something.
+    slice: Slice = BASE_SLICE
+
     @model_serializer(mode="wrap")
-    def _drop_default_source_id(self, handler: SerializerFunctionWrapHandler) -> Any:
+    def _drop_defaults(self, handler: SerializerFunctionWrapHandler) -> Any:
+        """Drop `source_id`/`slice` from the JSON when they say nothing new."""
         data = handler(self)
-        if isinstance(data, dict) and data.get("source_id") is None:
-            data.pop("source_id", None)
+        if isinstance(data, dict):
+            if data.get("source_id") is None:
+                data.pop("source_id", None)
+            if data.get("slice") == BASE_SLICE:
+                data.pop("slice", None)
         return data
 
 

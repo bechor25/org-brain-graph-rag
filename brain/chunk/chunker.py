@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from brain.canon.models import Change, Comment, Document, WorkItem
+from brain.canon.models import BASE_SLICE, Change, Comment, Document, WorkItem
 from brain.chunk.text import (
     Block,
     chunk_id,
@@ -69,6 +69,11 @@ class Chunk:
     #: only find chunks by the parent that no longer exists, which works but cannot tell
     #: an orphan of the synthetic layer from an orphan of a reworded real page.
     synthetic: bool = False
+    #: Copied from the parent record for the same reason `synthetic` is, and read by
+    #: `brain reset --slice incremental`: a chunk of an incremental work item belongs to
+    #: the increment, and a chunk of a base one does not — whatever the run that produced
+    #: it happened to re-chunk.
+    slice: str = BASE_SLICE
 
     @property
     def id(self) -> str:
@@ -113,6 +118,7 @@ class Chunk:
             "hash": self.hash,
             "orphaned": False,
             "synthetic": self.synthetic,
+            "slice": self.slice,
         }
 
 
@@ -323,6 +329,7 @@ def _emit(
     at: datetime | None = None,
     source_balanced: bool = True,
     synthetic: bool = False,
+    slice_: str = BASE_SLICE,
 ) -> Iterator[Chunk]:
     position = 0
     for item in packed:
@@ -342,6 +349,7 @@ def _emit(
             author=author,
             at=at,
             synthetic=synthetic,
+            slice=slice_,
         )
         stats.count(
             chunk,
@@ -363,6 +371,7 @@ def chunk_document(doc: Document, stats: ChunkStats) -> Iterator[Chunk]:
         stats,
         source_balanced=fence_parity(doc.body_md),
         synthetic=doc.synthetic,
+        slice_=doc.slice,
     )
 
 
@@ -385,6 +394,7 @@ def chunk_workitem_description(item: WorkItem, stats: ChunkStats) -> Iterator[Ch
         stats,
         source_balanced=fence_parity(text),
         synthetic=item.synthetic,
+        slice_=item.slice,
     )
 
 
@@ -415,6 +425,7 @@ def _comment_chunk(item: WorkItem, position: int, comment: Comment, stats: Chunk
         author=comment.author,
         at=comment.at,
         synthetic=item.synthetic,
+        slice=item.slice,
     )
     # A comment is never split, so its parity is whatever the author typed.
     stats.count(chunk, OVERSIZE_SINGLE_UNIT, blames_us=False)
@@ -435,6 +446,7 @@ def chunk_commit(change: Change, stats: ChunkStats) -> Iterator[Chunk]:
         # Never split either, so an unclosed fence came from the commit message itself.
         source_balanced=False,
         synthetic=change.synthetic,
+        slice_=change.slice,
     )
 
 

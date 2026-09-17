@@ -100,6 +100,8 @@ def build_report(
     since: date | None,
     duration_s: float,
     existing: dict[str, Any] | None = None,
+    slice_: str | None = None,
+    max_records: int | None = None,
 ) -> dict[str, Any]:
     report: dict[str, Any] = dict(existing or {})
     report["step"] = "harvest"
@@ -110,6 +112,12 @@ def build_report(
         "duration_s": round(duration_s, 2),
         "new_pages": sum(r.pages for r in results.values()),
         "new_records": sum(r.records for r in results.values()),
+        # Which slice this pull was for, and whether it was capped. Both belong in the
+        # report because both change *what the query was*, not only how much it returned:
+        # `--slice incremental` opens the base window's end, and `--limit` is part of the
+        # checkpoint signature.
+        "slice": slice_,
+        "limit": max_records,
     }
     # A `--since` pull is a different result set living in its own directory, so it is
     # recorded next to the full pull, never on top of it: `sources` stays the authoritative
@@ -127,6 +135,8 @@ def build_report(
         previous_fetch = (bucket.get(name) or {}).get("last_fetch")
         entry = result.as_dict()
         entry["since"] = since.isoformat() if since else None
+        entry["slice"] = slice_
+        entry["limit"] = max_records
         # `records`/`pages`/`duration_s` describe *this* run, so an idempotent re-run zeroes
         # them. Keep the last run that actually fetched, or the cold-pull cost — the number
         # that says what this corpus is worth re-fetching — disappears after one no-op run.

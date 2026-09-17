@@ -40,6 +40,7 @@ def node_rows(
             "source": c.source,
             "parent": c.parent,
             "synthetic": c.synthetic,
+            "slice": c.slice,
         }
         # the ledger is keyed by canonical id (`xray:testplan:3.7.0 regression`), never
         # by the name the node merges on

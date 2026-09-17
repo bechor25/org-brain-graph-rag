@@ -44,6 +44,7 @@ def node_rows(documents: list[Document], prov: SyntheticProvenance) -> list[dict
             "labels": d.labels,
             "kip_of": d.kip_of,
             "synthetic": d.synthetic,
+            "slice": d.slice,
             "raw_url": d.raw_url,
         }
         # the ledger is keyed by canonical id (`confluence:5001`), not by `key`

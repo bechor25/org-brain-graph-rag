@@ -91,8 +91,9 @@ class ConfluenceConnector(BaseConnector):
         *,
         source: SourceConfig | None = None,
         http: HttpFetcher | None = None,
+        max_records: int | None = None,
     ) -> None:
-        super().__init__(raw_dir)
+        super().__init__(raw_dir, max_records=max_records)
         self.source = source or get_registry().source(self.name)
         # The registry id, not the type: `data/raw/<id>/` and the report key.
         self.name = self.source.id
@@ -112,7 +113,9 @@ class ConfluenceConnector(BaseConnector):
 
     def signature(self, since: date | None) -> str:
         return signature_of(
+            # `max_records` only when there is a cap: see `JiraConnector.signature`.
             {"cql": build_cql(self.source, since), "expand": self.expand, "limit": self.limit}
+            | ({"max_records": self.max_records} if self.max_records is not None else {})
         )
 
     # -- probe -------------------------------------------------------------
