@@ -45,7 +45,23 @@ make smoke    # doctor + בדיקות live מול Neo4j ו-Ollama
 
 `brain harvest → canon → load → chunk → extract → resolve → communities → index → serve → eval`
 
-`brain --help` מסביר כל שלב; שלבים שטרם מומשו יוצאים עם קוד 2 ואומרים באיזו תכנית הם מגיעים.
+`brain --help` מסביר כל שלב. כל השלבים ממומשים (Plans 0–3); `docs/planning/progress.md` הוא מקור האמת ל"איפה אנחנו".
+
+## איך שואלים את המוח
+
+**מהטרמינל (אסטרטגיה קבועה):**
+```
+uv run brain ask "למה נבחר פרוטוקול ה-rebalance ב-KIP-848?"          # router בוחר
+uv run brain ask "Which tests cover KAFKA-14649?" --strategy s3        # s1|s2|s3|s4|s5|s6
+uv run brain ask "Who owns streams?" --strategy s4 --type traceability  # Text2Cypher מבנק הדוגמאות
+```
+כל פריט חוזר עם ציטוט (`chunk_id` + quote) או שורה (`cypher_used`).
+
+**דרך Claude Code (אגנטי, מצב B):** `.mcp.json` בשורש מפעיל `brain serve --stdio` בעליית סשן — פתח סשן חדש בתיקייה, אשר את שרת ה-MCP, `/mcp` יראה `brain` עם 15 כלים. הסוכן `brain-analyst` עונה עם ציטוטים ש-`brain eval cite-check` מאמת מול הגרף. HTTP: `docker compose --profile mcp up -d` → `http://127.0.0.1:8765/mcp`.
+
+**מה עובד מתי (נמדד, `docs/report/eval-report.md`):** שאלות עם מפתח → `lookup` + `local_search`; אגרגציות ומצב-בנקודת-זמן → `run_cypher`/כלי הזמן; נושאים → `global_search`; "מה כתוב על X" → `search_chunks` (baseline) מספיק. אמינות (faithfulness) 2.0 בכל אסטרטגיה — הכשלים הם באחזור, לא בהזיה.
+
+**הערכה מחדש:** `brain eval questions build|merge` → `brain eval run --mode fixed` → `brain eval answers build|merge` → `brain eval judge build|merge` → `brain eval report`. סוכני-LLM (`answer-writer`, `eval-judge`, `question-forger`) רצים על ה-batches ב-`data/batches/`.
 
 ## חיבור מערכת חדשה
 
@@ -83,4 +99,4 @@ uv run brain reset --all --yes         # graph + data
 
 ## סוכנים
 
-`.claude/agents/` — 15 סוכנים: הנדסה (`brain-infra`, `brain-ingest-engineer`, `brain-graph-engineer`, `brain-retrieval-engineer`, `brain-eval-engineer`), סוכני-LLM (`synthetic-org-generator`, `kg-extractor`, `entity-adjudicator`, `community-summarizer`, `cypher-author`, `question-forger`, `eval-judge`, `brain-analyst`), איכות (`brain-reviewer`, `lesson-writer`). מוסכמות: `docs/agents/conventions.md`.
+`.claude/agents/` — 16 סוכנים: הנדסה (`brain-infra`, `brain-ingest-engineer`, `brain-graph-engineer`, `brain-retrieval-engineer`, `brain-eval-engineer`), סוכני-LLM (`synthetic-org-generator`, `kg-extractor`, `entity-adjudicator`, `community-summarizer`, `cypher-author`, `question-forger`, `eval-judge`, `answer-writer`, `brain-analyst`), איכות (`brain-reviewer`, `lesson-writer`). מוסכמות: `docs/agents/conventions.md`.
