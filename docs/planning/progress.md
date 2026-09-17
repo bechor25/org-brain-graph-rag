@@ -2,7 +2,7 @@
 
 מקור אמת יחיד ל"איפה אנחנו". מתעדכן ע"י המתכנן אחרי כל שלב.
 
-**Plan 0 מוזג ל-`main` (2026-09-03). Plan 1 סגור (2026-09-17): שער 12/13 PASS, `make smoke` ירוק על DB שקט, 1,578 בדיקות; FAIL יחיד ומקובל: recall אנשים 0.779.** ריפו ציבורי: https://github.com/bechor25/org-brain-graph-rag · Plan 2 (אחזור + MCP): Tasks 1–3 ✅, Task 4 (שער, 19 שאלות במצב B) ממתין לסשן חדש של המשתמש. Plan 3: תכנית ב-`plans/2026-09-17-plan3-evaluation.md`.
+**Plan 0 מוזג ל-`main` (2026-09-03). Plan 1 סגור (2026-09-17): שער 12/13 PASS, `make smoke` ירוק על DB שקט, 1,578 בדיקות; FAIL יחיד ומקובל: recall אנשים 0.779.** ריפו ציבורי: https://github.com/bechor25/org-brain-graph-rag · **Plan 2 סגור (2026-09-17): שער עבר — 19/19, 99% ציטוטים תקפים, 14 נכון / 5 חלקי.** Plan 3: תכנית ב-`plans/2026-09-17-plan3-evaluation.md`.
 
 | Plan | שלב | סטטוס | commit | הערות |
 |---|---|---|---|---|
@@ -35,7 +35,7 @@
 | 1 ספריית אחזור S1/S2/S3/S6 + `brain ask` | ✅ | f7262d8 | 21 מודולים; 18/18 שאלות עם ראיה תקפה; HE↔EN 4/4 זהות ב-S3 (S1 hybrid 0.48 — הגרף נושא את ה-cross-lingual, לא ה-embedding); p50 S1 139 / S2 176 / S3 125 / S6 26 ms; `SEARCH` לא נתמך ב-2026.06 CE → `queryNodes`; S3 דירג לפי degree בלבד → תיקון ב-0472aae |
 | 2 Text2Cypher מוגן + reranker + בנק דוגמאות | ✅ | 602f5bf | guard: 42/42 נחסמו (deny-list 21 / allowlist 17 / static 4; `EXPLAIN CREATE` מתקבל ב-READ → שכבת plan-scan), 16/16 קריאות, timeout מוכח בשרת; בנק: author 19 → 15 validated → 13 accepted, 3 rationale נפלו על "Aggregation column contains implicit grouping" → batch 002 תיקן → **20 דוגמאות, 5/סוג, 20/20 רצות**; `sample_values` נוסף ל-`get_schema`; reranker bge-reranker-v2-m3: 19/19 top-1 השתנה (RRF ~0.002 מרווח), +1.6s p50, ברירת מחדל off; S4 מצב A על cq03/cq06 = similarity 1.0 (הבנק מכיל את השאלה) — Plan 3 מודד על שאלות חדשות; `merge` exit 1 כשיש rejects (קוסמטי — לתקן: exit 0 כשהבנק מלא) |
 | 3 Global search S5 + שרת MCP | ✅ | 0472aae, 342ba80 | 15 כלים + 2 resources + prompt על stdio ו-HTTP; p50 lookup 9 ms / local 260 / global 148; truncation 46→17 פריטים (10.1k→3.9k tokens) עם כל kind; S5 מאחד 22 זוגות member_hash; cq12 → "New async consumer…", "OAuth/TLS client auth…", "Streams error handling…"; `.mcp.json` + `brain-mcp` ב-compose (profile `mcp`, לא הורם — build ארוך); 1,565 בדיקות |
-| 4 שער: 19 שאלות במצב B (15 EN + 4 HE; ה-roadmap אמר 15 — הורחב ב-4 עבריות) | ⬜ brief `steps/12-plan2-gate.md` · **מוכן — ממתין למשתמש** | | דורש סשן חדש של המשתמש (`.mcp.json` נטען בעלייה) |
+| 4 שער: 19 שאלות במצב B (15 EN + 4 HE) | ✅ **עבר** (2026-09-17) | — | 3 אנליסטים דרך MCP בלבד (בלי Write — התשובות הועתקו מילולית מהדוח); cite-check: 19/19 עם ציטוט תקף, **198/200 ציטוטים קיימים (99%)**, 92/95 משפטים מצוטטים; המתכנן: **14 נכון / 5 חלקי / 0 שגוי** (חלקי = סט צר מה-gold: "פתוח" בלי טסטים, epic בלי כל הילדים); 2 ציטוטים פסולים ב-cq02 (מזהים מומצאים); router נעקף 6/19 עם סיבה; פער כלי: `impact` סופר טסטים רק על הפריטים שהחזיר; `docs/report/plan2-first-questions.md` |
 
 ### פתוח ל-Plan 2 (מ-Task 3, S3 = קובץ של Task 1)
 - `local_search` **לא מחזיר את מסמך העוגן עצמו** (KIP-848 מחוץ ל-top-10 של השאלה עליו): עוגן = 1.0, שכן עם 3 מסלולים = 1.43. הודעת ה-commit 0472aae טענה שזה תוקן — המדידה אומרת לא. הכרעה: לתקן בסבב הסקירה של Plan 2 (עוגן מוצמד ראשון).
