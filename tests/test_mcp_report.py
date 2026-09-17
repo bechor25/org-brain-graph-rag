@@ -126,7 +126,19 @@ def test_merge_survives_a_corrupt_report_instead_of_refusing_to_write(tmp_path: 
     target = tmp_path / "retrieve.json"
     target.write_text("{not json", encoding="utf-8")
     rep.merge({"mcp": {"ok": True}}, target)
-    assert json.loads(target.read_text(encoding="utf-8")) == {"mcp": {"ok": True}}
+    written = json.loads(target.read_text(encoding="utf-8"))
+    assert written["mcp"]["ok"] is True
+    assert set(written) == {"mcp", "sections"}, "nothing is invented to replace what was lost"
+
+
+def test_merge_stamps_its_sections_and_leaves_the_others_labelled(tmp_path: Path) -> None:
+    """The freshness rule lives in `brain/retrieve/report.py`; this is the wiring to it."""
+    target = tmp_path / "retrieve.json"
+    target.write_text(json.dumps({"questions": [1]}), encoding="utf-8")
+    rep.merge({"mcp": {"transport": "stdio"}}, target)
+    written = json.loads(target.read_text(encoding="utf-8"))
+    assert written["sections"]["mcp"]["stale"] is False
+    assert written["sections"]["questions"]["stale"] is True
 
 
 def test_merge_leaves_no_temporary_file_behind(tmp_path: Path) -> None:

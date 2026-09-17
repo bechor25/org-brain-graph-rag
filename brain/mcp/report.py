@@ -36,6 +36,7 @@ from brain.mcp.server import PROMPT_NAMES, RESOURCE_URIS, TOOL_NAMES
 from brain.retrieve.context import RetrieveContext
 from brain.retrieve.global_search import LEVELS, global_search
 from brain.retrieve.pack import BUDGET_TOKENS, total_tokens
+from brain.retrieve.report import merge_sections
 from brain.retrieve.types import Item, Result
 
 REPORT_PATH = Path("data/reports/retrieve.json")
@@ -424,25 +425,14 @@ def _dedupe_check(ctx: RetrieveContext, duplicates: list[dict[str, Any]]) -> dic
 
 
 def merge(sections: dict[str, Any], path: Path | None = None) -> Path:
-    """Add these sections to `data/reports/retrieve.json` without losing Task 1's.
+    """Add these sections to `data/reports/retrieve.json` without losing anyone else's.
 
-    `brain competency` builds its report from scratch, so it overwrites whatever is here —
-    which is why `brain serve --check` is the *last* of the two to run, and why this merges
-    instead of writing a file of its own: one step, one report (conventions, "Reports").
+    One step, one report (conventions, "Reports"), and four writers into it — so the merge,
+    the HEAD stamp and the `stale` marking live in `brain/retrieve/report.py` and every
+    writer calls the same one. `brain competency` used to rewrite the whole file, which is
+    why the order of the two commands used to matter; it does not any more.
     """
-    target = Path(path) if path is not None else REPORT_PATH
-    target.parent.mkdir(parents=True, exist_ok=True)
-    existing: dict[str, Any] = {}
-    if target.exists():
-        try:
-            existing = json.loads(target.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            existing = {}
-    existing.update(sections)
-    tmp = target.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(existing, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    tmp.replace(target)
-    return target
+    return merge_sections(sections, path if path is not None else REPORT_PATH)
 
 
 def mcp_checks(mcp_section: dict[str, Any]) -> list[dict[str, Any]]:

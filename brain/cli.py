@@ -958,7 +958,7 @@ def ask(
         "auto",
         "--strategy",
         help="auto (deterministic router) | s1 hybrid | s2 graph-vector | s3 entity-local "
-        "| s4 text2cypher | s6 temporal | lookup | impact.",
+        "| s4 text2cypher | s5 global (community reports) | s6 temporal | lookup | impact.",
     ),
     k: int = typer.Option(10, "--k", help="How many items to return before packing."),
     hops: int = typer.Option(1, "--hops", help="S2 only: neighbourhood depth (1-2)."),
@@ -1097,7 +1097,8 @@ def cypher_examples_merge(
         raise typer.Exit(code=1) from exc
     typer.echo(
         f"answers: {report['answers']} · validated: {report['validated']} · "
-        f"accepted: {report['accepted']} · rejected: {len(report['rejected'])}"
+        f"accepted: {report['accepted']} · duplicates: {report['duplicates']} · "
+        f"rejected: {len(report['rejected'])}"
     )
     for rejection in report["rejected"]:
         detail = str(rejection.get("detail", ""))[:80]
@@ -1105,12 +1106,22 @@ def cypher_examples_merge(
             f"  [reject] {rejection['question_id']}: {rejection['reason']}"
             + (f" — {detail}" if detail else "")
         )
-    typer.echo(f"bank: {report['bank_path']} · {report['bank_size']} examples {report['per_type']}")
-    thin = [t for t, n in report["per_type"].items() if n < 3]
+    typer.echo(
+        f"bank: {report['bank_path']} · {report['bank_size']} unique examples "
+        f"{report['unique_per_type']} · sha {str(report.get('sha'))[:8]}"
+    )
+    # The exit code is about the bank, not about the batch: answers can be refused —
+    # duplicates and write verbs are the merge doing its job — and the bank is still whole.
+    # It is short of 3 unique examples for a type that leaves S4 inventing a schema.
+    thin = report["thin_types"]
     if thin:
-        typer.echo(f"warning: fewer than 3 examples for {', '.join(thin)} (plan asks for 3-5)")
+        typer.echo(
+            f"error: fewer than {report['min_per_type']} unique examples for "
+            f"{', '.join(thin)} (plan asks for 3-5)",
+            err=True,
+        )
     typer.echo(f"report: {report['report_path']}")
-    raise typer.Exit(code=0)
+    raise typer.Exit(code=0 if not thin else 1)
 
 
 @cypher_examples_app.command("check")
@@ -1185,15 +1196,20 @@ def competency(
     summary = report["summary"]
     typer.echo(f"questions: {summary['questions']} ({summary['evidence_questions']} with evidence)")
     typer.echo(
-        f"valid provenance: {summary['with_valid_provenance']}/{summary['evidence_questions']}"
+        f"quoted chunk: {summary['with_chunk_provenance']}/{summary['evidence_questions']}"
+        f" · auditable: {summary['auditable']}/{summary['evidence_questions']}"
         f" · invalid chunk ids: {summary['invalid_chunk_ids']}"
     )
     for name, stats in report["latency"].items():
         typer.echo(f"  {name:<12} p50 {stats['p50_ms']:>5} ms   p90 {stats['p90_ms']:>5} ms")
     for check in report["checks"]:
-        typer.echo(f"  [{'ok' if check['ok'] else 'FAIL'}] {check['name']}: {check['detail']}")
+        # `met` carries `partial`, which neither `ok` nor `FAIL` can say, and `gate` says
+        # whether the exit code depends on it — a measurement is reported either way.
+        mark = check["met"] if check.get("gate", True) else f"{check['met']} (not gated)"
+        typer.echo(f"  [{mark}] {check['name']}: {check['detail']}")
     typer.echo(f"report: {path}")
-    raise typer.Exit(code=0 if all(c["ok"] for c in report["checks"]) else 1)
+    gated = [c for c in report["checks"] if c.get("gate", True)]
+    raise typer.Exit(code=0 if all(c["ok"] for c in gated) else 1)
 
 
 # ------------------------------------------------------------------- MCP server (Plan 2)
