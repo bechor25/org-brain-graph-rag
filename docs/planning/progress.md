@@ -2,7 +2,7 @@
 
 מקור אמת יחיד ל"איפה אנחנו". מתעדכן ע"י המתכנן אחרי כל שלב.
 
-**Plan 0 מוזג ל-`main` (2026-09-03).** ריפו ציבורי: https://github.com/bechor25/org-brain-graph-rag · הבא: Plan 1 (קורפוס → גרף) — נכתב לפרטים אחרי probe של Jira/Confluence.
+**Plan 0 מוזג ל-`main` (2026-09-03). Plan 1 סגור (2026-09-17): שער 12/13 PASS, `make smoke` ירוק על DB שקט, 1,578 בדיקות; FAIL יחיד ומקובל: recall אנשים 0.779.** ריפו ציבורי: https://github.com/bechor25/org-brain-graph-rag · Plan 2 (אחזור + MCP): Tasks 1–3 ✅, Task 4 (שער, 19 שאלות במצב B) ממתין לסשן חדש של המשתמש. Plan 3: תכנית ב-`plans/2026-09-17-plan3-evaluation.md`.
 
 | Plan | שלב | סטטוס | commit | הערות |
 |---|---|---|---|---|
@@ -111,7 +111,7 @@
 - אומת live: 0 קשתות LLM בלי provenance (14,762), 0 קשתות מקבילות זהות בכל הגרף, 186/186 קהילות עם provenance ו-0 findings בלי ראיה, `Chunk.synthetic` null = 0, כל ה-kinds/types בסט הסגור, אין כתיבה ל-DB מחוץ ל-`GraphClient`.
 - **08b resolve: accept** (follow-ups: `tier1.last_applied` נעלם אחרי rerun; scope של dedupe בדוח; residue של live tests ב-DB).
 - **09 communities: fix-required → ✅ (a26869f)** — `carried_rows` לפי `member_hash` בלבד → rebuild היה דורס 22 דוחות coarse (22/22 batch_id שגוי, 15/22 כותרת שגויה). תוקן למפתח `(member_hash, level)`; rebuild חי: 186/186 דוחות זהים שדה-שדה; `extracted_at` מה-ledger (touch על 94 קבצים = 0 restamp); באג-אח: id ממוחזר שמר summary ישן → REMOVE לפני carry.
-- **10 index: fix-required → ✅ (2656e91)** — smoke נושא sha; בלי sha או sha אחר = STALE (נספר FAIL); `IndexMeta.chunk_count` 13,846→12,915 (+`total`); `person_embedding` managed (12/12); סעיף "סטיות סכמה": `Area` (24, מהשכבה הסינתטית) + 6 תת-labels של WorkItem. **שער 11/13**: FAIL כנה recall 0.779; smoke STALE עד ריצה שקטה.
+- **10 index: fix-required → ✅ (2656e91)** — smoke נושא sha; בלי sha או sha אחר = STALE (נספר FAIL); `IndexMeta.chunk_count` 13,846→12,915 (+`total`); `person_embedding` managed (12/12); סעיף "סטיות סכמה": `Area` (24, מהשכבה הסינתטית) + 6 תת-labels של WorkItem. **שער 12/13 (2026-09-17, ריצה שקטה ע"י המתכנן)**: smoke PASS; FAIL כנה יחיד — recall 0.779.
 - **11b modularity: fix-required (דוח בלבד) → ✅ (נכנס ב-2656e91 — הסוכן של index שלב קבצים שהיו staged של סוכן אחר; הפרה קלה של כלל ה-git המקבילי)** — `python -m brain.modularity --rerun`: canon רץ מחדש מה-raw האמיתי (7.5s) → 5 sha1 זהים ל-baseline; `synthetic_stamp` (null 0, derived==stored 1,939, rerun 0/0 + מנגנון ב-namespace `_ModCheck`), `reset_dry_run` (0 orphans), `redaction` (token לא בבתים/אובייקט/stdout; basic base64 מוסתר), `same_type_sources`; golden test אמיתי על `tests/fixtures/canon/`.
 - **לקחים של הסוקר (נכנסים למוסכמות):** (1) מדידה שנגררת קדימה היא שקר עם חותמת זמן — לגרור רק עם sha/run id או לסרב; (2) "idempotent" שהוכח ע"י rerun שקרא 0 — ה-rerun מחק את הרשומה של הריצה שעבדה (פעמיים, בשני דוחות) → ראיית idempotency נכתבת למקום שה-rerun לא בבעלותו; (3) digest של קובץ committed אינו golden test אם שום קוד לא מייצר אותו.
 
