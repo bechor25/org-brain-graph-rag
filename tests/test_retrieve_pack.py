@@ -51,11 +51,56 @@ def test_one_item_of_every_kind_survives_even_when_it_scores_last() -> None:
     assert any(i.key == "deadbeef" for i in packed)
 
 
-def test_protected_set_larger_than_the_budget_is_still_kept_whole() -> None:
-    huge = [item(kind, kind, 0.5, chars=20_000) for kind in ("Chunk", "WorkItem", "Document")]
+def test_protected_set_larger_than_the_budget_is_still_kept_whole_and_says_truncated() -> None:
+    """Nothing was dropped and the ceiling was still breached — the caller must be told."""
+    huge = [
+        Item(
+            kind=kind,
+            key=kind,
+            score=0.5,
+            props={f"p{n}": "x" * 3_000 for n in range(6)},
+        )
+        for kind in ("Chunk", "WorkItem", "Document", "Person", "Change", "Container")
+    ]
     packed, truncated = pack(huge)
-    assert {i.kind for i in packed} == {"Chunk", "WorkItem", "Document"}
-    assert not truncated  # nothing was dropped; the budget simply lost
+    assert {i.kind for i in packed} == {i.kind for i in huge}
+    assert total_tokens(packed) > BUDGET_TOKENS
+    assert truncated, "a kept set over the budget is a truncated answer, dropped items or not"
+
+
+def test_a_whole_document_in_props_is_clipped_before_it_is_ever_costed() -> None:
+    """The `RETURN d.body_md` case: one row, 66k tokens, `truncated=false`. Never again."""
+    row = Item(kind="Row", key="row:1", props={"body_md": "x" * 60_000})
+    packed, truncated = pack([row])
+    assert total_tokens(packed) <= BUDGET_TOKENS
+    assert truncated, "text was cut, so the answer is not the whole answer"
+    assert len(packed[0].props["body_md"]) == SNIPPET_CHARS
+    assert packed[0].props["body_md"].endswith("…")
+    assert row.props["body_md"] == "x" * 60_000, "pack copies, it does not edit the caller's item"
+
+
+def test_clipping_reaches_a_string_nested_in_a_list_or_a_map() -> None:
+    packed, truncated = pack(
+        [
+            Item(
+                kind="Row",
+                key="row:2",
+                snippet="y" * 5_000,
+                props={"rows": [{"body": "z" * 9_000}], "n": 3, "flag": True},
+            )
+        ]
+    )
+    props = packed[0].props
+    assert len(packed[0].snippet) == SNIPPET_CHARS
+    assert len(props["rows"][0]["body"]) == SNIPPET_CHARS
+    assert props["n"] == 3 and props["flag"] is True
+    assert truncated
+
+
+def test_an_answer_that_fits_is_not_marked_truncated() -> None:
+    packed, truncated = pack([item("Chunk", "c1", 1.0, chars=SNIPPET_CHARS)])
+    assert not truncated
+    assert len(packed) == 1
 
 
 def test_empty_in_empty_out() -> None:
