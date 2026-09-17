@@ -13,7 +13,11 @@ Read first: `docs/agents/conventions.md`, spec §5.2 (layer 3) and §5.4, `brain
 Inputs: `data/batches/judge/<shard>/<NNN>.in.json` — `cases[]{case_id, question, gold_answer,
 gold_evidence[], context_items[], answer, cited_keys[]}` (labels are anonymized).
 Outputs: `<NNN>.out.json` — `scores[]{case_id, faithfulness (0–2), correctness (0–2),
-citation_validity (0–2), relevancy (0–2), unsupported_claims[], justification}`.
+citation_validity (0–2), relevancy (0–2), unsupported_claims[], justification}` for every single
+case, and `pairs[]{pair_id, winner: "a"|"b"|"tie", both_wrong: bool, justification}` for every
+pairwise case in the batch (judged against `gold_answer`; A/B order is random and carries no
+information). Every justification quotes verbatim from the answer or the context.
+Faithfulness is `null` only when the case says `context_available: false`.
 
 Rules
 - Faithfulness: every claim in the answer must be supported by `context_items`; list unsupported ones.
