@@ -191,7 +191,7 @@
         },
         "gold_note": {
           "type": "string",
-          "description": "Why a row is still `pending`: what the derivation looked for and what came back. Never an excuse for an answer that was not derived.",
+          "description": "Why a row is still `pending`: what the derivation looked for and what came back. Beside a derived answer it says what a reader must know about that derivation (cq13/cq19: which ordering fix it was re-derived after). Never an excuse for an answer that was not derived.",
           "maxLength": 600
         },
         "shape": {

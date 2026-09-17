@@ -314,22 +314,74 @@ def _result(items):
     return Result(strategy="s6", items=[Item(**i) for i in items])
 
 
+def _window(items, total=None):
+    """A `changes_between` result: the summary row that carries the honest total, then items."""
+    row = {
+        "kind": "Row",
+        "key": "clients:3.7..3.8",
+        "title": "window",
+        "props": {"work_items": total} if total is not None else {},
+    }
+    return _result([row, *items])
+
+
+def _work_items(n, title="a"):
+    return [
+        {
+            "kind": "WorkItem",
+            "key": f"K-{i:03d}",
+            "title": title,
+            "props": {"fix_version": "3.8.0"},
+        }
+        for i in range(n)
+    ]
+
+
 def test_the_version_window_drops_the_summary_row_and_cites_the_real_version_names(monkeypatch):
+    monkeypatch.setattr(G.temporal_mod, "changes_between", lambda *a, **k: _window(_work_items(1)))
+    d = G._changes_between_versions(FakeCtx(), ANCHORS)
+    assert d.render("en").startswith("1 work item(s) in `clients` shipped after 3.7 and up to 3.8")
+    assert "clients:3.7..3.8" not in d.render("en")
+    assert d.evidence == ["clients", "3.8.0", "K-000"]
+    assert "3.7" not in d.evidence
+
+
+def test_the_version_window_counts_the_window_not_the_page_the_tool_could_fit(monkeypatch):
+    """The 4k-token envelope cuts the list, not the corpus: the total is the window's own."""
+    monkeypatch.setattr(
+        G.temporal_mod, "changes_between", lambda *a, **k: _window(_work_items(14), total=198)
+    )
+    d = G._changes_between_versions(FakeCtx(), ANCHORS)
+    text = d.render("en")
+    assert text.startswith("198 work item(s) in `clients` shipped after 3.7 and up to 3.8")
+    assert "14 work item(s)" not in text
+
+
+def test_the_version_window_lists_what_fits_and_says_how_many_it_left_out(monkeypatch):
     monkeypatch.setattr(
         G.temporal_mod,
         "changes_between",
-        lambda *a, **k: _result(
-            [
-                {"kind": "Row", "key": "clients:3.7..3.8", "title": "window", "props": {}},
-                {"kind": "WorkItem", "key": "K-1", "title": "a", "props": {"fix_version": "3.8.0"}},
-            ]
-        ),
+        lambda *a, **k: _window(_work_items(14, title="t" * G.QUOTE_CHARS), total=198),
     )
     d = G._changes_between_versions(FakeCtx(), ANCHORS)
-    assert "1 work item(s) in `clients` shipped after 3.7 and up to 3.8." in d.render("en")
-    assert "clients:3.7..3.8" not in d.render("en")
-    assert d.evidence == ["clients", "3.8.0", "K-1"]
-    assert "3.7" not in d.evidence
+    listed = [f for f in d.facts if f.en.startswith("K-")]
+    assert listed, "a window with items lists some of them"
+    assert max(len(d.render("en")), len(d.render("he"))) <= G.ANSWER_MAX
+    assert len(d.evidence) <= G.EVIDENCE_MAX
+    assert f"{198 - len(listed)} further items are not listed." in d.render("en")
+    assert [f.en.split(" ")[0] for f in listed] == [e for e in d.evidence if e.startswith("K-")]
+
+
+def test_the_version_window_gold_says_it_was_re_derived_after_the_ordering_fix(monkeypatch):
+    """The note travels onto the row: cq13/cq19's old gold measured store order."""
+    monkeypatch.setattr(
+        G.temporal_mod, "changes_between", lambda *a, **k: _window(_work_items(2), total=198)
+    )
+    d = G._changes_between_versions(FakeCtx(), ANCHORS)
+    assert d.note == G.REDERIVED_NOTE
+    gold = G.derive(FakeCtx(), [{"id": "cq13", "lang": "en", "anchors": []}], values=ANCHORS)[0]
+    assert not gold.pending
+    assert gold.gold_note == G.REDERIVED_NOTE
 
 
 def test_an_empty_version_window_is_pending_with_the_window_in_the_reason(monkeypatch):
@@ -567,3 +619,80 @@ def test_the_sidecar_round_trips_by_id(tmp_path: Path):
 
 def test_a_pending_gold_never_carries_a_query_it_did_not_run():
     assert "gold_query" not in G.Gold("cq01", None, [], "pending", gold_note="why").as_dict()
+
+
+# --------------------------------------------------------------------- the ordering audit
+#
+# cq13/cq19's first gold was derived through an unordered `changes_between`, so its 0.83
+# recall measured the order Neo4j happened to return pages in. These pin the guard that
+# stops a recipe reading that way again.
+
+
+ORDERED = "MATCH (w:`WorkItem`) RETURN w.key AS key ORDER BY key"
+
+
+def test_a_totally_ordered_query_reads():
+    assert G.unordered_reads(ORDERED) == []
+    assert G._read(FakeCtx([{"key": "K-1"}]), ORDERED) == [{"key": "K-1"}]
+
+
+@pytest.mark.parametrize(
+    "cypher",
+    [
+        # a slice of a collect nobody ordered — a different three on a different day
+        "MATCH (w)-[:X]->(t) WITH w, collect(t.key)[0..3] AS ks RETURN w.key AS key, ks "
+        "ORDER BY key",
+        # head() of an unordered collect is the same defect wearing a hat
+        "MATCH (w)-[:X]->(t) WITH w, head(collect(t.key)) AS k RETURN w.key AS key, k ORDER BY key",
+        # "some n rows"
+        "MATCH (w:`WorkItem`) RETURN w.key AS key LIMIT 10",
+        # rows the recipe will slice in Python
+        "MATCH (w:`WorkItem`) RETURN w.key AS key",
+    ],
+)
+def test_an_unordered_read_is_refused_before_it_runs(cypher: str):
+    assert G.unordered_reads(cypher)
+    ctx = FakeCtx([{"key": "K-1"}])
+    with pytest.raises(G.GoldError) as exc:
+        G._read(ctx, cypher)
+    assert "unordered read" in str(exc.value)
+    assert ctx.calls == [], "the query must not reach the database"
+
+
+def test_a_slice_of_a_stored_list_is_not_an_unordered_read():
+    """`e.evidence_chunk_ids[0..2]` is a property, not an aggregate: its order is the node's."""
+    cypher = (
+        "MATCH (e:`Entity`) RETURN e.id AS id, coalesce(e.evidence_chunk_ids, [])[0..2] AS ev "
+        "ORDER BY id"
+    )
+    assert G.unordered_reads(cypher) == []
+
+
+def test_every_recipe_that_writes_cypher_orders_every_read():
+    """The audit, encoded: each recipe's own queries, run against a ctx that answers nothing."""
+    temporal = {G._changes_between_versions, G._status_on_date, G._assignees_over_time}
+    recipes = {plan.recipe for plan in G.PLANS.values()} - temporal
+    assert len(recipes) == 12, "a new recipe joins the audit or this test is stale"
+    for recipe in sorted(recipes, key=lambda r: r.__name__):
+        ctx = FakeCtx([], [])
+        recipe(ctx, ANCHORS)  # raises GoldError if any query it writes is unordered
+        assert ctx.calls, f"{recipe.__name__} read nothing"
+        for cypher, _ in ctx.calls:
+            assert G.unordered_reads(cypher) == [], f"{recipe.__name__}: {cypher}"
+
+
+def test_every_recipe_orders_its_last_term_on_a_unique_key():
+    """A total order, not just an order: every `ORDER BY` here ends on a unique key."""
+    unique = ("key", "id", "sha", "name", "component", "quote")
+    for recipe in sorted(
+        {plan.recipe for plan in G.PLANS.values()}
+        - {G._changes_between_versions, G._status_on_date, G._assignees_over_time},
+        key=lambda r: r.__name__,
+    ):
+        ctx = FakeCtx([], [])
+        recipe(ctx, ANCHORS)
+        for cypher, _ in ctx.calls:
+            for clause in G.ORDER_BY.split(cypher)[1:]:
+                last = clause.split("WITH")[0].split("RETURN")[0].strip().split(",")[-1]
+                term = last.strip().removesuffix(" DESC").strip().split(".")[-1]
+                assert term in unique, f"{recipe.__name__}: ORDER BY ends on {term!r}"

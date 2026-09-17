@@ -18,6 +18,12 @@ re-run it and get the same answer, which is what makes a hand-audit cheap.
 back. "No component has a failing test on an open 3.8 bug" is a real answer and is written
 as one; "the query returned no rows" is not an answer and is not dressed up as one.
 
+**A list with no order is a fact about the store.** Every read here is ordered, and the
+last term of every `ORDER BY` is a unique key, because a gold answer is a *list* and the top
+of a list Neo4j happened to page in that way is not evidence about the corpus. cq13/cq19 were
+derived once through an unordered `changes_between` and their 0.83 recall measured page
+order; `_read` now refuses a query that could do it again (`unordered_reads`).
+
 **Anchor drift is refused, not papered over.** The anchors are re-selected from the live
 graph before anything is derived. If the graph now nominates a different key than the
 question names — the corpus moved, or `brain competency` has not been re-run — deriving
@@ -30,6 +36,7 @@ a comparison if both halves are graded against the same truth.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -38,7 +45,7 @@ from brain.retrieve import competency
 from brain.retrieve import temporal as temporal_mod
 from brain.retrieve.context import RetrieveContext
 from brain.retrieve.pack import clip
-from brain.retrieve.types import Result, RetrieveError
+from brain.retrieve.types import Item, RetrieveError
 
 #: Statuses the corpus treats as closed, as `brain/retrieve/competency.py` does.
 CLOSED_STATUSES: tuple[str, ...] = ("Resolved", "Closed", "Done", "Completed", "Removed")
@@ -54,6 +61,11 @@ THEME_CAP = 3
 LIST_CAP = 6
 #: A gold answer is a compact fact list, not a report.
 QUOTE_CHARS = 160
+#: `$defs/row` caps `gold_answer`; a derivation that would overrun it is clipped and says so,
+#: and one that builds a list decides here how much of the list it can afford.
+ANSWER_MAX = 1200
+#: `$defs/row` caps `gold_evidence` too. A key the row cannot hold is a key nobody can cite.
+EVIDENCE_MAX = 20
 
 GOLD_SOURCE = "graph"
 DERIVED_BY = "code"
@@ -61,6 +73,59 @@ DERIVED_BY = "code"
 
 class GoldError(RuntimeError):
     """The gold for the competency set cannot be derived from this graph."""
+
+
+#: The note cq13/cq19 carry, so the row says why its gold is not the one Plan 3 first measured.
+REDERIVED_NOTE = "re-derived after ordering fix 2e3c42c"
+
+ORDER_BY = re.compile(r"\bORDER\s+BY\b", re.IGNORECASE)
+_COLLECT = re.compile(r"\bcollect\s*\(", re.IGNORECASE)
+_LIMIT = re.compile(r"\bLIMIT\b", re.IGNORECASE)
+_RETURN = re.compile(r"\bRETURN\b", re.IGNORECASE)
+
+
+def unordered_reads(cypher: str) -> list[str]:
+    """The ways this query would let store order into a gold answer. Empty list = none.
+
+    Three shapes, and this module shipped all three at least once:
+
+    * `collect(...)` with nothing ordered before it — the list is in whatever order the rows
+      arrived, so a slice of it (`[0..3]`, `head(...)`) is a different answer on a different
+      day. A slice of a *stored* list (`e.evidence_chunk_ids[0..2]`) is not this: that order
+      is the node's own and is the same on every read.
+    * `LIMIT` with no `ORDER BY` — "some n rows".
+    * a final `RETURN` with no `ORDER BY` — the rows a recipe then slices in Python, which
+      is the same defect one layer up.
+
+    It is syntax, not semantics: it cannot tell whether the keys chosen are *total*. That
+    argument is made beside each `ORDER BY`, and the test file holds every one of them to
+    ending on a unique key.
+    """
+    problems: list[str] = []
+    for match in _COLLECT.finditer(cypher):
+        if not ORDER_BY.search(cypher[: match.start()]):
+            problems.append("collect() with no ORDER BY before it")
+    for match in _LIMIT.finditer(cypher):
+        if not ORDER_BY.search(cypher[: match.start()]):
+            problems.append("LIMIT with no ORDER BY before it")
+    last_return = [m.start() for m in _RETURN.finditer(cypher)]
+    if last_return and not ORDER_BY.search(cypher[last_return[-1] :]):
+        problems.append("RETURN with no ORDER BY")
+    return _dedup(problems)
+
+
+def _read(ctx: RetrieveContext, cypher: str, **params: Any) -> list[Any]:
+    """`ctx.read`, but a query whose row order the store decides never runs.
+
+    This raises rather than warns because the failure it guards is silent: an unordered read
+    returns a plausible answer, the gold written from it looks like every other gold, and the
+    recall measured against it is a number about Neo4j's paging. That is what happened to
+    cq13/cq19, and nothing in the report said so.
+    """
+    problems = unordered_reads(cypher)
+    if problems:
+        raise GoldError(f"unordered read in a gold recipe: {'; '.join(problems)}\n{cypher}")
+    return ctx.read(cypher, **params)
 
 
 # ------------------------------------------------------------------------------- model
@@ -81,7 +146,8 @@ class Derivation:
     facts: list[Fact] = field(default_factory=list)
     evidence: list[str] = field(default_factory=list)
     query: str = ""
-    #: Why there is nothing to say, when there is nothing to say.
+    #: Why there is nothing to say, when there is nothing to say — or, beside facts, what a
+    #: reader of this row has to know about how it was derived.
     note: str = ""
 
     @property
@@ -148,8 +214,9 @@ def _first_line(text: str | None) -> str:
 
 
 # ----------------------------------------------------------------------------- recipes
-# Each takes the named anchors it needs and returns a Derivation. Pure apart from `ctx.read`,
-# which is READ-routed: the server refuses a write, so a recipe cannot change what it measures.
+# Each takes the named anchors it needs and returns a Derivation. Pure apart from `_read`,
+# which is READ-routed (the server refuses a write, so a recipe cannot change what it
+# measures) and which refuses a query whose row order the store would decide.
 
 
 def _tests_last_run(ctx: RetrieveContext, v: Mapping[str, str]) -> Derivation:
@@ -158,11 +225,14 @@ def _tests_last_run(ctx: RetrieveContext, v: Mapping[str, str]) -> Derivation:
     cypher = (
         f"MATCH (t:{ctx.label('Test')})-[:TESTS]->(w:{ctx.label('WorkItem')} {{`key`: $key}}) "
         f"OPTIONAL MATCH (x:{ctx.label('TestExecution')})-[r:HAS_RUN]->(t) "
-        "WITH t, r, x ORDER BY r.at DESC "
+        # Newest run first, and `x.key` after it: a test re-run inside one execution batch
+        # carries the same `r.at`, and `head()` of that tie is whichever row the store hands
+        # over first — the very defect this module now refuses to read.
+        "WITH t, r, x ORDER BY r.at DESC, x.key DESC "
         "WITH t, head(collect({status: r.status, at: toString(r.at), execution: x.key})) AS last "
         "RETURN t.key AS test, t.title AS title, last ORDER BY t.key"
     )
-    rows = ctx.read(cypher, key=key)
+    rows = _read(ctx, cypher, key=key)
     if not rows:
         return Derivation(query=cypher, note=f"no Test is linked by TESTS to {key}")
     facts: list[Fact] = []
@@ -214,7 +284,7 @@ def _commits_for_kip(ctx: RetrieveContext, v: Mapping[str, str]) -> Derivation:
         "RETURN c.sha AS sha, c.message AS message, toString(c.at) AS at "
         "ORDER BY c.at, c.sha"
     )
-    rows = ctx.read(cypher, key=key)
+    rows = _read(ctx, cypher, key=key)
     if not rows:
         return Derivation(query=cypher, note=f"no Commit carries IMPLEMENTS_KIP to {key}")
     shown = rows[:LIST_CAP]
@@ -243,17 +313,17 @@ def _component_owner(ctx: RetrieveContext, v: Mapping[str, str]) -> Derivation:
     assign_cypher = (
         f"MATCH (w:{ctx.label('WorkItem')})-[:ASSIGNED_TO]->(p:{ctx.label('Person')}) "
         f"MATCH (w)-[:IN_COMPONENT]->(:{ctx.label('Component')} {{`name`: $name}}) "
-        "RETURN p.id AS person, p.display AS display, count(DISTINCT w) AS n"
+        "RETURN p.id AS person, p.display AS display, count(DISTINCT w) AS n ORDER BY p.id"
     )
     commit_cypher = (
         f"MATCH (a:{ctx.label('Person')})-[:AUTHORED]->(c:{ctx.label('Commit')})"
         f"-[:RESOLVES]->(w:{ctx.label('WorkItem')}) "
         f"MATCH (w)-[:IN_COMPONENT]->(:{ctx.label('Component')} {{`name`: $name}}) "
-        "RETURN a.id AS person, a.display AS display, count(DISTINCT c) AS n"
+        "RETURN a.id AS person, a.display AS display, count(DISTINCT c) AS n ORDER BY a.id"
     )
     tally: dict[str, dict[str, Any]] = {}
     for cypher, field_name in ((assign_cypher, "assignments"), (commit_cypher, "commits")):
-        for row in ctx.read(cypher, name=name):
+        for row in _read(ctx, cypher, name=name):
             entry = tally.setdefault(
                 str(row["person"]),
                 {"display": row.get("display") or row["person"], "assignments": 0, "commits": 0},
@@ -298,12 +368,15 @@ def _ado_items_for_kip(ctx: RetrieveContext, v: Mapping[str, str]) -> Derivation
         f"OPTIONAL MATCH (w)-[:REFERENCES]->(direct:{ctx.label('Document')} {{`key`: $key}}) "
         f"OPTIONAL MATCH (w)-[:LINKS_TO]->(j:{ctx.label('WorkItem')})"
         f"-[:REFERENCES]->(via:{ctx.label('Document')} {{`key`: $key}}) "
+        # The two Jira issues named as the route are the two lowest keys, not the two the
+        # store reached first: `through` is rendered into the answer and cited as evidence.
+        "WITH w, direct, j ORDER BY j.key "
         "WITH w, direct, collect(DISTINCT j.key)[0..2] AS through "
         "WHERE direct IS NOT NULL OR size(through) > 0 "
         "RETURN w.key AS key, w.title AS title, w.type AS type, w.status AS status, "
         "  direct IS NOT NULL AS direct, through ORDER BY w.key"
     )
-    rows = ctx.read(cypher, key=key)
+    rows = _read(ctx, cypher, key=key)
     if not rows:
         return Derivation(
             query=cypher,
@@ -349,11 +422,14 @@ def _component_blast_radius(ctx: RetrieveContext, v: Mapping[str, str]) -> Deriv
         "UNWIND items AS w "
         f"OPTIONAL MATCH (t:{ctx.label('Test')})-[:TESTS]->(w) "
         f"OPTIONAL MATCH (w)-[:REFERENCES]->(d:{ctx.label('Document')}) WHERE d.kind = 'KIP' "
+        # Both lists are rendered into the answer and both are cut at 20 evidence ids below,
+        # so which tests and which KIPs survive cannot be left to the order the rows arrived.
+        "WITH total, w, t, d ORDER BY w.key, t.key, d.key "
         "WITH total, w, collect(DISTINCT t.key) AS tests, collect(DISTINCT d.key) AS kips "
         "RETURN total, w.key AS key, w.title AS title, w.type AS type, w.status AS status, "
         "  tests, kips ORDER BY key"
     )
-    rows = ctx.read(cypher, name=name, closed=list(CLOSED_STATUSES), cap=IMPACT_CAP)
+    rows = _read(ctx, cypher, name=name, closed=list(CLOSED_STATUSES), cap=IMPACT_CAP)
     if not rows:
         return Derivation(query=cypher, note=f"`{name}` has no open work item")
     total = int(rows[0]["total"])
@@ -390,13 +466,17 @@ def _components_failing_tests_in_version(ctx: RetrieveContext, v: Mapping[str, s
         "WHERE ver.name STARTS WITH $version AND NOT coalesce(b.status, '') IN $closed "
         f"MATCH (b)-[:IN_COMPONENT]->(k:{ctx.label('Component')}) "
         f"OPTIONAL MATCH (t:{ctx.label('Test')})-[:TESTS]->(b) "
-        f"OPTIONAL MATCH (:{ctx.label('TestExecution')})-[r:HAS_RUN]->(t) "
+        f"OPTIONAL MATCH (x:{ctx.label('TestExecution')})-[r:HAS_RUN]->(t) "
+        # `bugs` is a three-element sample quoted in the answer ("e.g. …"): ordered by key it
+        # is the three lowest, unordered it is three the store chose. The tests list is
+        # sliced for the same sentence, and the statuses only ever answer "any FAIL?".
+        "WITH k, b, t, r, x ORDER BY b.key, t.key, r.at, x.key "
         "RETURN k.name AS component, count(DISTINCT b) AS open_bugs, "
         "  collect(DISTINCT t.key) AS tests, collect(DISTINCT r.status) AS statuses, "
         "  collect(DISTINCT b.key)[0..3] AS bugs "
         "ORDER BY open_bugs DESC, component"
     )
-    rows = ctx.read(cypher, version=version, closed=list(CLOSED_STATUSES))
+    rows = _read(ctx, cypher, version=version, closed=list(CLOSED_STATUSES))
     if not rows:
         return Derivation(
             query=cypher, note=f"no component has an open bug with a {version}.x fix version"
@@ -450,9 +530,12 @@ def _entity_dependents(ctx: RetrieveContext, v: Mapping[str, str]) -> Derivation
         f"MATCH (x)-[:DEPENDS_ON]->(e:{ctx.label('Entity')} {{`id`: $id}}) "
         "RETURN coalesce(x.key, x.id, x.name) AS key, coalesce(x.title, x.name) AS title, "
         "  head(labels(x)) AS label, coalesce(x.evidence_chunk_ids, [])[0..1] AS evidence "
+        # `key` is the dependent's identity (`w.key` / `e.id` / `c.name`, each unique under
+        # its own constraint), so one term is already a total order. `evidence` is a slice of
+        # a stored list, whose order is the node's own and the same on every read.
         "ORDER BY key"
     )
-    rows = ctx.read(cypher, id=entity_id)
+    rows = _read(ctx, cypher, id=entity_id)
     if not rows:
         return Derivation(query=cypher, note=f"nothing carries DEPENDS_ON to {entity_id}")
     shown = rows[:LIST_CAP]
@@ -489,7 +572,7 @@ def _open_issues_referencing_kip(ctx: RetrieveContext, v: Mapping[str, str]) -> 
         "RETURN w.key AS key, w.title AS title, w.status AS status, w.type AS type, "
         "  w.source AS source ORDER BY w.key"
     )
-    rows = ctx.read(cypher, key=key, closed=list(CLOSED_STATUSES))
+    rows = _read(ctx, cypher, key=key, closed=list(CLOSED_STATUSES))
     if not rows:
         return Derivation(
             query=cypher,
@@ -540,13 +623,17 @@ def _rationale(
     cypher = (
         f"MATCH (d:{ctx.label('Document')} {{`key`: $key}}){pattern} "
         f"OPTIONAL MATCH (c:{ctx.label('Chunk')})-[m:MENTIONS]->(e) WHERE c.parent_key = $key "
+        # For a weak entity this one quote *is* the gold answer's text, so which mention wins
+        # decides what the row is graded against. Ordered by chunk, then by the quote itself:
+        # two MENTIONS carrying the same quote from the same chunk are the same fact.
+        "WITH e, c, m ORDER BY c.id, m.quote "
         "WITH e, collect({chunk: c.id, quote: m.quote})[0..1] AS mentions "
         "RETURN e.id AS id, e.name AS name, e.description AS description, "
         "  coalesce(e.weak, false) AS weak, "
         "  coalesce(e.evidence_chunk_ids, [])[0..2] AS evidence, mentions "
         "ORDER BY coalesce(e.weak, false), e.id"
     )
-    rows = ctx.read(cypher, key=key)
+    rows = _read(ctx, cypher, key=key)
     if not rows:
         return Derivation(query=cypher, note=f"{key} has no {role_en} in the graph")
     shown = rows[:RATIONALE_CAP]
@@ -625,11 +712,14 @@ def _community_themes_for_component(ctx: RetrieveContext, v: Mapping[str, str]) 
         f"(:{ctx.label('Component')} {{`name`: $name}}) "
         "WHERE NOT coalesce(b.status, '') IN $closed "
         f"MATCH (b)-[:IN_COMMUNITY]->(c:{ctx.label('Community')}) WHERE c.title IS NOT NULL "
+        # `examples` is quoted in the answer and cited as evidence; by key it is the same
+        # three bugs every run.
+        "WITH c, b ORDER BY b.key "
         "RETURN c.id AS id, c.title AS title, c.rank AS rank, c.level AS level, "
         "  count(DISTINCT b) AS bugs, collect(DISTINCT b.key)[0..3] AS examples "
         "ORDER BY c.rank DESC, bugs DESC, c.id"
     )
-    rows = ctx.read(cypher, name=name, closed=list(CLOSED_STATUSES))
+    rows = _read(ctx, cypher, name=name, closed=list(CLOSED_STATUSES))
     if not rows:
         return Derivation(
             query=cypher,
@@ -663,50 +753,74 @@ def _community_themes_for_component(ctx: RetrieveContext, v: Mapping[str, str]) 
 # ------------------------------------------------------- temporal: reuse, do not re-derive
 
 
-def _result_keys(result: Result, limit: int) -> list[str]:
-    return _dedup([item.key for item in result.items][:limit])
+def _width(facts: Sequence[Fact]) -> int:
+    """The longer of the two renderings: a row is graded in one language, both must fit."""
+    return max(
+        len(" ".join(f.en for f in facts)),
+        len(" ".join(f.he for f in facts)),
+    )
 
 
 def _changes_between_versions(ctx: RetrieveContext, v: Mapping[str, str]) -> Derivation:
-    """`brain/retrieve/temporal.py` already answers this deterministically. Reuse it."""
+    """`brain/retrieve/temporal.py` already answers this deterministically. Reuse it.
+
+    Two numbers, and the gold owes the reader both. *How many* work items the window holds
+    is the window's own count, which the tool's summary row carries — 198 for `clients` in
+    (3.7, 3.8] — and it survives every cut below it. *Which* ones the gold names is the front
+    of one total order (fix-version date, then key, since 2e3c42c), cut twice on the way:
+    the tool packs its answer to ~4k tokens, and the row itself holds 1,200 characters and 20
+    evidence ids. So the gold lists the first items that fit and says how many it left out.
+
+    The first version of this gold was derived before `changes_between` had an `ORDER BY`. It
+    named ten items and a total of 17, both of which were facts about the store, and the 0.83
+    recall Plan 3 published against it measured page order.
+    """
     component, low, high = v["version_window"], v["version_low"], v["version_high"]
     query = f"brain.retrieve.temporal.changes_between({component!r}, {low!r}, {high!r})"
     try:
         result = temporal_mod.changes_between(ctx, component, low, high, log=False)
     except RetrieveError as exc:
         return Derivation(query=query, note=str(exc))
-    # `changes_between` heads its items with a window summary row that is not a work item.
+    # `changes_between` heads its items with a window summary row that is not a work item;
+    # it is also the only row that still knows the whole window's size.
+    summary = next((i for i in result.items if i.kind == "Row"), None)
     items = [i for i in result.items if i.props.get("fix_version")]
     if not items:
         return Derivation(
             query=query, note=f"no work item in `{component}` shipped in ({low}, {high}]"
         )
-    shown = items[:IMPACT_CAP]
+    total = int((summary.props.get("work_items") if summary else 0) or len(items))
     facts = [
         Fact(
-            en=f"{len(items)} work item(s) in `{component}` shipped after {low} and up to {high}.",
-            he=f"{len(items)} פריטי עבודה ב-`{component}` נשלחו אחרי {low} ועד {high}.",
+            en=f"{total} work item(s) in `{component}` shipped after {low} and up to {high}, "
+            "earliest fix version first:",
+            he=f"{total} פריטי עבודה ב-`{component}` נשלחו אחרי {low} ועד {high}, "
+            "לפי סדר גרסת התיקון:",
         )
     ]
-    for item in shown:
-        version = item.props.get("fix_version")
-        facts.append(
-            Fact(
-                en=f"{item.key} ({version}): {clip(item.title, QUOTE_CHARS)}",
-                he=f"{item.key} ({version}): {clip(item.title, QUOTE_CHARS)}",
-            )
-        )
-    extra = _more(len(shown), len(items), en_noun="items", he_noun="פריטים")
-    if extra:
-        facts.append(extra)
     # The versions cited are the ones the items actually carry ("3.8.0"), never the family
     # bounds the question names ("3.8") — those are not `Version.name` and not citable.
-    versions = _dedup([str(i.props.get("fix_version") or "") for i in shown])
-    return Derivation(
-        facts=facts,
-        evidence=_dedup([component, *versions, *(i.key for i in shown)])[:20],
-        query=query,
-    )
+    shown: list[Item] = []
+    evidence = [component]
+    for item in items:
+        version = str(item.props.get("fix_version") or "")
+        line = Fact(
+            en=f"{item.key} ({version}): {clip(item.title, QUOTE_CHARS)}",
+            he=f"{item.key} ({version}): {clip(item.title, QUOTE_CHARS)}",
+        )
+        grown = _dedup([*evidence, version, item.key])
+        tail = _more(len(shown) + 1, total, en_noun="items", he_noun="פריטים")
+        if len(grown) > EVIDENCE_MAX:
+            break
+        if _width([*facts, line, *([tail] if tail else [])]) > ANSWER_MAX:
+            break
+        facts.append(line)
+        evidence = grown
+        shown.append(item)
+    extra = _more(len(shown), total, en_noun="items", he_noun="פריטים")
+    if extra:
+        facts.append(extra)
+    return Derivation(facts=facts, evidence=evidence, query=query, note=REDERIVED_NOTE)
 
 
 def _status_on_date(ctx: RetrieveContext, v: Mapping[str, str]) -> Derivation:
@@ -742,9 +856,12 @@ def _assignees_over_time(ctx: RetrieveContext, v: Mapping[str, str]) -> Derivati
     key = v["issue_most_assignees"]
     query = f"brain.retrieve.temporal.assignees_over_time({key!r})"
     result = temporal_mod.assignees_over_time(ctx, key, log=False)
+    # Oldest first, and the person id after it: two people picked up the same item on the
+    # same day is one `valid_from`, and which of them the answer names first would otherwise
+    # be the tool's row order for a tie it never broke.
     intervals = sorted(
         (item for item in result.items if item.kind == "Person"),
-        key=lambda i: str(i.props.get("valid_from") or ""),
+        key=lambda i: (str(i.props.get("valid_from") or ""), i.key),
     )
     if not intervals:
         return Derivation(query=query, note=f"the changelog records no assignee for {key}")
@@ -857,6 +974,9 @@ def derive(
                 gold_evidence=list(derivation.evidence),
                 gold_source=GOLD_SOURCE,
                 gold_query=derivation.query,
+                # A note on a derived row is not an excuse for a missing answer; it is what a
+                # reader needs to know about this one (cq13/cq19: which derivation it is).
+                gold_note=derivation.note,
             )
         )
     return out
@@ -898,8 +1018,6 @@ def _drift(row: Mapping[str, Any], plan: Plan, values: Mapping[str, str]) -> str
 #: Where the derived gold lives. A sidecar rather than an edit of `questions.jsonl`, because
 #: `brain eval questions merge` rewrites that file from the batches every time it runs.
 GOLD_FILE = "competency_gold.jsonl"
-#: `$defs/row` caps `gold_answer`; a derivation that would overrun it is clipped and says so.
-ANSWER_MAX = 1200
 
 
 def verify(ctx: RetrieveContext, golds: Sequence[Gold]) -> list[Gold]:
