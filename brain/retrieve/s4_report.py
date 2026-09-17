@@ -37,7 +37,7 @@ from brain.retrieve import cypher_guard as guard
 from brain.retrieve import examples as ex
 from brain.retrieve import rerank as rerank_mod
 from brain.retrieve.context import RetrieveContext
-from brain.retrieve.guard_cases import ALLOWED, BLOCKED
+from brain.retrieve.guard_cases import ALLOWED, BLOCKED, PLAN_BLOCKED
 from brain.retrieve.hybrid import search_chunks
 from brain.retrieve.log import DEFAULT_LOG, read_log
 from brain.retrieve.schema import get_schema
@@ -66,6 +66,7 @@ LAYERS: dict[str, str] = {
     "write-verb": "deny-list",
     "call-subquery": "deny-list",
     "procedure-not-allowed": "allowlist",
+    "show-not-allowed": "allowlist",
     "write-plan": "explain",
     "invalid-cypher": "explain",
     "timeout": "server",
@@ -192,6 +193,7 @@ def guard_section(ctx: RetrieveContext, *, log_path: Path | None = None) -> dict
             )
         allowed.append(row)
 
+    plan_only = _plan_layer_proof(ctx)
     timeout = _timeout_proof(ctx, log_path=log_path)
 
     records = read_log(log_file)[before:]
@@ -206,6 +208,7 @@ def guard_section(ctx: RetrieveContext, *, log_path: Path | None = None) -> dict
 
     return {
         "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "sha": ex.head_sha(),
         "mode": "live",
         "params": {
             k: (f"<{len(v)} floats>" if isinstance(v, list) else v) for k, v in params.items()
@@ -229,6 +232,7 @@ def guard_section(ctx: RetrieveContext, *, log_path: Path | None = None) -> dict
             "latency": _stats([r["latency_ms"] for r in passed if "latency_ms" in r]),
             "table": allowed,
         },
+        "plan_only": plan_only,
         "timeout": timeout,
         "logging": {
             "path": str(log_file),
@@ -240,6 +244,52 @@ def guard_section(ctx: RetrieveContext, *, log_path: Path | None = None) -> dict
         },
         "side_effects": _attack_side_effects(ctx),
     }
+
+
+def _plan_layer_proof(ctx: RetrieveContext) -> dict[str, Any]:
+    """Layer 3 on its own: the plan, read without the deny-list in front of it.
+
+    `INSERT` is why this measurement exists. On 2026.06 it is GQL's `CREATE`, the deny-list
+    had never heard of the word, and the only thing that refused it was the operator the
+    planner produced. The word is in `WRITE_TOKENS` now — which is exactly when a defence
+    stops being visible, so the plan is still asked, and the answer is still recorded.
+
+    Nothing runs here: `EXPLAIN` plans and returns. The attack labels are counted afterwards
+    by `_attack_side_effects` like every other case in the table.
+    """
+    cases: list[dict[str, Any]] = []
+    for name, cypher, expected in PLAN_BLOCKED:
+        row: dict[str, Any] = {"id": name, "expected": expected}
+        try:
+            plan = guard.explain(ctx, cypher, {}, guard.DEFAULT_TIMEOUT_S)
+        except guard.GuardError as err:
+            row.update({"refused": True, "by": "server", "reason": err.reason})
+        else:
+            writes = guard.plan_write_operators(plan)
+            row.update(
+                {
+                    "refused": bool(writes),
+                    "by": "explain",
+                    "operators": sorted(set(writes)),
+                    "also_refused_by_the_deny_list": _refused_statically(cypher),
+                }
+            )
+        cases.append(row)
+    return {
+        "cases": len(PLAN_BLOCKED),
+        "refused": sum(1 for c in cases if c["refused"]),
+        "table": cases,
+        "note": "the deny-list is bypassed here on purpose; `guard.check` refuses all of "
+        "these too, which is what the unit test asserts",
+    }
+
+
+def _refused_statically(cypher: str) -> str | None:
+    try:
+        guard.check(cypher)
+    except guard.GuardError as err:
+        return err.reason
+    return None
 
 
 def _timeout_proof(ctx: RetrieveContext, *, log_path: Path | None = None) -> dict[str, Any]:
@@ -590,6 +640,33 @@ def _merge_summary() -> dict[str, Any]:
     }
 
 
+def _unique_per_type() -> dict[str, int]:
+    """Distinct examples per type in the bank as it stands on disk."""
+    counts: dict[str, int] = dict.fromkeys(ex.QUESTION_TYPES, 0)
+    seen: set[tuple[str, str]] = set()
+    for example in ex.cypher_examples():
+        keys = ex.dedupe_keys(example)
+        if any(k in seen for k in keys):
+            continue
+        seen.update(keys)
+        counts[example["type"]] = counts.get(example["type"], 0) + 1
+    return counts
+
+
+def _duplicate_examples() -> list[dict[str, str]]:
+    """Bank rows that repeat an earlier row's query or question. Should be empty after a merge."""
+    out: list[dict[str, str]] = []
+    seen: dict[tuple[str, str], str] = {}
+    for example in ex.cypher_examples():
+        for key in ex.dedupe_keys(example):
+            if key in seen:
+                out.append({"id": example["id"], "same": key[0], "as": seen[key]})
+                break
+        for key in ex.dedupe_keys(example):
+            seen.setdefault(key, example["id"])
+    return out
+
+
 def examples_section(
     ctx: RetrieveContext, rows: list[dict[str, Any]], repeats: int = REPEATS
 ) -> dict[str, Any]:
@@ -598,11 +675,19 @@ def examples_section(
     for row in bank:
         per_type[row["type"]] = per_type.get(row["type"], 0) + 1
     working = [r for r in bank if r.get("rows")]
+    duplicates = _duplicate_examples()
     return {
         "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "sha": ex.head_sha(),
         "bank_path": str(ex.DEFAULT_BANK),
         "bank_size": len(bank),
         "per_type": per_type,
+        # Unique by query and by question, which is what "3–5 examples per type" means: a
+        # type whose five rows are two patterns has two examples and a misleading count.
+        "unique_per_type": _unique_per_type(),
+        "min_per_type": ex.MIN_PER_TYPE,
+        "thin_types": sorted(t for t, n in _unique_per_type().items() if n < ex.MIN_PER_TYPE),
+        "duplicates": duplicates,
         "sources": sorted({r["source"] for r in bank}),
         "run_on_the_live_graph": len([r for r in bank if r.get("runs")]),
         "returning_at_least_one_row": len(working),
@@ -622,25 +707,21 @@ def examples_section(
 
 
 def merge(sections: dict[str, Any], path: Path | None = None) -> Path:
-    """Add these sections to the step report without erasing anyone else's.
+    """Add these sections to the step report without erasing anyone else's, and stamp them.
 
     Three commands write this file — `brain competency` (Task 1), `brain serve --check`
     (Task 3) and this one — and they run in any order, sometimes in parallel agents. So the
     file is read, updated key by key and replaced atomically rather than rewritten.
+
+    The stamping is `report.merge_sections`'s, not a second implementation of it: one
+    writer means one `sections` index, and a section written here that stamped itself some
+    other way would be exactly the freshness lie the convention exists to prevent. The
+    sections also carry their own `sha`/`generated_at`, which is what a reader quoting a
+    single number sees without the index in front of them.
     """
-    target = Path(path) if path is not None else REPORT_PATH
-    existing: dict[str, Any] = {}
-    if target.exists():
-        try:
-            existing = json.loads(target.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            existing = {}
-    existing.update(sections)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(existing, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    tmp.replace(target)
-    return target
+    from brain.retrieve.report import merge_sections
+
+    return merge_sections(sections, Path(path) if path is not None else REPORT_PATH)
 
 
 def checks(sections: dict[str, Any]) -> list[dict[str, Any]]:
@@ -682,6 +763,19 @@ def checks(sections: dict[str, Any]) -> list[dict[str, Any]]:
             and g["logging"]["every_rejection_carries_a_reason"],
             "detail": f"{g['logging']['rejections_logged']} logged, "
             f"{g['logging']['rejections_expected']} expected",
+        },
+        {
+            "name": "the_plan_layer_refuses_a_write_on_its_own",
+            "ok": g["plan_only"]["refused"] == g["plan_only"]["cases"] > 0,
+            "detail": f"{g['plan_only']['refused']}/{g['plan_only']['cases']} refused by EXPLAIN "
+            "with the deny-list bypassed",
+        },
+        {
+            "name": "three_to_five_unique_examples_per_type",
+            "ok": not bank["thin_types"] and not bank["duplicates"],
+            "detail": f"{bank['unique_per_type']}"
+            + (f", thin: {bank['thin_types']}" if bank["thin_types"] else "")
+            + (f", duplicates: {len(bank['duplicates'])}" if bank["duplicates"] else ""),
         },
         {
             "name": "every_bank_example_returns_at_least_one_row",

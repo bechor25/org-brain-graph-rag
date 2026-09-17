@@ -11,9 +11,11 @@ matters because each one covers the previous one's blind spot:
 2. **A deny-list over a masked query.** Comments and string literals are masked *first*
    (same length, so every offset still points where it did), which is what makes
    `WHERE c.text CONTAINS 'CREATE TABLE'` a legal question and `// harmless\\nCREATE (n)`
-   an attack. Namespaced calls — `CALL apoc.…` and `apoc.…()` alike, because
+   an attack. Every dotted callable — `CALL apoc.…` and `apoc.…()` alike, because
    `apoc.cypher.runFirstColumn` is a *function* that runs arbitrary Cypher — must be in
-   the allowlist.
+   the allowlist or be one of Cypher's own value functions, whatever its root: refusing
+   only the roots we had heard of is what let `CALL n10s.rdf.import.fetch(…)` past this
+   layer. The scan reads backticked names unmasked, because the parser does.
 3. **`EXPLAIN` before running.** The parser knows things a regex does not. If the plan the
    planner produces contains a write operator (`Create`, `SetProperty`, `DetachDelete`,
    `SubqueryForeach`, …), the query is refused whatever its text looked like. This is not
@@ -32,6 +34,7 @@ JSONL trace as a successful call. An attack that is refused silently teaches nob
 
 from __future__ import annotations
 
+import json
 import re
 import time
 import unicodedata
@@ -40,11 +43,11 @@ from pathlib import Path
 from typing import Any
 
 from neo4j import Query
-from neo4j.exceptions import ClientError, CypherSyntaxError, Neo4jError
+from neo4j.exceptions import Neo4jError
 
 from brain.retrieve import log as retrieve_log
 from brain.retrieve.envelope import Timer, finish
-from brain.retrieve.pack import clip
+from brain.retrieve.pack import SNIPPET_CHARS, clip
 from brain.retrieve.types import Item, Result
 
 #: Spec §4.5. 10 seconds is the *server's* limit on the transaction, not a client wait.
@@ -53,12 +56,26 @@ DEFAULT_TIMEOUT_S = 10.0
 DEFAULT_LIMIT = 100
 #: A query longer than this is not a question, it is a payload.
 MAX_CYPHER_CHARS = 4000
+#: What one returned row may carry in `props` before its widest columns are dropped.
+#: The 4k ceiling cannot live only in the packer: `RETURN d.body_md` is a *single* item of
+#: 220,855 characters (66,289 tokens, measured on this corpus), and by the time `pack()`
+#: sees one item the only move left is to drop it — which is to answer nothing. 2,000
+#: characters is ~573 tokens at the corpus's measured 3.49 chars/token, so six such rows
+#: still fit the budget with room for the envelope.
+MAX_ROW_PROP_CHARS = 2000
+#: A row whose query projected no named identifier is keyed by its first scalar; that
+#: value can itself be a document body, so the key is clipped too.
+MAX_ROW_KEY_CHARS = 120
 
 #: Clause keywords that can only appear in a query that changes something. `USE` is here
 #: because it selects a database (`USE system` is the door to the admin surface), and
 #: `LOAD`/`CSV`/`PERIODIC` because `LOAD CSV` reads the server's filesystem.
 WRITE_TOKENS: tuple[str, ...] = (
     "CREATE",
+    # GQL's spelling of CREATE, accepted by 2026.06. It was missing here until the
+    # `EXPLAIN` layer caught it (`write-plan`) — which is the whole argument for having a
+    # third layer, and the reason `guard_cases.PLAN_BLOCKED` keeps that proof.
+    "INSERT",
     "MERGE",
     "DELETE",
     "DETACH",
@@ -77,8 +94,23 @@ WRITE_TOKENS: tuple[str, ...] = (
     "USE",
 )
 
-#: Namespaces whose members are procedure/function calls rather than property access.
-CALL_ROOTS: frozenset[str] = frozenset({"apoc", "gds", "db", "dbms", "sys", "cypher", "tx"})
+#: Cypher's own *value* functions, which are namespaced but are not procedures: pure,
+#: server-local, side-effect free. They are the only dotted names outside the allowlist
+#: that may be called, and the list is closed rather than a set of "known dangerous roots":
+#: scanning only roots we recognised is what let `CALL n10s.rdf.import.fetch(...)` through
+#: the static layer (measured), because `n10s` was in nobody's list.
+BUILTIN_FUNCTION_ROOTS: frozenset[str] = frozenset(
+    {
+        "date",
+        "datetime",
+        "localdatetime",
+        "localtime",
+        "time",
+        "duration",
+        "point",
+        "vector",
+    }
+)
 
 #: Plan decision: `db.index.*`, `apoc.meta.*`, `apoc.text.*`. Nothing else, and in
 #: particular no `gds.*` (`gds.*.stream` included: a projection is a write on the graph
@@ -102,6 +134,13 @@ FORBIDDEN_CALL_VERBS: tuple[str, ...] = (
     "export",
     "load",
 )
+
+#: The only two administrative listings a reader may ask for. `SHOW SETTINGS`,
+#: `TRANSACTIONS`, `USERS`, `PRIVILEGES`, `PROCEDURES` and `FUNCTIONS` describe the server
+#: and its people rather than the graph, and two of them (`TRANSACTIONS`, `SETTINGS`) are
+#: reconnaissance for an attack on it. An allowlist rather than a deny-list, so a command
+#: this version does not have yet is refused instead of discovered.
+ALLOWED_SHOW: frozenset[str] = frozenset({"INDEX", "INDEXES", "CONSTRAINT", "CONSTRAINTS"})
 
 #: Plan operators that write. Matched on the operator name with the `@database` suffix
 #: stripped; prefix matching catches the family (`SetProperty`, `SetLabels`, `SetNodeProperties`).
@@ -136,6 +175,8 @@ HINTS: dict[str, str] = {
     "ORDER BY / LIMIT / UNWIND",
     "call-subquery": "CALL {} subqueries are refused; express it with MATCH/WITH/OPTIONAL MATCH",
     "procedure-not-allowed": "the only callable namespaces are " + ", ".join(ALLOWED_CALL_PREFIXES),
+    "show-not-allowed": "only SHOW INDEXES and SHOW CONSTRAINTS are readable; ask get_schema "
+    "for labels, relationship types and properties",
     "write-plan": "the planner says this query writes; rewrite it as a read",
     "invalid-cypher": "the query did not parse or plan — check labels, types and parameters",
     "timeout": f"the query exceeded the {DEFAULT_TIMEOUT_S:g}s budget; add a LIMIT or an anchor",
@@ -161,12 +202,17 @@ class GuardError(RuntimeError):
 # --------------------------------------------------------------------------- masking
 
 
-def sanitize(cypher: str) -> str:
+def sanitize(cypher: str, *, keep_backticks: bool = False) -> str:
     """Mask comments, string literals and backticked identifiers, preserving every offset.
 
     Same-length masking is the point: the deny-list scan, the `LIMIT` detection and the
     statement-separator check all work on this string and every index still refers to the
     same character of the original, so an error can quote the query the caller sent.
+
+    `keep_backticks=True` leaves backticked identifiers legible (comments and string
+    literals are still masked). The procedure scan needs that: masking ``CALL
+    `apoc`.`cypher`.`runFirstColumn`(…)`` hides the very name the scan is looking for,
+    while the parser reads backticks as quoting and calls the procedure regardless.
 
     Raises `GuardError('unbalanced-quote')` on an unterminated literal — otherwise the
     mask would swallow the rest of the query and hide whatever came after it.
@@ -188,6 +234,13 @@ def sanitize(cypher: str) -> str:
             i = j
             continue
         if ch in "'\"`":
+            if ch == "`" and keep_backticks:
+                j = cypher.find("`", i + 1)
+                if j == -1:
+                    raise GuardError("unbalanced-quote", f"unterminated ` at offset {i}", cypher)
+                out.append(cypher[i : j + 1])
+                i = j + 1
+                continue
             j = i + 1
             while j < n:
                 if cypher[j] == "\\":
@@ -223,26 +276,46 @@ _CALL_SUBQUERY = re.compile(r"(?<![\w.])CALL\s*(\([^)]*\))?\s*\{", re.IGNORECASE
 _CALL_PROCEDURE = re.compile(r"(?<![\w.])CALL\s+([A-Za-z_][\w.]*)", re.IGNORECASE)
 _NAMESPACED_CALL = re.compile(r"(?<![\w.$])([A-Za-z_]\w*(?:\.\w+)+)\s*\(")
 _ESCAPE = re.compile(r"\\[uU]")
+_SHOW = re.compile(r"(?<![\w.$])SHOW\s+(\w+)", re.IGNORECASE)
 
 
 def _procedure_allowed(name: str) -> bool:
+    """Allowlist first, then the verb deny-list, then Cypher's own value functions.
+
+    Nothing is skipped for having an unfamiliar root any more: a dotted callable is either
+    in `ALLOWED_CALL_PREFIXES`, or a built-in value function (`duration.between`,
+    `vector.similarity.cosine`), or refused. `n10s.rdf.import.fetch`, `genai.vector.encode`
+    and the next plugin nobody has installed yet all land in the third case by default.
+    """
     lowered = name.lower()
-    if not any(lowered.startswith(p) for p in ALLOWED_CALL_PREFIXES):
-        return False
-    tail = lowered.rsplit(".", 1)[-1]
-    return not any(verb in tail for verb in FORBIDDEN_CALL_VERBS)
+    if any(lowered.startswith(p) for p in ALLOWED_CALL_PREFIXES):
+        tail = lowered.rsplit(".", 1)[-1]
+        return not any(verb in tail for verb in FORBIDDEN_CALL_VERBS)
+    return lowered.split(".", 1)[0] in BUILTIN_FUNCTION_ROOTS
+
+
+def _call_text(cypher: str) -> str:
+    """The query as the *parser* reads names: comments and literals gone, backticks removed."""
+    return _normalized(sanitize(cypher, keep_backticks=True)).replace("`", "")
 
 
 def _check_calls(text: str, cypher: str) -> None:
     if _CALL_SUBQUERY.search(text):
         raise GuardError("call-subquery", "CALL {} subquery", cypher)
+    # A bare `CALL foo` has no namespace, and every Neo4j procedure has one — so it is
+    # either a typo or a probe. Either way it is not something we can allowlist.
     names = [m.group(1) for m in _CALL_PROCEDURE.finditer(text)]
     names += [m.group(1) for m in _NAMESPACED_CALL.finditer(text)]
     for name in names:
-        if name.split(".", 1)[0].lower() not in CALL_ROOTS:
-            continue
         if not _procedure_allowed(name):
             raise GuardError("procedure-not-allowed", name, cypher)
+
+
+def _check_show(text: str, cypher: str) -> None:
+    for match in _SHOW.finditer(text):
+        word = match.group(1).upper()
+        if word not in ALLOWED_SHOW:
+            raise GuardError("show-not-allowed", f"SHOW {word}", cypher)
 
 
 def check(cypher: str) -> str:
@@ -266,10 +339,13 @@ def check(cypher: str) -> str:
     # Calls are checked before the token scan so that `CALL { CREATE … }` is reported as
     # what it is — a subquery — rather than as the `CREATE` inside it. Both are refusals;
     # the report counts reasons, so the more specific one is the more useful one.
-    _check_calls(text, cypher)
+    _check_calls(_call_text(cypher), cypher)
     hit = _TOKENS.search(text)
     if hit:
         raise GuardError("write-verb", hit.group(1).upper(), cypher)
+    # After the token scan, so `USE system SHOW DATABASES` is still reported as the `USE`
+    # it leads with — the more dangerous half of that query.
+    _check_show(text, cypher)
     return masked
 
 
@@ -277,6 +353,8 @@ def check(cypher: str) -> str:
 
 _LIMIT = re.compile(r"(?<![\w.])LIMIT\b", re.IGNORECASE)
 _RETURN = re.compile(r"(?<![\w.])RETURN\b", re.IGNORECASE)
+_UNION = re.compile(r"(?<![\w.])UNION\b", re.IGNORECASE)
+_FINISH = re.compile(r"(?<![\w.])FINISH\s*$", re.IGNORECASE)
 
 
 def inject_limit(cypher: str, limit: int = DEFAULT_LIMIT) -> tuple[str, bool]:
@@ -285,9 +363,17 @@ def inject_limit(cypher: str, limit: int = DEFAULT_LIMIT) -> tuple[str, bool]:
     The `LIMIT` that matters is the one on the answer. `MATCH … WITH n LIMIT 1 MATCH …
     RETURN …` bounds an intermediate row set and can still return the whole graph, so the
     search starts at the last `RETURN` rather than anywhere in the query.
+
+    Two shapes are left alone because appending to them is a syntax error, not a limit:
+    a `UNION` (the clause belongs to each part, not to the union) and a query that ends in
+    `FINISH` (which returns no rows at all). They are not unbounded as a result —
+    `run_cypher` still cuts the row list at `limit` before building items — but the bound
+    is applied in the client rather than by the server, and `limit_injected` says so.
     """
     body = cypher.rstrip().rstrip(";").rstrip()
     masked = sanitize(body)
+    if _UNION.search(masked) or _FINISH.search(masked):
+        return body, False
     start = 0
     for match in _RETURN.finditer(masked):
         start = match.end()
@@ -338,18 +424,78 @@ def plan_write_operators(plan: dict[str, Any] | None) -> list[str]:
 
 
 def explain(ctx: Any, cypher: str, params: dict[str, Any], timeout_s: float) -> dict[str, Any]:
-    """`EXPLAIN` the query under READ routing and hand back the plan tree."""
+    """`EXPLAIN` the query under READ routing and hand back the plan tree.
+
+    Catches `Neo4jError`, not only `ClientError`/`CypherSyntaxError`: planning is a
+    server-side operation and it can fail as a `DatabaseError` (an internal planner
+    failure) or a `TransientError` (the transaction timing out while planning a query
+    designed to be expensive to plan). Those are the interesting cases, and letting them
+    escape would turn a refusal into a stack trace — an MCP tool owes the caller the same
+    `{error, hint}` pair whichever layer said no.
+    """
     query = Query(f"EXPLAIN {cypher}", timeout=timeout_s)
     try:
         return ctx.client.explain(query, **params) or {}
-    except (CypherSyntaxError, ClientError) as exc:
+    except Neo4jError as exc:
         message = str(exc).splitlines()[0]
-        if "read access mode" in message.lower():
+        signal = f"{getattr(exc, 'code', '') or ''} {message}".lower()
+        if "read access mode" in signal:
             raise GuardError("read-mode", message, cypher) from exc
+        if any(w in signal for w in ("timedout", "timeout", "timed out", "terminated")):
+            raise GuardError("timeout", message, cypher) from exc
         raise GuardError("invalid-cypher", message, cypher) from exc
 
 
 # --------------------------------------------------------------------------- execution
+
+
+def _clip_deep(value: Any, limit: int = SNIPPET_CHARS) -> tuple[Any, bool]:
+    """Clip every string inside a row value to one snippet. Returns (value, was_clipped).
+
+    Recursive because a row column is not always a scalar: `collect(c.text)` is a list of
+    document texts and `collect({quote: …})` a list of maps, and a ceiling that only looked
+    at top-level strings would miss both.
+    """
+    if isinstance(value, str):
+        out = clip(value, limit)
+        return out, out != value
+    if isinstance(value, list):
+        pairs = [_clip_deep(v, limit) for v in value]
+        return [v for v, _ in pairs], any(c for _, c in pairs)
+    if isinstance(value, dict):
+        pairs = {k: _clip_deep(v, limit) for k, v in value.items()}
+        return {k: v for k, (v, _) in pairs.items()}, any(c for _, c in pairs.values())
+    return value, False
+
+
+def _row_props(row: dict[str, Any], budget: int = MAX_ROW_PROP_CHARS) -> dict[str, Any]:
+    """The row, clipped to something an agent can afford to read.
+
+    Two ceilings, because one is not enough. Every string is clipped to `SNIPPET_CHARS`,
+    the same budget every other strategy's snippet lives under — but a query can project
+    fifty columns, so the row as a whole is capped too, widest column first. What went is
+    named in `_clipped`: an answer that quietly lost the column the question was about is
+    worse than a long one.
+    """
+    props: dict[str, Any] = {}
+    clipped: list[str] = []
+    for name, value in row.items():
+        if name == "embedding":
+            continue
+        props[name], was_clipped = _clip_deep(value)
+        if was_clipped:
+            clipped.append(name)
+    sizes = {k: len(json.dumps(v, ensure_ascii=False, default=str)) for k, v in props.items()}
+    total = sum(sizes.values())
+    while total > budget and sizes:
+        widest = max(sizes, key=lambda k: (sizes[k], k))
+        del props[widest]
+        total -= sizes.pop(widest)
+        if widest not in clipped:
+            clipped.append(widest)
+    if clipped:
+        props["_clipped"] = sorted(clipped)
+    return props
 
 
 def _row_item(row: dict[str, Any], index: int) -> Item:
@@ -357,8 +503,9 @@ def _row_item(row: dict[str, Any], index: int) -> Item:
 
     A row is not a node — `GraphClient.read()` gives back exactly the columns the query
     projected — so the `kind` is `Row` and the key is whatever the query called an
-    identifier. Nothing is invented: `props` is the row itself.
+    identifier. Nothing is invented; `props` is the row itself, clipped (`_row_props`).
     """
+    props = _row_props(row)
     key = ""
     for name in ("key", "id", "name", "component", "sha", "test", "person", "title"):
         value = row.get(name)
@@ -371,14 +518,14 @@ def _row_item(row: dict[str, Any], index: int) -> Item:
             f"row-{index + 1}",
         )
     title = row.get("title") or row.get("name") or ""
-    snippet = ", ".join(f"{k}={v}" for k, v in row.items() if v is not None)
+    snippet = ", ".join(f"{k}={v}" for k, v in props.items() if v is not None and k != "_clipped")
     return Item(
         kind="Row",
-        key=str(key),
+        key=clip(str(key), MAX_ROW_KEY_CHARS),
         title=clip(str(title), 160),
         snippet=clip(snippet),
         score=1.0 / (index + 1),
-        props={k: v for k, v in row.items() if k != "embedding"},
+        props=props,
     )
 
 

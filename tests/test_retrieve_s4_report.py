@@ -24,12 +24,13 @@ def _sections(**overrides) -> dict:
     sections = {
         "guard": {
             "blocked": {
-                "cases": 42,
-                "refused": 42,
-                "refused_for_the_expected_reason": 42,
+                "cases": 56,
+                "refused": 56,
+                "refused_for_the_expected_reason": 56,
                 "leaked": [],
             },
-            "allowed": {"cases": 16, "passed": 16, "returned_rows": 15},
+            "allowed": {"cases": 21, "passed": 21, "returned_rows": 19},
+            "plan_only": {"cases": 3, "refused": 3},
             "timeout": {"refused": True, "elapsed_ms": 1349, "budget_s": 1.0},
             "logging": {
                 "rejections_logged": 43,
@@ -44,8 +45,11 @@ def _sections(**overrides) -> dict:
             "summary": {"questions": 19, "top1_changed": 19},
         },
         "cypher_examples": {
-            "bank_size": 17,
-            "returning_at_least_one_row": 17,
+            "bank_size": 14,
+            "returning_at_least_one_row": 14,
+            "unique_per_type": {"traceability": 4, "impact": 4, "rationale": 3, "temporal": 3},
+            "thin_types": [],
+            "duplicates": [],
             "s4": [{"id": "cq03", "mode_a": {"rows": 10, "p50_ms": 14}}],
         },
     }
@@ -82,12 +86,26 @@ def test_merge_replaces_only_its_own_section(tmp_path) -> None:
     assert written["keep"] is True
 
 
+def test_merge_stamps_what_it_wrote_and_leaves_the_index_to_one_writer(tmp_path) -> None:
+    """One `sections` index, written by `report.merge_sections` — not a second stamper here."""
+    from brain.retrieve.report import head_sha
+
+    path = tmp_path / "retrieve.json"
+    s4_report.merge({"guard": {"blocked": {"refused": 56}}}, path)
+    index = json.loads(path.read_text(encoding="utf-8"))["sections"]
+    assert index["guard"]["sha"] == head_sha()
+    assert index["guard"]["stale"] is False
+    assert index["guard"]["generated_at"]
+
+
 def test_merge_survives_a_corrupt_file(tmp_path) -> None:
     """A half-written report is a reason to start a new one, not to lose this run."""
     path = tmp_path / "retrieve.json"
     path.write_text("{not json", encoding="utf-8")
     s4_report.merge({"guard": {"ok": True}}, path)
-    assert json.loads(path.read_text(encoding="utf-8")) == {"guard": {"ok": True}}
+    written = json.loads(path.read_text(encoding="utf-8"))
+    assert written["guard"] == {"ok": True}
+    assert set(written) == {"guard", "sections"}
 
 
 # ------------------------------------------------------------------ the claims
@@ -116,9 +134,46 @@ def test_a_node_left_behind_fails_the_check() -> None:
 
 
 def test_an_example_that_returns_nothing_fails_the_check() -> None:
-    sections = _sections(**{"cypher_examples.returning_at_least_one_row": 16})
+    sections = _sections(**{"cypher_examples.returning_at_least_one_row": 13})
     failed = {c["name"] for c in s4_report.checks(sections) if not c["ok"]}
     assert "every_bank_example_returns_at_least_one_row" in failed
+
+
+def test_a_type_with_two_unique_examples_fails_the_check() -> None:
+    """Five rows that are two patterns is two examples, and the check counts patterns."""
+    sections = _sections(
+        **{
+            "cypher_examples.unique_per_type": {
+                "traceability": 4,
+                "impact": 4,
+                "rationale": 2,
+                "temporal": 3,
+            },
+            "cypher_examples.thin_types": ["rationale"],
+        }
+    )
+    check = next(
+        c
+        for c in s4_report.checks(sections)
+        if c["name"] == "three_to_five_unique_examples_per_type"
+    )
+    assert check["ok"] is False
+    assert "rationale" in check["detail"]
+
+
+def test_a_duplicate_left_in_the_bank_fails_the_check() -> None:
+    sections = _sections(
+        **{"cypher_examples.duplicates": [{"id": "temporal-cq14", "same": "cypher", "as": "seed"}]}
+    )
+    failed = {c["name"] for c in s4_report.checks(sections) if not c["ok"]}
+    assert "three_to_five_unique_examples_per_type" in failed
+
+
+def test_the_plan_layer_must_refuse_on_its_own() -> None:
+    """If `EXPLAIN` stops catching writes, the deny-list is the only thing left."""
+    sections = _sections(**{"guard.plan_only": {"cases": 3, "refused": 2}})
+    failed = {c["name"] for c in s4_report.checks(sections) if not c["ok"]}
+    assert "the_plan_layer_refuses_a_write_on_its_own" in failed
 
 
 def test_a_missing_reranker_is_reported_not_hidden() -> None:

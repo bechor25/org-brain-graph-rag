@@ -14,7 +14,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-from neo4j import GraphDatabase, RoutingControl
+from neo4j import GraphDatabase, Query, RoutingControl
 
 COUNTER_FIELDS = (
     "nodes_created",
@@ -51,18 +51,30 @@ class GraphClient:
         )
         return [r.data() for r in result.records]
 
-    def explain(self, cypher: Any, **params: Any) -> dict[str, Any] | None:
+    def explain(self, cypher: str | Query, **params: Any) -> dict[str, Any] | None:
         """The planner's plan for an `EXPLAIN …` query, under READ routing, without running it.
 
         `read()` returns records, and an `EXPLAIN` has none — the plan lives on the result
         summary. The Cypher guard needs it: `EXPLAIN CREATE (n)` is *accepted* in READ mode
         (measured on 2026.06.0), so a write is only visible in the plan's operators.
         Accepts a `neo4j.Query` so the caller can carry a transaction timeout.
+
+        Failures are left as `Neo4jError` for the caller to classify, and planning fails in
+        more ways than one: a `CypherSyntaxError` for a typo, a `ClientError` for READ mode,
+        a `DatabaseError` for an internal planner failure, a `TransientError` for a
+        transaction that times out while planning. `brain/retrieve/cypher_guard.py` catches
+        the base class for exactly that reason — catching only `ClientError` turned two of
+        those four into a stack trace where a refusal was owed.
+
+        A statement the planner produces no plan for (some administrative commands) returns
+        `None`, which the guard reads as "this layer abstained" — the deny-list and READ
+        mode still stand behind it.
         """
         result = self._driver.execute_query(
             cypher, params, database_=self._db, routing_=RoutingControl.READ
         )
-        return result.summary.plan
+        plan = result.summary.plan
+        return plan if isinstance(plan, dict) else None
 
     def write(self, cypher: str, **params: Any) -> dict[str, int]:
         result = self._driver.execute_query(

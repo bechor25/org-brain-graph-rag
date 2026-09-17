@@ -70,6 +70,33 @@ def test_every_question_type_has_a_seed_example() -> None:
     assert {e["type"] for e in ex.SEED_EXAMPLES} == set(ex.QUESTION_TYPES)
 
 
+def test_the_seeds_are_unique_among_themselves() -> None:
+    """The bank's own reference answers cannot duplicate each other."""
+    keys = [k for e in ex.SEED_EXAMPLES for k in ex.dedupe_keys(e)]
+    assert len(keys) == len(set(keys))
+
+
+def test_the_temporal_seed_asks_for_the_end_of_the_day() -> None:
+    """The same cut-off `status_at` uses; midnight answers a different question (S6 vs bank)."""
+    seed = next(e for e in ex.SEED_EXAMPLES if e["id"] == "seed-temporal-01")
+    assert "duration('P1D')" in seed["cypher"]
+    assert "<= datetime($date)" not in seed["cypher"]
+    assert "end of that day" in seed["explanation"]
+
+
+def test_the_impact_seed_requires_a_run_that_failed() -> None:
+    """`run IS NULL` called every never-executed test a failure."""
+    seed = next(e for e in ex.SEED_EXAMPLES if e["id"] == "seed-impact-01")
+    assert "t IS NOT NULL AND run.status = 'FAIL'" in seed["cypher"]
+    assert "run IS NULL OR" not in seed["cypher"]
+
+
+def test_the_ado_seed_filters_the_source_it_was_asked_about() -> None:
+    seed = next(e for e in ex.SEED_EXAMPLES if e["id"] == "seed-traceability-02")
+    assert "w.source = $source" in seed["cypher"]
+    assert seed["params"]["source"] == "ado"
+
+
 def test_seed_examples_pass_the_guard() -> None:
     for example in ex.SEED_EXAMPLES:
         ex.guard.check(example["cypher"])
@@ -323,7 +350,7 @@ def test_an_answer_that_returns_a_row_enters_the_bank(tmp_path) -> None:
     assert report["accepted"] == 1
     assert report["rejected"] == []
     assert report["bank_size"] == len(ex.SEED_EXAMPLES) + 1
-    assert report["per_type"]["traceability"] == 2
+    assert report["per_type"]["traceability"] == 3
     assert ctx.ran, "the merge step RUNS the query rather than trusting it"
     accepted = ex.read_bank(bank)[-1]
     assert accepted["id"] == "traceability-cq03"
@@ -359,7 +386,8 @@ def test_a_sixth_example_of_a_full_type_is_refused(tmp_path) -> None:
             "question_id": f"cq{i:02d}",
             "type": "temporal",
             "question": f"q{i}",
-            "cypher": "MATCH (s:StatusChange) RETURN s.id AS id LIMIT 5",
+            # Distinct queries: five copies of one query are one example, not five.
+            "cypher": f"MATCH (s:StatusChange) WHERE s.field = 'f{i}' RETURN s.id AS id LIMIT 5",
             "params": {},
         }
         for i in range(5)
@@ -449,3 +477,131 @@ def test_the_merge_writes_a_step_report_with_every_outcome(tmp_path) -> None:
     assert outcomes["cq14"]["rows"] == 1
     assert outcomes["cq09"]["outcome"] == "rejected"
     assert outcomes["cq09"]["reason"] == "write-verb"
+
+
+# ------------------------------------------------------------------ duplicates
+
+
+def _batch(tmp_path, answers: list[dict]):
+    batch_dir = tmp_path / "cypher"
+    batch_dir.mkdir()
+    (batch_dir / "001.out.json").write_text(json.dumps({"answers": answers}), encoding="utf-8")
+    return batch_dir
+
+
+def test_an_answer_identical_to_a_seed_is_recorded_not_accepted(tmp_path) -> None:
+    """Four of the seventeen bank rows were copies of seeds; a bank is patterns, not rows."""
+    seed = next(e for e in ex.SEED_EXAMPLES if e["id"] == "seed-temporal-01")
+    batch_dir = _batch(
+        tmp_path,
+        [
+            {
+                "question_id": "cq14",
+                "type": "temporal",
+                "question": "something else entirely",
+                "cypher": seed["cypher"],
+                "params": seed["params"],
+            }
+        ],
+    )
+    report = ex.merge_batch(
+        _Graph([{"status": "Reopened"}]),
+        batch_dir=batch_dir,
+        bank_path=tmp_path / "bank.jsonl",
+        report_path=tmp_path / "merge.json",
+    )
+    assert report["accepted"] == 0
+    assert report["rejected"][0]["reason"] == "duplicate-of-seed"
+    assert report["rejected"][0]["detail"] == "same cypher as seed-temporal-01"
+    assert report["bank_size"] == len(ex.SEED_EXAMPLES)
+
+
+def test_a_second_answer_to_a_seeds_question_is_a_duplicate_too(tmp_path) -> None:
+    """Two answers to one question is how two tools of one server come to disagree."""
+    seed = next(e for e in ex.SEED_EXAMPLES if e["id"] == "seed-temporal-01")
+    batch_dir = _batch(
+        tmp_path,
+        [
+            {
+                "question_id": "cq14",
+                "type": "temporal",
+                "question": seed["question"],
+                "cypher": "MATCH (s:StatusChange) WHERE s.at <= datetime($date) "
+                "RETURN s.to AS status LIMIT 1",
+                "params": {"date": "2024-01-16"},
+            }
+        ],
+    )
+    report = ex.merge_batch(
+        _Graph([{"status": "Resolved"}]),
+        batch_dir=batch_dir,
+        bank_path=tmp_path / "bank.jsonl",
+        report_path=tmp_path / "merge.json",
+    )
+    assert report["accepted"] == 0
+    assert report["rejected"][0]["reason"] == "duplicate-of-seed"
+    assert report["rejected"][0]["detail"] == "same question as seed-temporal-01"
+
+
+def test_two_answers_with_the_same_query_keep_the_first(tmp_path) -> None:
+    """The Hebrew twin is the same Cypher; it costs a slot and teaches nothing new."""
+    cypher = "MATCH (d:Document {key: $key})-[:DECIDES]->(e:Entity) RETURN e.name AS name LIMIT 5"
+    batch_dir = _batch(
+        tmp_path,
+        [
+            {
+                "question_id": "cq09",
+                "type": "rationale",
+                "question": "Why was the design in KIP-932 chosen?",
+                "cypher": cypher,
+                "params": {"key": "KIP-932"},
+            },
+            {
+                "question_id": "cq18",
+                "type": "rationale",
+                "question": "\u05dc\u05de\u05d4 \u05e0\u05d1\u05d7\u05e8?",
+                "cypher": cypher,
+                "params": {"key": "KIP-932"},
+            },
+        ],
+    )
+    report = ex.merge_batch(
+        _Graph([{"name": "share groups"}]),
+        batch_dir=batch_dir,
+        bank_path=tmp_path / "bank.jsonl",
+        report_path=tmp_path / "merge.json",
+    )
+    assert report["accepted"] == 1
+    assert [r["reason"] for r in report["rejected"]] == ["duplicate"]
+    assert report["rejected"][0]["detail"] == "same cypher as rationale-cq09"
+    assert report["duplicates"] == 1
+    assert report["answers"] == 2, "two answers arrived; one of them was a copy"
+
+
+def test_the_report_counts_unique_examples_per_type_and_says_which_are_thin(tmp_path) -> None:
+    """The 3–5 rule is about distinct examples, and the exit code is about this number."""
+    report = ex.merge_batch(
+        _NoDatabase(),
+        batch_dir=_batch(tmp_path, []),
+        bank_path=tmp_path / "bank.jsonl",
+        report_path=tmp_path / "merge.json",
+    )
+    seeds_per_type = {
+        t: sum(1 for e in ex.SEED_EXAMPLES if e["type"] == t) for t in ex.QUESTION_TYPES
+    }
+    assert report["unique_per_type"] == seeds_per_type
+    assert report["min_per_type"] == 3
+    assert report["thin_types"] == sorted(t for t, n in seeds_per_type.items() if n < 3)
+    assert report["ok"] is (not report["thin_types"])
+
+
+def test_the_merge_report_carries_the_sha_it_was_measured_on(tmp_path) -> None:
+    """Plan 1 lesson: a number without the commit it was measured on is STALE, not evidence."""
+    report = ex.merge_batch(
+        _NoDatabase(),
+        batch_dir=_batch(tmp_path, []),
+        bank_path=tmp_path / "bank.jsonl",
+        report_path=tmp_path / "merge.json",
+    )
+    assert report["sha"] == ex.head_sha()
+    assert report["generated_at"]

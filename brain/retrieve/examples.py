@@ -14,16 +14,21 @@ here is a pipeline, not a file:
     brain cypher-examples merge   → each answer through the guard, then *run* against the
                                     live graph, and accepted only if it returns ≥1 row
 
-Four hand-written examples (`SEED_EXAMPLES`, one per question type) do double duty: they
-are the style guide inside the batch, and they are the bank on a machine where the batch
-has never been run — `data/` is not in git, so a bank that lived only there would make S4
-unusable on a fresh clone.
+The hand-written examples (`SEED_EXAMPLES`, at least one per question type) do double
+duty: they are the style guide inside the batch, and they are the bank on a machine where
+the batch has never been run — `data/` is not in git, so a bank that lived only there would
+make S4 unusable on a fresh clone. They are also the *reference* answer: an author's answer
+that repeats a seed's query or re-answers a seed's question is recorded as a duplicate
+rather than accepted, because a few-shot bank is a set of patterns and the same pattern
+twice buys nothing while a second, subtly different implementation of the same question is
+how two tools of one server end up disagreeing.
 """
 
 from __future__ import annotations
 
 import json
 import re
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -62,6 +67,35 @@ MAX_PER_TYPE = 5
 #: Rows an example may return while being validated. An example is a *pattern*, not a
 #: dataset, and a validation that pulls 10k rows is measuring the wrong thing.
 VALIDATION_LIMIT = 25
+#: Plan: 3–5 per type. Below three, `brain cypher-examples merge` exits non-zero — and it
+#: counts *unique* examples, because five copies of one query are one example.
+MIN_PER_TYPE = 3
+#: Outcomes decided after an answer has already been validated against the live graph.
+#: They are not answers that failed; conflating them inflates the "answers" count.
+POST_VALIDATION_REASONS: frozenset[str] = frozenset({"type-full", "duplicate", "duplicate-of-seed"})
+
+
+def head_sha() -> str | None:
+    """The commit a measurement was taken on.
+
+    Plan 1's closing review made this a convention: a number carried forward without the
+    sha it was measured on is STALE, not evidence. `brain index` keeps its own copy of this
+    for `make smoke`; importing it here would drag the whole index step into a retrieval
+    import.
+    """
+    try:
+        proc = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            ["git", "rev-parse", "HEAD"],  # noqa: S607
+            cwd=Path(__file__).resolve().parents[2],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    sha = proc.stdout.strip()
+    return sha if proc.returncode == 0 and sha else None
+
 
 #: One hand-written, live-verified example per type. Written against the real graph, with
 #: the anchors the competency questions actually use.
@@ -90,6 +124,27 @@ LIMIT 10""",
         "source": "hand",
     },
     {
+        "id": "seed-traceability-02",
+        "type": "traceability",
+        "lang": "en",
+        "question": "Which ADO story delivers KIP-848?",
+        "cypher": """MATCH (d:Document {key: $key})<-[:REFERENCES|IMPLEMENTS]-(w:WorkItem)
+WHERE w.source = $source
+OPTIONAL MATCH (w)<-[:PARENT_OF]-(parent:WorkItem)
+RETURN w.key AS key, w.title AS title, w.type AS type, w.status AS status,
+       collect(DISTINCT parent.key) AS parents
+ORDER BY key
+LIMIT 10""",
+        "params": {"key": "KIP-848", "source": "ado"},
+        "explanation": "Two identifier spaces meet on one document, so the side you were "
+        "asked about has to be named: `w.source` is `jira`/`xray`/`ado` (schema "
+        "`sample_values`), and without that filter the query answers with whatever 25 rows "
+        "it reaches first — the Jira half included. `PARENT_OF` is optional because an "
+        "epic has no parent and dropping it would drop the epic.",
+        "uses_labels": ["Document", "WorkItem"],
+        "source": "hand",
+    },
+    {
         "id": "seed-impact-01",
         "type": "impact",
         "lang": "en",
@@ -100,16 +155,25 @@ WHERE v.name STARTS WITH $version
   AND NOT b.status IN ['Resolved', 'Closed', 'Done', 'Completed', 'Removed']
 OPTIONAL MATCH (t:Test)-[:TESTS]->(b)
 OPTIONAL MATCH (t)<-[run:HAS_RUN]-()
-WITH c, b, t, run
-WHERE run IS NULL OR run.status = 'FAIL'
+WITH c, b,
+     CASE WHEN t IS NOT NULL AND run.status = 'FAIL' THEN t END AS failing_test,
+     CASE WHEN t IS NOT NULL THEN t END AS test
 RETURN c.name AS component, count(DISTINCT b) AS open_bugs,
-       count(DISTINCT t) AS failing_tests, collect(DISTINCT b.key)[0..5] AS bug_keys
+       count(DISTINCT test) AS tests, count(DISTINCT failing_test) AS failing_tests,
+       collect(DISTINCT b.key)[0..5] AS bug_keys
 ORDER BY failing_tests DESC, open_bugs DESC, component
 LIMIT 10""",
         "params": {"version": "3.8"},
         "explanation": "`Version.name` is a full semver (`3.8.0`, `3.8.1`) while questions "
         "name the minor series, so the filter is `STARTS WITH`. Open is defined by "
-        "exclusion because the corpus has nine status values across Jira and ADO.",
+        "exclusion because the corpus has nine status values across Jira and ADO. A test "
+        "is failing only when a run says so — `t IS NOT NULL AND run.status = 'FAIL'`, and "
+        "`HAS_RUN.status` is `PASS`/`FAIL` per the schema's `sample_values`. Counting "
+        "`run IS NULL` as failing (the previous shape) called every never-executed test a "
+        "failure: it reported 4 failing tests for `clients` where the honest answer is 0. "
+        "The condition sits in the aggregation rather than in a `WHERE`, so a component "
+        "with open bugs and no failing test still appears — with a zero, which is the "
+        "answer, instead of vanishing from it.",
         "uses_labels": ["Version", "Bug", "Component", "Test"],
         "source": "hand",
     },
@@ -137,13 +201,18 @@ LIMIT 20""",
         "lang": "en",
         "question": "What was the status of KAFKA-15538 on 2024-01-16?",
         "cypher": """MATCH (w:WorkItem {key: $key})-[:HAS_CHANGE]->(s:StatusChange)
-WHERE s.field = 'status' AND s.at <= datetime($date)
+WHERE s.field = 'status' AND s.at < datetime($date) + duration('P1D')
 RETURN w.key AS key, s.to AS status, toString(s.at) AS changed_at, s.by AS changed_by
 ORDER BY s.at DESC
 LIMIT 1""",
         "params": {"key": "KAFKA-15538", "date": "2024-01-16"},
-        "explanation": "Status at a date is the last change *before* it, not the current "
-        "status: filter `s.at <= datetime($date)`, order descending, take one.",
+        "explanation": "Status at a date is the last change up to the *end of that day*, "
+        "not the current status and not the state at its midnight: filter `s.at < "
+        "datetime($date) + duration('P1D')`, order descending, take one. `datetime($date)` "
+        "alone is midnight, which silently answers 'what was it when the day began' — on "
+        "KAFKA-15538 / 2024-01-16 that returns `Resolved` while `status_at` (S6, which uses "
+        "the end of the day) returns `Reopened`. Two tools of the same server disagreeing "
+        "about the same fact is worse than either answer.",
         "uses_labels": ["WorkItem", "StatusChange"],
         "source": "hand",
     },
@@ -451,6 +520,25 @@ def _params_hint(cypher: str) -> dict[str, Any]:
     return {name: "" for name in sorted(set(re.findall(r"\$(\w+)", cypher)))}
 
 
+def _norm(text: Any) -> str:
+    """Whitespace-collapsed, lower-cased. Two queries that differ only in indentation are one."""
+    return " ".join(str(text or "").split()).lower()
+
+
+def dedupe_keys(example: dict[str, Any]) -> list[tuple[str, str]]:
+    """The two ways an example can already be in the bank: same query, or same question.
+
+    Both matter and they catch different things. The same *query* under a different
+    question is a pattern the bank already teaches — the Hebrew twin of an English answer
+    is character-for-character the same Cypher, and keeping it would spend one of the five
+    slots on a second copy. The same *question* under a different query is worse: two
+    answers to one question, and a model picking between them by embedding distance gets
+    whichever sorted first. That is exactly how the midnight temporal example and the
+    end-of-day `status_at` tool came to disagree about KAFKA-15538.
+    """
+    return [("cypher", _norm(example.get("cypher"))), ("question", _norm(example.get("question")))]
+
+
 def write_merge_report(report: dict[str, Any], path: Path | None = None) -> Path:
     target = Path(path) if path is not None else MERGE_REPORT
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -499,10 +587,26 @@ def merge_batch(
 
     bank: list[dict[str, Any]] = list(SEED_EXAMPLES) if keep_seeds else []
     per_type: dict[str, int] = dict.fromkeys(QUESTION_TYPES, 0)
+    seen: dict[tuple[str, str], dict[str, Any]] = {}
     for example in bank:
         per_type[example["type"]] += 1
+        for key in dedupe_keys(example):
+            seen.setdefault(key, example)
     validated = list(accepted)
     for example in validated:
+        duplicate = next(((k, seen[k]) for k in dedupe_keys(example) if k in seen), None)
+        if duplicate is not None:
+            ((kind, _value), original) = duplicate
+            is_seed = original.get("source") == "hand"
+            rejected.append(
+                {
+                    "question_id": example["id"],
+                    "reason": "duplicate-of-seed" if is_seed else "duplicate",
+                    "detail": f"same {kind} as {original['id']}",
+                    "type": example["type"],
+                }
+            )
+            continue
         if per_type[example["type"]] >= MAX_PER_TYPE:
             rejected.append(
                 {
@@ -515,20 +619,34 @@ def merge_batch(
             continue
         bank.append(example)
         per_type[example["type"]] += 1
+        for key in dedupe_keys(example):
+            seen.setdefault(key, example)
 
     target = write_bank(bank, bank_path)
     # Three different numbers, and conflating them is how a bank report lies: how many
     # answers arrived, how many survived the guard and the graph, and how many the 3–5
     # per type cap actually let in.
+    thin = sorted(t for t, n in per_type.items() if n < MIN_PER_TYPE)
     report = {
         "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "sha": head_sha(),
         "batches": files,
-        "answers": len(validated) + len([r for r in rejected if r.get("reason") != "type-full"]),
+        "answers": len(validated)
+        + len([r for r in rejected if r.get("reason") not in POST_VALIDATION_REASONS]),
         "validated": len(validated),
         "accepted": len(bank) - (len(SEED_EXAMPLES) if keep_seeds else 0),
+        "duplicates": len(
+            [r for r in rejected if r.get("reason") in ("duplicate", "duplicate-of-seed")]
+        ),
         "rejected": rejected,
         "bank_size": len(bank),
+        # Every example in the bank is unique by query *and* by question, so this is the
+        # per-type count of distinct examples — the number the 3–5 rule is about.
         "per_type": per_type,
+        "unique_per_type": dict(per_type),
+        "min_per_type": MIN_PER_TYPE,
+        "thin_types": thin,
+        "ok": not thin,
         "bank_path": str(target),
         "seeds": len(SEED_EXAMPLES) if keep_seeds else 0,
         "per_question": sorted(

