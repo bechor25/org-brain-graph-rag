@@ -28,6 +28,19 @@
 | 1 | 10 index + gate | ✅ (daf525b, 8de5646) | daf525b…8de5646 | 11 אינדקסים ONLINE (3 vector / 5 fulltext כולל `chunk_text` / 3 range), rerun 0; IndexMeta ×4 עם ספירה חיה; מפקד: 58,622 צמתים / 161,985 קשתות / 14,762 LLM עם **0 בלי provenance**; orphans 176; 12,915 chunks חיים; קהילות 186 מסוכמות (89% כיסוי); `docs/report/plan1-graph-census.md` נוצר מקוד; **שער 9/13**: FAIL כנה על recall אנשים 0.779; 3 FAIL של עבודה-בתהליך (smoke תחת עומס, שיעורים, שורות progress) — לריצה חוזרת אחרי סגירה |
 | 1 | 11 modularity (registry, auth env, reset, guide) | ✅ אחרי 11b (0f23d83…f34198f): `brain chunk --stamp-synthetic` → Chunk.synthetic null 13,846→0 (1,939 true), Entity 0 (Phase A מדלג סינתטי); reset dry-run: 0 orphans; redaction על כל חריגה + `.git/config` אחרי clone (19 בדיקות); `sources.yaml` עם `id` ייחודי, `data/raw/<id>/`, `source_id` על רשומות (מושמט כש-id==type → קנוני byte-identical); מפתחות קנוניים בלי prefix (מגבלה מתועדת) | 48cf7f8, d8ce2c0, c265047 | `sources.yaml` + registry (canon byte-identical), auth דרך env (ריק = שגיאה), `brain reset` (--synthetic מסיר בדיוק 2,442 רשומות), מדריך + שלדי ADO/Xray; `yaml_mini` במקום pyyaml |
 
+## Plan 2 — אחזור + MCP (התחיל 2026-09-07)
+
+| Task | סטטוס | commit | הערות |
+|---|---|---|---|
+| 1 ספריית אחזור S1/S2/S3/S6 + `brain ask` | ✅ | f7262d8 | 21 מודולים; 18/18 שאלות עם ראיה תקפה; HE↔EN 4/4 זהות ב-S3 (S1 hybrid 0.48 — הגרף נושא את ה-cross-lingual, לא ה-embedding); p50 S1 139 / S2 176 / S3 125 / S6 26 ms; `SEARCH` לא נתמך ב-2026.06 CE → `queryNodes`; S3 דירג לפי degree בלבד → תיקון ב-0472aae |
+| 2 Text2Cypher מוגן + reranker + בנק דוגמאות | 🟡 רץ (סוכן חדש אחרי 2 נפילות API) | — | guard/schema/examples/rerank/text2cypher על הדיסק; `brain doctor` מזהה reranker; cypher-author ענה 19/19 (cq12 `global` → יידחה מ-S4 בכוונה; פערי סכמה: אין sample values ל-source/kind/status, MOTIVATED_BY רק Entity→Entity) |
+| 3 Global search S5 + שרת MCP | ✅ | 0472aae, 342ba80 | 15 כלים + 2 resources + prompt על stdio ו-HTTP; p50 lookup 9 ms / local 260 / global 148; truncation 46→17 פריטים (10.1k→3.9k tokens) עם כל kind; S5 מאחד 22 זוגות member_hash; cq12 → "New async consumer…", "OAuth/TLS client auth…", "Streams error handling…"; `.mcp.json` + `brain-mcp` ב-compose (profile `mcp`, לא הורם — build ארוך); 1,565 בדיקות |
+| 4 שער: 19 שאלות במצב B | ⬜ brief `steps/12-plan2-gate.md` | | דורש סשן חדש של המשתמש (`.mcp.json` נטען בעלייה) |
+
+### פתוח ל-Plan 2 (מ-Task 3, S3 = קובץ של Task 1)
+- `local_search` **לא מחזיר את מסמך העוגן עצמו** (KIP-848 מחוץ ל-top-10 של השאלה עליו): עוגן = 1.0, שכן עם 3 מסלולים = 1.43. הודעת ה-commit 0472aae טענה שזה תוקן — המדידה אומרת לא. הכרעה: לתקן בסבב הסקירה של Plan 2 (עוגן מוצמד ראשון).
+- top-1 לא תלוי בשאלה: צמתים בלי `entity_embedding` (Document/WorkItem/Person/Component) מקבלים גורם ניטרלי 1.0 → KIP-932 ראשון בשתי השאלות ב-1.43 בדיוק. הכרעה: Document/WorkItem יקבלו גורם מ-fulltext score של השאלה על `document_text`/`workitem_text` (זול), ימדד ב-Plan 3.
+
 ## החלטת תהליך (2026-09-03, המשתמש)
 - מ-Plan 1 והלאה: התכנית = brief + חוזים + קריטריונים. **הסוכנים מתכננים וכותבים את הקוד**; המתכנן סוקר ומכריע. (ב-Plan 0 הקוד היה בתכנית והסוכנים הקלידו.)
 
