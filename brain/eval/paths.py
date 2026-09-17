@@ -535,8 +535,11 @@ def _build_blast_radius(row: dict[str, Any]) -> tuple[list[dict], list[dict], di
             )
             edges.append(edge("REFERENCES", w["key"], d["key"]))
     facts = {
-        "open_items": len(row.get("items") or []),
-        "open_items_total": row.get("open_items_total"),
+        # Named apart because a forger read `open_items` as the component's real total and
+        # said so in its batch notes: one is the sample in front of you, the other is the
+        # number the answer should quote.
+        "open_items_shown_here": len(row.get("items") or []),
+        "open_items_total_in_component": row.get("open_items_total"),
         "covering_tests": sum(len(w.get("tests") or []) for w in (row.get("items") or [])),
         "referenced_documents": sum(
             len(w.get("documents") or []) for w in (row.get("items") or [])

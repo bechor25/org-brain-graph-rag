@@ -173,6 +173,21 @@
           "description": "`forged` = the agent judged it from the path; `type_default` = the merge filled the type's default because a competency question has no path to count hops on.",
           "enum": ["forged", "type_default"]
         },
+        "gold_derived_by": {
+          "type": "string",
+          "description": "Who produced the gold. `agent` = question-forger wrote it from the path; `code` = `brain eval questions gold-competency` derived it from the graph with a fixed query; `planner` = a human wrote it.",
+          "enum": ["agent", "code", "planner"]
+        },
+        "gold_query": {
+          "type": ["string", "null"],
+          "description": "With `gold_derived_by: code`: the Cypher, or the name and arguments of the deterministic retrieval function, that produced this answer. It is what makes the gold auditable — re-run it and you must get the same facts.",
+          "maxLength": 4000
+        },
+        "gold_note": {
+          "type": "string",
+          "description": "Why a row is still `pending`: what the derivation looked for and what came back. Never an excuse for an answer that was not derived.",
+          "maxLength": 600
+        },
         "shape": {
           "type": ["string", "null"],
           "description": "The path shape the question came from (`brain/eval/paths.py`), or null for a competency question.",

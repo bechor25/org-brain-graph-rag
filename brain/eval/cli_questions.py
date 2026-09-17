@@ -159,5 +159,43 @@ def merge(
     raise typer.Exit(code=0 if report["complete"] else 1)
 
 
+@questions_app.command("gold-competency")
+def gold_competency(
+    competency: str | None = typer.Option(
+        None, "--competency", metavar="PATH", help="Default: data/eval/competency.jsonl."
+    ),
+    prefix: str = typer.Option("", "--prefix", help="Label namespace to derive from."),
+) -> None:
+    """Derive gold answers for the 19 competency questions from the graph [Plan 3].
+
+    Deterministic and auditable: one fixed query per question, recorded as `gold_query`, run
+    under READ routing. Writes data/eval/competency_gold.jsonl, which
+    `brain eval questions merge` folds into data/eval/questions.jsonl. A question whose
+    derivation comes back empty stays pending with the reason attached.
+    """
+    from brain.config import get_settings
+    from brain.eval.gold_competency import run_gold, summarize_gold
+    from brain.retrieve.context import RetrieveContext
+    from brain.retrieve.types import RetrieveError
+
+    settings = get_settings()
+    rows = _competency_rows(Path(competency) if competency else None)
+    try:
+        with RetrieveContext.open(settings, prefix=prefix) as ctx:
+            report = run_gold(
+                ctx=ctx,
+                competency_rows=rows,
+                eval_dir=settings.eval_dir,
+                reports_dir=settings.reports_dir,
+            )
+    except RetrieveError as exc:
+        typer.echo(f"eval questions gold-competency: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(summarize_gold(report))
+    # Exit 1 while any row is still pending: the planner owes it an answer, and a silent 0
+    # would let a half-filled gold set through the Task 2 gate.
+    raise typer.Exit(code=0 if report["totals"]["pending"] == 0 else 1)
+
+
 if __name__ == "__main__":  # pragma: no cover - the pre-mount smoke entry point
     questions_app()

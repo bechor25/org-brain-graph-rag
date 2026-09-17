@@ -20,8 +20,8 @@ gold_evidence[], difficulty, expected_strategy, source_path_id, gold_source}}` v
 
 Rules
 - Write exactly what `asks[]` requests: that many questions per path, each in the language named.
-  Paths marked `spare` are used only if a primary path cannot yield a good question; say so in the
-  question's `id` suffix (`-spare`).
+  Paths marked `spare` are used only if a primary path cannot yield a good question; then set
+  `substituted_for: "<the unusable path_id>"` on that question (ids stay `qNNN`).
 - `gold_evidence` lists only keys/chunk ids **offered in that path** (`nodes[]`, `snippets[]`, or
   `truth:<section>:<index>` refs). The gold answer must be derivable from the path alone; for
   `gold_source: truth` paths it comes from the `truth` excerpt, not from the graph.

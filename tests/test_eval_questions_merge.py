@@ -22,9 +22,12 @@ import pytest
 
 from brain.eval.questions_report import (
     DIFFICULTY_DEFAULT,
+    KEY_LOOKUPS,
     Verdict,
     competency_row,
+    existing_keys,
     longest_shared_run,
+    offered_keys,
     read_outputs,
     review_question,
     select_balanced,
@@ -153,6 +156,55 @@ def test_evidence_that_does_not_exist_in_the_graph_is_rejected():
 def test_a_chunk_id_offered_as_a_snippet_counts_as_evidence():
     v = review(question(gold_evidence=["a" * 40]))
     assert v.ok, v.reasons
+
+
+def test_an_id_the_path_names_only_on_an_edge_is_offered():
+    """A `test_fix` path names its TestExecutions on HAS_RUN edges, never as nodes. A
+    question that cites the execution its answer rests on was being rejected for it."""
+    path = {
+        **PATH,
+        "edges": [
+            {"type": "TESTS", "from": "XT-10109", "to": "KAFKA-16448", "props": {}},
+            {"type": "HAS_RUN", "from": "XE-10004", "to": "XT-10109", "props": {"status": "PASS"}},
+        ],
+    }
+    assert "XE-10004" in offered_keys(path)
+    v = review(
+        question(gold_evidence=["KAFKA-16448", "XE-10004"]),
+        paths=[path],
+        known={"KAFKA-16448", "XE-10004"},
+    )
+    assert v.ok, v.reasons
+
+
+def test_offered_keys_still_refuses_an_id_the_path_never_mentions():
+    assert "XE-99999" not in offered_keys(PATH)
+
+
+def test_the_existence_check_looks_up_an_execution_key_under_its_own_label():
+    """`TestExecution` carries no `WorkItem` label, so without its own lookup every
+    `XE-…` id resolved through nothing and was rejected as missing from the graph."""
+    labels = dict(KEY_LOOKUPS)
+    assert labels["TestExecution"] == "key"
+    assert labels["Test"] == "key"
+
+
+def test_the_existence_check_queries_every_label_it_lists():
+    asked: list[str] = []
+
+    class Recording:
+        prefix = ""
+
+        def label(self, name):
+            return f"`{name}`"
+
+        def read(self, cypher, **params):
+            asked.append(cypher)
+            return []
+
+    existing_keys(Recording(), ["XE-1"])
+    for label, _ in KEY_LOOKUPS:
+        assert any(f"`{label}`" in cypher for cypher in asked), label
 
 
 def test_truth_evidence_is_checked_against_the_truth_file_not_the_graph():

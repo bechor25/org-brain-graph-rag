@@ -18,9 +18,12 @@ whose score means something:
   keeps exactly what the deficit table asked for, in a stable order, and the rest is
   reported as surplus rather than thrown away silently.
 
-The 19 competency questions from Plan 2 are carried in beside the forged ones, mapped onto
-the same schema with `gold_source: "pending"` — their gold answers are the planner's to
-write, and a `null` that says so is worth more than a gold nobody checked.
+The 19 competency questions from Plan 2 are carried in beside the forged ones on the same
+schema. Their gold comes from `data/eval/competency_gold.jsonl`, which
+`brain eval questions gold-competency` derives from the graph with a fixed query per
+question — the same way `brain/retrieve/competency.py` chose their anchors. A row the
+derivation could not fill stays `gold_source: "pending"` with a `gold_note` saying what came
+back empty, because a null that says why is worth more than a gold nobody checked.
 """
 
 from __future__ import annotations
@@ -70,8 +73,15 @@ DIFFICULTY_DEFAULT: dict[str, int] = {
 #: label -> the property that holds the citable key, for the existence check. `PullRequest`
 #: is last and keyless-indexed on purpose: its key is an integer, so it cannot ride the
 #: `IN $keys` string index and is only worth a scan when something actually cites one.
+#:
+#: `Test` and `TestExecution` are listed even though an Xray test also carries `WorkItem`:
+#: `TestExecution` does NOT (measured — an `XE-…` id resolved through no lookup here and was
+#: rejected as `evidence_missing_in_graph`), and naming `Test` explicitly stops the next
+#: relabelling from silently taking `XT-…` ids with it.
 KEY_LOOKUPS: tuple[tuple[str, str], ...] = (
     ("WorkItem", "key"),
+    ("Test", "key"),
+    ("TestExecution", "key"),
     ("Document", "key"),
     ("Chunk", "id"),
     ("Entity", "id"),
@@ -199,8 +209,16 @@ def truth_evidence_ok(evidence_id: str, truth: Mapping[str, Any]) -> bool:
 
 
 def offered_keys(path: Mapping[str, Any]) -> set[str]:
-    """Every id this path put in front of the forger. Nothing else may be cited."""
+    """Every id this path put in front of the forger. Nothing else may be cited.
+
+    Edge endpoints count, and that is not a technicality. A `test_fix` path names its
+    `TestExecution`s only on the `HAS_RUN` edges — `XE-10004` is an endpoint, never a node —
+    so a question that correctly cites the execution its answer rests on was being rejected
+    as `evidence_not_offered`. What the forger can see, the forger may cite.
+    """
     keys = {str(n.get("key")) for n in (path.get("nodes") or []) if n.get("key")}
+    for edge in path.get("edges") or []:
+        keys |= {str(edge.get(end)) for end in ("from", "to") if edge.get(end)}
     keys |= {str(s.get("chunk_id")) for s in (path.get("snippets") or []) if s.get("chunk_id")}
     keys |= {str(t.get("id")) for t in (path.get("truth") or []) if t.get("id")}
     return keys
@@ -309,6 +327,7 @@ def review_question(
         "gold_source": question["gold_source"],
         "origin": "forged",
         "difficulty_source": "forged",
+        "gold_derived_by": "agent",
         "shape": path.get("shape"),
         "batch_id": batch_id,
         "anchors": anchors,
@@ -345,8 +364,14 @@ def select_balanced(
 # -------------------------------------------------------------------------- competency
 
 
-def competency_row(row: Mapping[str, Any]) -> dict[str, Any]:
-    """One of Plan 2's 19 questions, on the Plan 3 schema, with its gold honestly absent."""
+def competency_row(row: Mapping[str, Any], gold: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """One of Plan 2's 19 questions on the Plan 3 schema, with whatever gold exists for it.
+
+    `gold` is a row of `data/eval/competency_gold.jsonl`, which
+    `brain eval questions gold-competency` derives from the graph with a fixed query. When
+    there is none — or the derivation came back empty — the row stays `pending` with its
+    reason attached, because a null that says why is worth more than a gold nobody checked.
+    """
     qtype = str(row.get("type"))
     out = {
         "id": str(row.get("id")),
@@ -367,6 +392,16 @@ def competency_row(row: Mapping[str, Any]) -> dict[str, Any]:
     }
     if row.get("pair"):
         out["pair"] = str(row["pair"])
+    if gold:
+        out["gold_derived_by"] = str(gold.get("gold_derived_by") or "code")
+        if gold.get("gold_note"):
+            out["gold_note"] = str(gold["gold_note"])
+        if gold.get("gold_source") != "pending" and gold.get("gold_answer"):
+            out["gold_answer"] = str(gold["gold_answer"])
+            out["gold_evidence"] = [str(e) for e in (gold.get("gold_evidence") or [])]
+            out["gold_source"] = str(gold.get("gold_source") or "graph")
+            if gold.get("gold_query"):
+                out["gold_query"] = str(gold["gold_query"])
     return out
 
 
@@ -425,8 +460,11 @@ def run_merge(
     truth: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Read every batch output, decide question by question, and write the set and the report."""
+    from brain.eval.gold_competency import GOLD_FILE, read_gold
+
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     root = Path(batches_dir) / BATCH_DIR
+    gold = read_gold(Path(eval_dir) / GOLD_FILE)
     outputs, failures = read_outputs(root)
 
     all_paths: dict[str, Mapping[str, Any]] = {}
@@ -472,7 +510,8 @@ def run_merge(
     need = {(c.type, c.lang): c.need for c in demand.cells}
     kept, surplus = select_balanced(accepted, need)
 
-    rows = [competency_row(r) for r in competency_rows] + [v.row for v in kept]
+    rows = [competency_row(r, gold.get(str(r.get("id")))) for r in competency_rows]
+    rows += [v.row for v in kept]
     row_schema = {**schema["$defs"]["row"], "$defs": schema["$defs"]}
     invalid = [
         {"id": r.get("id"), "errors": errs}
