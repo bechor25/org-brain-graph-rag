@@ -33,10 +33,17 @@ DEFAULT_PATH = Path("data/eval/competency.jsonl")
 #: `ORDER BY` that includes the key, so a tie does not make the question set random.
 SELECTORS: dict[str, tuple[str, str]] = {
     "issue_most_tests": (
+        # cq01/cq16 ask "…and what was their last execution status?", so an issue whose
+        # tests were never run is an anchor whose gold answer is "nothing ran" — a real
+        # fact about the corpus and a useless question about retrieval. Coverage still
+        # ranks the winners; having been run decides which winners are eligible.
         "MATCH (t:{Test})-[:TESTS]->(w:{WorkItem}) "
-        "WITH w, count(DISTINCT t) AS n ORDER BY n DESC, w.key LIMIT 1 "
-        "RETURN w.key AS key, w.title AS title, n AS n",
-        "the work item the most tests cover",
+        "OPTIONAL MATCH (:{TestExecution})-[r:HAS_RUN]->(t) "
+        "WITH w, count(DISTINCT t) AS n, count(r) AS runs "
+        "ORDER BY CASE WHEN runs > 0 THEN 1 ELSE 0 END DESC, n DESC, runs DESC, w.key LIMIT 1 "
+        "RETURN w.key AS key, w.title AS title, n AS n, "
+        "toString(n) + ' tests, ' + toString(runs) + ' recorded runs' AS note",
+        "the work item the most run tests cover",
     ),
     "kip_most_commits": (
         "MATCH (c:{Commit})-[:IMPLEMENTS_KIP]->(d:{Document}) "
@@ -121,6 +128,9 @@ class Anchor:
     count: int = 0
     extra: list[str] = field(default_factory=list)
     rule: str = ""
+    #: What the selector measured about this key, in words, when the count alone hides it
+    #: ("3 tests, 0 recorded runs" is the difference between a good anchor and a bad one).
+    note: str = ""
 
 
 def _fill(cypher: str, ctx: RetrieveContext) -> str:
@@ -135,6 +145,7 @@ def _fill(cypher: str, ctx: RetrieveContext) -> str:
         "Entity",
         "Person",
         "StatusChange",
+        "TestExecution",
         "Version",
         "Bug",
     ):
@@ -157,6 +168,7 @@ def anchors(ctx: RetrieveContext) -> dict[str, Anchor]:
             count=int(row.get("n") or 0),
             extra=[str(x) for x in (row.get("extra") or [])],
             rule=rule,
+            note=str(row.get("note") or ""),
         )
     return found
 

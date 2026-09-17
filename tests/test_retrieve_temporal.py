@@ -4,7 +4,15 @@ from __future__ import annotations
 
 import pytest
 
-from brain.retrieve.competency import TEMPLATES, _midpoint_date, _render, _version_pair
+from brain.retrieve.competency import (
+    SELECTORS,
+    TEMPLATES,
+    _midpoint_date,
+    _render,
+    _version_pair,
+    anchor_report,
+    anchors,
+)
 from brain.retrieve.temporal import _bound, _pad, version_key
 
 
@@ -75,3 +83,49 @@ def test_the_set_is_fifteen_english_and_four_hebrew_with_matched_pairs() -> None
     assert len(english) == 15 and len(hebrew) == 4
     assert {t[4] for t in hebrew} == {t[4] for t in english if t[4]}
     assert len({t[0] for t in TEMPLATES}) == len(TEMPLATES)
+
+
+# ------------------------------------------------------------------ the anchor selectors
+
+
+class _SelectorCtx:
+    """A context that answers every selector with one canned row."""
+
+    prefix = ""
+
+    def __init__(self, row: dict) -> None:
+        self.row = row
+        self.cyphers: list[str] = []
+
+    def label(self, label: str) -> str:
+        return label
+
+    def read(self, cypher: str, **_kw) -> list[dict]:
+        self.cyphers.append(cypher)
+        return [self.row]
+
+
+def test_the_most_tested_issue_is_one_whose_tests_have_actually_run() -> None:
+    """cq01/cq16 asked for "the last execution status" of three tests that never ran."""
+    cypher, rule = SELECTORS["issue_most_tests"]
+    assert "HAS_RUN" in cypher
+    assert "runs > 0" in cypher, "a covered-but-never-run issue must lose to a run one"
+    assert cypher.index("runs > 0") < cypher.index("count(DISTINCT t) AS n") or (
+        cypher.index("ORDER BY") < cypher.index("LIMIT 1")
+    )
+    assert "run" in rule
+
+
+def test_every_selector_orders_before_it_limits_and_returns_a_key() -> None:
+    for name, (cypher, rule) in SELECTORS.items():
+        assert "ORDER BY" in cypher and cypher.index("ORDER BY") < cypher.index("LIMIT 1"), name
+        assert " AS key" in cypher, name
+        assert rule, name
+
+
+def test_an_anchor_carries_the_note_its_selector_returned() -> None:
+    """The report says *why* this key was chosen, not only that it was."""
+    ctx = _SelectorCtx({"key": "KAFKA-1", "title": "t", "n": 3, "note": "3 tests, 5 runs"})
+    found = anchors(ctx)
+    assert found["issue_most_tests"].note == "3 tests, 5 runs"
+    assert anchor_report(found)[0]["note"] == "3 tests, 5 runs"
