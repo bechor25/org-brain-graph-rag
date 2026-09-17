@@ -1,18 +1,18 @@
 # מפקד הגרף — שער Plan 1
 
-נוצר אוטומטית ע"י `brain index` ב-2026-09-17T06:40:04+00:00 מתוך `data/reports/index.json`. **אין כאן מספר שהוקלד ביד** — כל טבלה נגזרת מה-JSON, כך שריצה חוזרת של השלב מעדכנת את המסמך במקום להשאיר אותו מיושן.
+נוצר אוטומטית ע"י `brain index` ב-2026-09-17T09:53:19+00:00 מתוך `data/reports/index.json`. **אין כאן מספר שהוקלד ביד** — כל טבלה נגזרת מה-JSON, כך שריצה חוזרת של השלב מעדכנת את המסמך במקום להשאיר אותו מיושן.
 
-**מצב השער:** לא עבר — 12/13 קריטריונים.
+**מצב השער:** לא עבר — 11/13 קריטריונים.
 
 ## שער היציאה של Plan 1
 
-מקור הקריטריונים: `docs/superpowers/plans/2026-09-03-plan1-corpus-to-graph.md, Task 9 'Plan 1 exit gate'`. עברו 12 מתוך 13. טבלת ה-roadmap מחזיקה טיוטה מוקדמת יותר של שני ספים (issues: 1,500, kips: 80), שנכתבה לפני שה-probe מדד את הקורפוס; שניהם מדווחים ולא נבחר אחד בשקט.
+מקור הקריטריונים: `docs/superpowers/plans/2026-09-03-plan1-corpus-to-graph.md, Task 9 'Plan 1 exit gate'`. עברו 11 מתוך 13. טבלת ה-roadmap מחזיקה טיוטה מוקדמת יותר של שני ספים (issues: 1,500, kips: 80), שנכתבה לפני שה-probe מדד את הקורפוס; שניהם מדווחים ולא נבחר אחד בשקט.
 
 | קריטריון | דרישה | ערך שנמדד | תוצאה |
 |---|---|---|---|
-| issues | >= 1400 real Jira issues | 1,416 | PASS |
-| kips_embedded | >= 190 KIP documents with embedded chunks | 267 | PASS |
-| kips_referenced_all_embedded | every referenced KIP that exists in the corpus is embedded | 267/267 | PASS |
+| issues | >= 1400 real Jira issues | 1,426 | PASS |
+| kips_embedded | >= 190 KIP documents with embedded chunks | 271 | PASS |
+| kips_referenced_all_embedded | every referenced KIP that exists in the corpus is embedded | 271/271 | PASS |
 | commits | >= 4000 commits | 6,107 | PASS |
 | person_resolution_precision | >= 0.85 | 0.9801 | PASS |
 | person_resolution_recall | >= 0.85 | 0.7789 | FAIL |
@@ -20,7 +20,7 @@
 | entity_resolution_recall | >= 0.85 | 0.98 | PASS |
 | llm_edges_without_provenance | == 0 | 0 | PASS |
 | all_indexes_online | every managed index ONLINE | 12/12 ONLINE | PASS |
-| make_smoke_green | `make smoke` exits 0 on this commit | PASS | PASS |
+| make_smoke_green | `make smoke` exits 0 on this commit | STALE (PASS on 602f5bf) | STALE |
 | lessons_01_09 | docs/lessons/01..09 present | 9/9 | PASS |
 | progress_complete | every Plan 1 row in progress.md is done | 11/11 rows done | PASS |
 
@@ -30,21 +30,21 @@
 - **kips_embedded** (PASS): Phase A embeds the KIPs the harvested slice actually references, not all 1334 harvested pages. The roadmap summary table's draft asks for >= 80; both are met.
 - **kips_referenced_all_embedded** (PASS): the 'all referenced' half of the Task 9 criterion.
 - **person_resolution_recall** (FAIL): known and accepted by the planner (progress.md, 'הכרעות מתכנן — resolve'): the road to 0.85 is a wider adjudication band (~3,133 pairs, ~78 more batches), not a better judge. Reported as FAIL because the criterion is the criterion.
-- **llm_edges_without_provenance** (PASS): counted over 14762 LLM-derived edges plus the adjudicated SAME_AS links, read back from the graph.
-- **make_smoke_green** (PASS): recorded 2026-09-17T06:40:51+00:00 on 602f5bf in 45.7s
+- **llm_edges_without_provenance** (PASS): counted over 14796 LLM-derived edges plus the adjudicated SAME_AS links, read back from the graph.
+- **make_smoke_green** (STALE): the recorded result is from 2026-09-17T06:40:51+00:00, on commit 602f5bf; HEAD is now 81a2010. It says nothing about this tree — re-run `brain index --smoke`.
 
 ## הקורפוס
 
 | מדד | ערך |
 |---|---|
-| issues אמיתיים (Jira) | 1,416 |
+| issues אמיתיים (Jira) | 1,426 |
 | work items סינתטיים (Xray/ADO) | 1,849 |
 | מסמכים | 1,391 |
 | מהם KIP | 1,334 |
-| KIPs שמוזכרים ע"י issue/commit | 267 |
-| KIPs מוטמעים | 267 |
-| KIPs מוזכרים שמוטמעים | 267 |
-| KIPs שמצוטטים ע"י כל דבר (כולל KIP→KIP) | 773 |
+| KIPs שמוזכרים ע"י issue/commit | 271 |
+| KIPs מוטמעים | 271 |
+| KIPs מוזכרים שמוטמעים | 271 |
+| KIPs שמצוטטים ע"י כל דבר (כולל KIP→KIP) | 774 |
 | commits | 6,107 |
 | commits עם מפתח (chunked) | 4,150 |
 
@@ -52,25 +52,25 @@
 
 ## צמתים
 
-סה"כ **58,622** צמתים (כל צומת נספר פעם אחת). עמודת `בלי דגל` = צמתים שאין עליהם `synthetic` בכלל — לא אותו דבר כמו `synthetic=false`.
+סה"כ **58,560** צמתים (כל צומת נספר פעם אחת). עמודת `בלי דגל` = צמתים שאין עליהם `synthetic` בכלל — לא אותו דבר כמו `synthetic=false`.
 
 | label | מקור | צמתים | אמיתי | סינתטי | בלי דגל |
 |---|---|---|---|---|---|
-| WorkItem | מבני | 3,265 | 1,416 | 1,849 | 0 |
+| WorkItem | מבני | 3,275 | 1,426 | 1,849 | 0 |
 | Document | מבני | 1,391 | 1,391 | 0 | 0 |
-| Person | מבני | 1,214 | 1,115 | 99 | 0 |
+| Person | מבני | 1,217 | 1,118 | 99 | 0 |
 | Commit | מבני | 6,107 | 6,107 | 0 | 0 |
 | PullRequest | מבני | 6,026 | 6,026 | 0 | 0 |
 | File | מבני | 8,594 | 0 | 0 | 8,594 |
-| StatusChange | מבני | 7,607 | 7,607 | 0 | 0 |
+| StatusChange | מבני | 7,666 | 7,666 | 0 | 0 |
 | Component | מבני | 30 | 30 | 0 | 0 |
 | Version | מבני | 86 | 86 | 0 | 0 |
 | Sprint | מבני | 92 | 0 | 92 | 0 |
 | Area | מבני | 24 | 0 | 24 | 0 |
 | Space | מבני | 1 | 1 | 0 | 0 |
-| Chunk | נגזר | 13,846 | 11,907 | 1,939 | 0 |
-| Entity | נגזר | 9,038 | 9,038 | 0 | 0 |
-| Community | נגזר | 1,297 | — | — | — |
+| Chunk | נגזר | 13,917 | 11,978 | 1,939 | 0 |
+| Entity | נגזר | 9,064 | 9,064 | 0 | 0 |
+| Community | נגזר | 1,066 | — | — | — |
 | IndexMeta | נגזר | 4 | — | — | — |
 
 ### תוויות משנה של WorkItem
@@ -80,16 +80,16 @@
 | label | צמתים |
 |---|---|
 | Test | 817 |
-| Bug | 774 |
-| Improvement | 314 |
-| Task | 302 |
+| Bug | 779 |
+| Improvement | 316 |
+| Task | 303 |
 | SubTask | 250 |
 | Story | 232 |
 | Epic | 143 |
-| JiraTest | 123 |
+| JiraTest | 124 |
 | Feature | 121 |
 | TestExecution | 78 |
-| NewFeature | 45 |
+| NewFeature | 46 |
 | TestSet | 44 |
 | TestPlan | 13 |
 | Wish | 9 |
@@ -106,27 +106,27 @@ A sub-label is a second label on a node that is already a WorkItem, so no node e
 
 | תווית | סוג | צמתים | הערה |
 |---|---|---|---|
-| Improvement | WorkItem sub-label | 314 | a Jira/ADO issue type §2.4 does not enumerate |
+| Improvement | WorkItem sub-label | 316 | a Jira/ADO issue type §2.4 does not enumerate |
 | SubTask | WorkItem sub-label | 250 | a Jira/ADO issue type §2.4 does not enumerate |
-| JiraTest | WorkItem sub-label | 123 | a Jira/ADO issue type §2.4 does not enumerate |
+| JiraTest | WorkItem sub-label | 124 | a Jira/ADO issue type §2.4 does not enumerate |
 | Feature | WorkItem sub-label | 121 | a Jira/ADO issue type §2.4 does not enumerate |
-| NewFeature | WorkItem sub-label | 45 | a Jira/ADO issue type §2.4 does not enumerate |
+| NewFeature | WorkItem sub-label | 46 | a Jira/ADO issue type §2.4 does not enumerate |
 | Area | node label | 24 | loaded as a container but not declared in spec §2.4's structured node list — the synthetic ADO layer emits area paths. |
 | Wish | WorkItem sub-label | 9 | a Jira/ADO issue type §2.4 does not enumerate |
 
 ## קשתות
 
-סה"כ **161,985** קשתות: 147,223 דטרמיניסטיות (קונקטורים, mentions ב-regex, GDS) ו-14,762 מ-LLM.
+סה"כ **162,330** קשתות: 147,534 דטרמיניסטיות (קונקטורים, mentions ב-regex, GDS) ו-14,796 מ-LLM.
 
 ### קשתות מ-LLM
 
 | סוג | קשתות |
 |---|---|
-| MENTIONS | 9,375 |
-| DECIDES | 2,698 |
-| MOTIVATED_BY | 1,336 |
+| MENTIONS | 9,404 |
+| DECIDES | 2,699 |
+| MOTIVATED_BY | 1,338 |
 | REJECTS | 641 |
-| INTRODUCES_RISK | 402 |
+| INTRODUCES_RISK | 404 |
 | DEPENDS_ON | 252 |
 | IMPLEMENTS | 58 |
 
@@ -135,22 +135,22 @@ A sub-label is a second label on a node that is already a WorkItem, so no node e
 | סוג | קשתות |
 |---|---|
 | TOUCHES | 48,032 |
-| IN_COMMUNITY | 23,750 |
-| HAS_CHUNK | 13,846 |
+| IN_COMMUNITY | 23,822 |
+| HAS_CHUNK | 13,917 |
 | AUTHORED | 13,524 |
-| REFERENCES | 8,007 |
-| HAS_CHANGE | 7,607 |
+| REFERENCES | 8,020 |
+| HAS_CHANGE | 7,666 |
 | HAS_COMMIT | 6,020 |
-| IN_COMPONENT | 4,594 |
-| COMMENTED | 3,683 |
-| ASSIGNED_TO | 2,877 |
-| REPORTED_BY | 2,820 |
-| FIX_VERSION | 2,220 |
+| IN_COMPONENT | 4,613 |
+| COMMENTED | 3,716 |
+| ASSIGNED_TO | 2,887 |
+| REPORTED_BY | 2,830 |
+| FIX_VERSION | 2,230 |
 | PARENT_OF | 1,419 |
 | IN_SPACE | 1,391 |
-| AFFECTS_VERSION | 1,320 |
-| MENTIONS_PERSON | 1,282 |
-| LINKS_TO | 1,129 |
+| AFFECTS_VERSION | 1,323 |
+| MENTIONS_PERSON | 1,291 |
+| LINKS_TO | 1,131 |
 | RESOLVES | 1,009 |
 | IMPLEMENTS_KIP | 693 |
 | TESTS | 660 |
@@ -169,20 +169,20 @@ A sub-label is a second label on a node that is already a WorkItem, so no node e
 
 | label | צמתים | מהם מ-LLM | עם provenance | חסרים | % | מתי נחשב LLM |
 |---|---|---|---|---|---|---|
-| Entity | 9,038 | 9,038 | 9,038 | 0 | 100.0% | every node of this label |
-| Community | 1,297 | 186 | 186 | 0 | 100.0% | n.summary IS NOT NULL |
+| Entity | 9,064 | 9,064 | 9,064 | 0 | 100.0% | every node of this label |
+| Community | 1,066 | 124 | 124 | 0 | 100.0% | n.summary IS NOT NULL |
 
 ### קשתות
 
 | סוג | קשתות | עם provenance | חסרים | % |
 |---|---|---|---|---|
-| MENTIONS | 9,375 | 9,375 | 0 | 100.0% |
-| DECIDES | 2,698 | 2,698 | 0 | 100.0% |
-| MOTIVATED_BY | 1,336 | 1,336 | 0 | 100.0% |
+| MENTIONS | 9,404 | 9,404 | 0 | 100.0% |
+| DECIDES | 2,699 | 2,699 | 0 | 100.0% |
+| MOTIVATED_BY | 1,338 | 1,338 | 0 | 100.0% |
 | REJECTS | 641 | 641 | 0 | 100.0% |
 | DEPENDS_ON | 252 | 252 | 0 | 100.0% |
 | IMPLEMENTS | 58 | 58 | 0 | 100.0% |
-| INTRODUCES_RISK | 402 | 402 | 0 | 100.0% |
+| INTRODUCES_RISK | 404 | 404 | 0 | 100.0% |
 
 ### SAME_AS
 
@@ -194,51 +194,51 @@ tiers 1-2 are deterministic (name rules, cosine) and carry rule/score instead of
 
 ## איחוד ישויות (resolution)
 
-מקור: `data/reports/resolve.json` (נוצר 2026-09-07T18:26:35+00:00); יעד 0.85.
+מקור: `data/reports/resolve.json` (נוצר 2026-09-17T09:48:08+00:00); יעד 0.85.
 
 | סוג | צמתים לפני | צמתים אחרי | זהויות | זהויות/צומת | שיעור כפילות | זוגות זהב | P | R | F1 |
 |---|---|---|---|---|---|---|---|---|---|
-| person | 2,187 | 1,214 | 2,187 | 1.802 | — | 633 | 0.9801 | 0.7789 | 0.868 |
-| entity | 9,237 | 9,038 | 9,248 | 1.023 | — | 100 | 1.0 | 0.98 | 0.9899 |
+| person | 2,187 | 1,217 | 2,191 | 1.8 | — | 633 | 0.9801 | 0.7789 | 0.868 |
+| entity | 9,237 | 9,064 | 9,274 | 1.023 | — | 100 | 1.0 | 0.98 | 0.9899 |
 
 ### מיזוגים לפי tier
 
 | סוג | מיזוגים |
 |---|---|
-| person | 1: 283, 2: 408, 3: 282 |
+| person | 1: 284, 2: 408, 3: 282 |
 | entity | 2: 4, 3: 195 |
 
 > Precision and recall are computed over the labelled gold pairs only. Merges between identities the gold says nothing about (the real Jira / git / Confluence duplicates) are counted as `ungraded_merges` and left out of both, because calling them right or wrong would be a guess.
 
 ## קהילות
 
-**1,297** קהילות, מהן 186 מסוכמות (14.34%). 11,875 חברים ייחודיים דרך 23,750 קשתות `IN_COMMUNITY`; 89.41% מהחברים נמצאים בקהילה מסוכמת.
+**1,066** קהילות, מהן 124 מסוכמות (11.63%). 11,911 חברים ייחודיים דרך 23,822 קשתות `IN_COMMUNITY`; 47.5% מהחברים נמצאים בקהילה מסוכמת.
 
 | רמה | קהילות | גודל p50 | גודל p95 | מינ׳ | מקס׳ | חברים | מסוכמות |
 |---|---|---|---|---|---|---|---|
-| 0 | 762 | 4 | 53 | 1 | 1,139 | 11,875 | 106 |
-| 1 | 535 | 1 | 100 | 1 | 1,214 | 11,875 | 80 |
+| 0 | 533 | 1 | 100 | 1 | 1,262 | 11,911 | 62 |
+| 1 | 533 | 1 | 100 | 1 | 1,216 | 11,911 | 62 |
 
 ## Chunks
 
-**13,846** chunks בסך הכל: 12,915 חיים ו-931 יתומים (טקסט שהוחלף — נשמר כי `brain extract` מצטט אותו). 13,846 מוטמעים (100.0%), מהם 12,915 חיים (100.0% מהחיים).
+**13,917** chunks בסך הכל: 12,986 חיים ו-931 יתומים (טקסט שהוחלף — נשמר כי `brain extract` מצטט אותו). 13,917 מוטמעים (100.0%), מהם 12,986 חיים (100.0% מהחיים).
 
 ### לפי סוג (חיים)
 
 | סוג | chunks |
 |---|---|
 | message | 4,150 |
-| comment | 3,629 |
-| description | 3,423 |
-| section | 1,713 |
+| comment | 3,662 |
+| description | 3,433 |
+| section | 1,741 |
 
 ### לפי צומת-אב (חיים)
 
 | אב | chunks |
 |---|---|
-| WorkItem | 7,052 |
+| WorkItem | 7,095 |
 | Commit | 4,150 |
-| Document | 1,713 |
+| Document | 1,741 |
 
 ## אינדקסים
 
@@ -294,31 +294,31 @@ Decision 5: an IndexMeta row advertises the LIVE count — what the index can ac
 
 | אינדקס | label | מודל | מימד | וקטורים חיים | סה"כ וקטורים | יתומים | שמור: live | שמור: total |
 |---|---|---|---|---|---|---|---|---|
-| chunk_embedding | Chunk | bge-m3 | 1,024 | 12,915 | 13,846 | 931 | 12,915 | 13,846 |
+| chunk_embedding | Chunk | bge-m3 | 1,024 | 12,986 | 13,917 | 931 | 12,986 | 13,917 |
 | entity_embedding | Entity | bge-m3 | 1,024 | 9,038 | 9,038 | 0 | 9,038 | 9,038 |
-| community_embedding | Community | bge-m3 | 1,024 | 186 | 186 | 0 | 186 | 186 |
+| community_embedding | Community | bge-m3 | 1,024 | 124 | 124 | 0 | 124 | 124 |
 | person_embedding | Person | bge-m3 | 1,024 | 1,214 | 1,214 | 0 | 1,214 | 1,214 |
 
 ## יתומים והפניות מתות
 
-**176** צמתים בלי אף קשת (0.3% מ-58,618). IndexMeta is excluded: it is bookkeeping and has no edges by design.
+**176** צמתים בלי אף קשת (0.3% מ-58,556). IndexMeta is excluded: it is bookkeeping and has no edges by design.
 
 | label | יתומים | מתוך | % |
 |---|---|---|---|
-| Person | 60 | 1,214 | 4.94 |
+| Person | 60 | 1,217 | 4.93 |
 | Sprint | 92 | 92 | 100.0 |
 | Area | 24 | 24 | 100.0 |
 
 ### הפניות מחוץ לפרוסה (dangling)
 
-מקור: `data/reports/load.json`. 74% of issue refs point before the 2023-01-01 slice boundary (canon review). Loading them would mean minting empty WorkItems, so they are counted, not made. בנוסף: 276 מתוך 2,988 קישורים פורמליים הצביעו מחוץ לפרוסה.
+מקור: `data/reports/load.json`. 74% of issue refs point before the 2023-01-01 slice boundary (canon review). Loading them would mean minting empty WorkItems, so they are counted, not made. בנוסף: 284 מתוך 3,000 קישורים פורמליים הצביעו מחוץ לפרוסה.
 
 | סוג | הפניות מתות | מתוך סה"כ הפניות |
 |---|---|---|
-| issue | 8,217 | 12,229 |
-| user | 1,438 | 2,723 |
-| pr | 476 | 1,163 |
-| kip | 7 | 3,315 |
+| issue | 8,225 | 12,244 |
+| user | 1,438 | 2,732 |
+| pr | 476 | 1,164 |
+| kip | 7 | 3,320 |
 
 ## טביעת אצבע של הקורפוס הקנוני
 
@@ -329,10 +329,10 @@ Decision 5: an IndexMeta row advertises the LIVE count — what the index can ac
 | changes.jsonl | f6ed9e7d91392ca8 | 11,000,717 | 12,133 |
 | containers.jsonl | e770477371896bf5 | 41,700 | 290 |
 | documents.jsonl | 6cc6f6bab15ec0d1 | 16,037,914 | 1,391 |
-| persons.jsonl | f5fc75cde1479e36 | 421,579 | 2,187 |
+| persons.jsonl | 0ec22ed55d02a25a | 422,320 | 2,191 |
 | synthetic_merged.json | f33a56052f1d2501 | 326,948 | — |
 | synthetic_truth.json | 703e69e6d2db2e9c | 89,958 | — |
-| workitems.jsonl | e707e15761955faa | 19,209,121 | 3,265 |
+| workitems.jsonl | 4e6f220b14c82378 | 19,285,754 | 3,275 |
 
 ## גרסאות
 
@@ -350,7 +350,7 @@ Decision 5: an IndexMeta row advertises the LIVE count — what the index can ac
 
 ## ספי שפיות
 
-KIPs שעברו chunking: **267**, מהם **0** בלי אף ישות (0.0%). a KIP the extractor found nothing in is either a stub page or a gap in the extraction, and the census cannot tell which — so it is reported, not filtered.
+KIPs שעברו chunking: **271**, מהם **4** בלי אף ישות (1.48%). a KIP the extractor found nothing in is either a stub page or a gap in the extraction, and the census cannot tell which — so it is reported, not filtered.
 
 ## אזהרות
 
@@ -359,7 +359,8 @@ KIPs שעברו chunking: **267**, מהם **0** בלי אף ישות (0.0%). a K
 | חומרה | נושא | פירוט |
 |---|---|---|
 | warn | synthetic_flag_missing | labels whose nodes carry no `synthetic` property at all: {'File': 8594}. `brain reset --synthetic` decides what to delete by that flag. |
-| info | community_report_coverage | 186 of 1297 communities carry a report (14.34%), and they cover 89.41% of members (10618 of 11875). The unsummarised rest are the `misc` communities `brain communities` left below its size threshold — see data/reports/communities.json. |
+| info | community_report_coverage | 124 of 1066 communities carry a report (11.63%), and they cover 47.5% of members (5658 of 11911). The unsummarised rest are the `misc` communities `brain communities` left below its size threshold — see data/reports/communities.json. |
+| warn | kip_with_zero_entities | 4 of 271 chunked KIPs produced no Entity (1.48%). a KIP the extractor found nothing in is either a stub page or a gap in the extraction, and the census cannot tell which — so it is reported, not filtered. |
 | info | every_sprint_is_an_orphan | all 92 Sprint nodes have no relationship — the loader creates the container but nothing points at it yet. |
 | info | every_area_is_an_orphan | all 24 Area nodes have no relationship — the loader creates the container but nothing points at it yet. |
 
