@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://org-brain.local/brain/eval/judge_schema.json",
+  "title": "blind judge batch output (NNN.out.json)",
+  "description": "The contract between `eval-judge` and `brain eval judge merge` (spec §5.2 layer 3, §5.4). Every case is BLIND: `case_id` and `pair_id` are random labels, and the map from a label back to a retrieval strategy lives in data/eval/blind_map.json, which is written outside the batch directory and which you never read. Two arrays because a batch carries two kinds of work: `scores[]` answers a single case on the four rubric metrics of brain/eval/rubric.md, and `pairs[]` picks a winner between two anonymous answers to one question. `scores` is always required (it may be an empty array); `pairs` may be omitted entirely by a judge whose batch carried no pairwise case, but a batch that omits it while carrying pairwise cases has those cases reported as unjudged. Merge applies this file in two halves: the ENVELOPE (`batch_id`, both arrays being arrays, no unknown top-level field) decides whether the batch is readable at all, and a batch that fails it goes to `retry/` and then to `quarantine/`; everything under `$defs` is checked per record, so one bad judgment is rejected and counted while the rest of the batch merges. Rules merge adds that a schema cannot state: a `case_id` must be a case of the matching `.in.json`; a metric may be null ONLY when that case declares the metric does not apply (`context_available: false` makes faithfulness null, and then it MUST be null); and `justification` must contain a verbatim quotation in double quotes — a score with no quoted evidence is an opinion and is reported as one.",
+  "type": "object",
+  "required": ["batch_id", "scores"],
+  "additionalProperties": false,
+  "properties": {
+    "batch_id": {
+      "type": "string",
+      "description": "Exactly the `batch_id` of the .in.json this answers, e.g. \"shard-01/007\".",
+      "pattern": "^shard-[0-9]{2}/[0-9]{3}$"
+    },
+    "scores": {
+      "type": "array",
+      "description": "One entry per `cases[]` entry of the input, in any order. Empty only when the batch has no single cases. A case you leave out is reported as unjudged, which reads as the strategy behind it having no layer-3 number at all.",
+      "items": { "$ref": "#/$defs/score" },
+      "maxItems": 60
+    },
+    "pairs": {
+      "type": "array",
+      "description": "One entry per `pairwise[]` entry of the input, in any order. Empty, or absent, only when the batch has no pairwise cases — a pairwise case with no entry here is reported as unjudged, and the strategy comparison it was meant to settle simply does not happen.",
+      "items": { "$ref": "#/$defs/pair" },
+      "maxItems": 60
+    },
+    "notes": {
+      "type": "array",
+      "description": "Free-text remarks for the planner — a gold answer that looks wrong, a question two answers read differently. Never a place to hide a rule you could not follow: that is a `failed` entry in status.json.",
+      "items": { "type": "string", "maxLength": 500 },
+      "maxItems": 50
+    }
+  },
+  "$defs": {
+    "metric": {
+      "type": ["integer", "null"],
+      "description": "0, 1 or 2 by the rubric in brain/eval/rubric.md. `null` ONLY for a metric the case declares inapplicable — today that is faithfulness on a case with `context_available: false`, where no packed context was recorded and there is nothing to be faithful to. Never null because you found it hard to decide: that is a 1.",
+      "minimum": 0,
+      "maximum": 2
+    },
+    "justification": {
+      "type": "string",
+      "description": "Why these scores, in two to four sentences, containing at least one VERBATIM quotation in double quotes — from the answer when you are marking it down, from the context or the gold answer when you are saying what is missing. Copy the words; never paraphrase inside the quotation marks. English, whatever the answer's language.",
+      "minLength": 40,
+      "maxLength": 2000
+    },
+    "score": {
+      "type": "object",
+      "required": [
+        "case_id",
+        "faithfulness",
+        "correctness",
+        "citation_validity",
+        "relevancy",
+        "unsupported_claims",
+        "justification"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "case_id": {
+          "type": "string",
+          "description": "The opaque label of the case, copied exactly from the input. It carries no meaning; do not try to read one into it.",
+          "minLength": 4,
+          "maxLength": 60
+        },
+        "faithfulness": { "$ref": "#/$defs/metric" },
+        "correctness": { "$ref": "#/$defs/metric" },
+        "citation_validity": { "$ref": "#/$defs/metric" },
+        "relevancy": { "$ref": "#/$defs/metric" },
+        "unsupported_claims": {
+          "type": "array",
+          "description": "Every claim in the answer that the context does not support, quoted verbatim from the answer. Empty when there are none. This is the evidence behind the faithfulness score, so a faithfulness below 2 with an empty list is reported as unevidenced.",
+          "items": { "type": "string", "minLength": 1, "maxLength": 500 },
+          "maxItems": 20
+        },
+        "justification": { "$ref": "#/$defs/justification" },
+        "answer_language_ok": {
+          "type": "boolean",
+          "description": "Optional. False when the answer is not in the language the case declares (`lang`). Scored separately from the rubric — a correct answer in the wrong language is still correct — and reported on its own."
+        }
+      }
+    },
+    "pair": {
+      "type": "object",
+      "required": ["pair_id", "winner", "justification"],
+      "additionalProperties": false,
+      "properties": {
+        "pair_id": {
+          "type": "string",
+          "description": "The opaque label of the pairwise case, copied exactly from the input.",
+          "minLength": 4,
+          "maxLength": 60
+        },
+        "winner": {
+          "type": "string",
+          "description": "Which of the two answers serves the asker better, judged against `gold_answer` and the question — `a`, `b`, or `tie` when neither is better on the facts. The order of `a` and `b` was randomised, so it says nothing; never prefer the longer answer, and never prefer the one that sounds more confident.",
+          "enum": ["a", "b", "tie"]
+        },
+        "justification": { "$ref": "#/$defs/justification" },
+        "both_wrong": {
+          "type": "boolean",
+          "description": "Optional. True when neither answer contains the gold fact. A `tie` with `both_wrong: true` and a `tie` between two correct answers are opposite results, and the report separates them."
+        }
+      }
+    }
+  }
+}

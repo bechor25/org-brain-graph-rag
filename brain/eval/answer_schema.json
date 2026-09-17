@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://org-brain.local/brain/eval/answer_schema.json",
+  "title": "mode-A answer batch output (NNN.out.json)",
+  "description": "The contract between the answering agent (`brain-analyst` in mode A, which is handed the retrieved context and NO tools) and `brain eval answers merge`. Mode A measures retrieval, not the agent: the only admissible source for an answer is the `context[]` of its own case, so every claim must be traceable to an item that was handed to you. Merge applies this file in two halves. The ENVELOPE (`batch_id`, `answers` being an array, no unknown top-level field) decides whether the batch is readable at all; a batch that fails it goes to `retry/` and, after two more attempts, to `quarantine/`. Everything under `$defs` is checked per answer: one bad answer is rejected and counted, the rest of the batch merges. Two rules merge adds that a schema cannot state: `case_id` must be a case of the matching `.in.json`, and every entry of `cited_keys` must be a key or chunk id that appears in THAT case's context — a citation that is not is kept with the answer and marked invalid, because a citation habit that invents keys is a measurement, not a parse error.",
+  "type": "object",
+  "required": ["batch_id", "answers"],
+  "additionalProperties": false,
+  "properties": {
+    "batch_id": {
+      "type": "string",
+      "description": "Exactly the `batch_id` of the .in.json this answers, e.g. \"shard-02/004\".",
+      "pattern": "^shard-[0-9]{2}/[0-9]{3}$"
+    },
+    "answers": {
+      "type": "array",
+      "description": "One entry per case in the input, in any order. A case you cannot answer is still an entry — with the refusal as its `answer` and `confidence: \"none\"` — never a silently missing one. A case left out is reported as unanswered against the strategy that retrieved its context, which would read as that strategy's failure.",
+      "items": { "$ref": "#/$defs/answer" },
+      "minItems": 1,
+      "maxItems": 60
+    },
+    "notes": {
+      "type": "array",
+      "description": "Free-text remarks for the planner — a context whose items contradict each other, a question whose language is ambiguous. Never a place to hide a rule you could not follow: that is a `failed` entry in status.json.",
+      "items": { "type": "string", "maxLength": 500 },
+      "maxItems": 50
+    }
+  },
+  "$defs": {
+    "answer": {
+      "type": "object",
+      "required": ["case_id", "answer", "cited_keys", "confidence"],
+      "additionalProperties": false,
+      "properties": {
+        "case_id": {
+          "type": "string",
+          "description": "The `case_id` of the case you are answering, copied exactly from the input (`<question id>.<label>`). Not a case of this batch = the answer is rejected and counted.",
+          "minLength": 3,
+          "maxLength": 60
+        },
+        "answer": {
+          "type": "string",
+          "description": "The answer, in the LANGUAGE OF THE QUESTION (`lang` in the case), written only from that case's `context[]`. Every factual sentence ends with citations in square brackets: `[KAFKA-14649]`, `[KIP-848]`, `[XT-10007]`, `[chunk:ab12cd34…]` (at least 8 hex characters), `[a1b2c3d4]` for a commit, `[person:jira:mjsax]`, `[community:L0-6]`. A key in running prose is not a citation — only the brackets count. When the context does not hold the answer, say so plainly (\"not in context\" / \"לא נמצא בהקשר\") and stop; do not fill the gap from prior knowledge about Kafka, and do not answer a different question than the one asked.",
+          "minLength": 1,
+          "maxLength": 6000
+        },
+        "cited_keys": {
+          "type": "array",
+          "description": "Every key or chunk id you cited in `answer`, once each, spelled exactly as the context spells it (a chunk id may be given in full or as the prefix you cited). This is the machine-readable copy of your brackets: merge checks it against the context you were given and against the graph, and a mismatch between this list and the brackets in your text is itself reported.",
+          "items": { "type": "string", "minLength": 1, "maxLength": 300 },
+          "maxItems": 60,
+          "uniqueItems": true
+        },
+        "confidence": {
+          "type": "string",
+          "description": "How well the context supported the answer. `high` = every claim rests on an item you cited. `medium` = the context answers the question partly, or you had to read across items. `low` = the context only touches the subject and you are reporting what little it says. `none` = the context does not answer the question at all; the `answer` then says exactly that. Never a measure of how confident you feel about Kafka — only about this context.",
+          "enum": ["high", "medium", "low", "none"]
+        },
+        "unanswerable_reason": {
+          "type": "string",
+          "description": "Only with `confidence: \"none\"`: one sentence naming what the context is missing (\"no item names a test that covers KAFKA-14649\"). It is read as evidence about the retrieval, so name the gap, not your uncertainty.",
+          "maxLength": 300
+        }
+      }
+    }
+  }
+}

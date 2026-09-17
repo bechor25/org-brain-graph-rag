@@ -11,6 +11,8 @@ from pathlib import Path
 
 import typer
 
+from brain.eval.cli_answers import answers_app
+from brain.eval.cli_judge import judge_app
 from brain.eval.cli_questions import questions_app
 from brain.eval.cli_runs import eval_run as _eval_run
 
@@ -1294,6 +1296,9 @@ app.add_typer(eval_app, name="eval")
 eval_app.add_typer(questions_app, name="questions")
 # Plan 3 Task 2: `brain eval run` is one verb, so it is one command rather than a sub-app.
 eval_app.command("run")(_eval_run)
+# Plan 3 Task 3: answers (mode A) and the blind judge, one sub-app each for the same reason.
+eval_app.add_typer(answers_app, name="answers")
+eval_app.add_typer(judge_app, name="judge")
 
 
 @eval_app.command("cite-check")
