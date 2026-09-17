@@ -24,6 +24,7 @@ from brain.retrieve.local import (
     NEUTRAL_FACTOR,
     rank_neighbourhood,
     semantic_factor,
+    text_factors,
 )
 
 ANCHOR = [{"key": "KIP-848", "label": "Document", "title": "The Next Generation"}]
@@ -162,3 +163,98 @@ def test_without_a_question_vector_the_ranking_is_the_old_degree_times_weight() 
     ranked = dict(rank_neighbourhood(ANCHOR, rows, k=10))
     assert ranked["Decision|a"]["score"] == pytest.approx(1.0)
     assert ranked["Entity|b"]["score"] == pytest.approx(0.35)
+
+
+# ------------------------------------------------------------------------ pinned anchor
+
+
+def _document(key: str, paths: int, sim: float | None = None) -> list[dict]:
+    """A `Document` neighbour reached by `paths` mentions — what KIP-932 is in production."""
+    return [{**_neighbour(key, ["MENTIONS"], sim), "label": "Document"} for _ in range(paths)]
+
+
+def test_the_anchor_the_question_named_comes_back_first() -> None:
+    """The measured failure: `KIP-848` was outside its own top-10 (planner decision)."""
+    rows = [*_document("KIP-932", 4), _neighbour("Decision|a", ["DECIDES"], 0.90)]
+    unpinned = [key for key, _ in rank_neighbourhood(ANCHOR, rows, k=3)]
+    pinned = rank_neighbourhood(ANCHOR, rows, k=3, pin=True)
+    assert unpinned[0] != "KIP-848", "the fixture has to reproduce the failure"
+    assert pinned[0][0] == "KIP-848"
+    assert pinned[0][1]["score"] >= pinned[1][1]["score"]
+    assert pinned[0][1]["pinned"] is True
+
+
+def test_pinning_lifts_the_anchor_without_reordering_anything_else() -> None:
+    rows = [*_document("KIP-932", 4), _neighbour("Decision|a", ["DECIDES"], 0.90)]
+    plain = [key for key, _ in rank_neighbourhood(ANCHOR, rows, k=10) if key != "KIP-848"]
+    pinned = [key for key, _ in rank_neighbourhood(ANCHOR, rows, k=10, pin=True)]
+    assert pinned == ["KIP-848", *plain]
+
+
+def test_every_named_anchor_is_pinned_not_only_the_first() -> None:
+    anchors = [*ANCHOR, {"key": "KAFKA-1", "label": "WorkItem", "title": "an issue"}]
+    rows = _document("KIP-932", 6)
+    ranked = rank_neighbourhood(anchors, rows, k=10, pin=True)
+    assert [key for key, _ in ranked][:2] == ["KAFKA-1", "KIP-848"]
+    assert all(entry["score"] >= ranked[2][1]["score"] for _k, entry in ranked[:2])
+
+
+def test_a_vector_anchor_is_not_pinned() -> None:
+    """Nothing named it: it is this strategy's guess, and the ranking may overrule a guess."""
+    rows = [*_document("KIP-932", 4)]
+    ranked = rank_neighbourhood(ANCHOR, rows, k=10)
+    assert ranked[0][0] == "KIP-932"
+
+
+# -------------------------------------------------------------------------- text factor
+
+
+def test_text_factors_are_the_min_max_of_one_index_read() -> None:
+    rows = [{"key": "a", "score": 4.0}, {"key": "b", "score": 2.0}, {"key": "c", "score": 3.0}]
+    factors = text_factors(rows)
+    assert factors == pytest.approx({"a": 2.0, "b": 1.0, "c": 1.5})
+
+
+def test_a_single_lexical_match_is_the_best_one_there_is() -> None:
+    """min-max over one row has no spread; the only document that matched is the top one."""
+    assert text_factors([{"key": "a", "score": 7.2}]) == {"a": 2.0}
+    assert text_factors([]) == {}
+
+
+def test_a_document_the_question_matches_outranks_one_it_does_not() -> None:
+    """The fix for "top-1 is question-independent": both are Documents of equal degree."""
+    rows = [*_document("KIP-500", 3), *_document("KIP-932", 3)]
+    ranked = dict(rank_neighbourhood(ANCHOR, rows, k=10, text={"KIP-500": 1.8}))
+    assert ranked["KIP-500"]["score"] > ranked["KIP-932"]["score"]
+    assert ranked["KIP-500"]["text"] == pytest.approx(1.8)
+    assert ranked["KIP-932"]["text"] == pytest.approx(NEUTRAL_FACTOR)
+
+
+def test_two_questions_on_one_key_differ_in_their_top_three_on_text_alone() -> None:
+    """No entity has a vector here: before the text factor both lists were identical."""
+    rows = [
+        *_document("KIP-932", 4),
+        *_document("KIP-500", 3),
+        *_document("KIP-1000", 2),
+        _neighbour("Decision|a", ["DECIDES"], None),
+    ]
+    rationale = [k for k, _ in rank_neighbourhood(ANCHOR, rows, k=3, text={"KIP-500": 2.0})]
+    commits = [k for k, _ in rank_neighbourhood(ANCHOR, rows, k=3, text={"KIP-1000": 2.0})]
+    assert rationale != commits
+
+
+def test_an_entity_is_ranked_by_its_cosine_and_never_by_the_fulltext_index() -> None:
+    """`entity_text` is not in this factor: the entity already reads the question by vector."""
+    rows = [_neighbour("Entity|x", ["DECIDES"], 0.75), _neighbour("Entity|y", ["DECIDES"], 0.65)]
+    without = dict(rank_neighbourhood(ANCHOR, rows, k=5))
+    with_text = dict(rank_neighbourhood(ANCHOR, rows, k=5, text={"Entity|x": 2.0}))
+    assert with_text["Entity|x"]["score"] == pytest.approx(without["Entity|x"]["score"])
+    assert with_text["Entity|x"]["text"] == pytest.approx(NEUTRAL_FACTOR)
+
+
+def test_a_person_keeps_the_neutral_factor() -> None:
+    """Plan decision: only `Document` and `WorkItem` get the lexical factor."""
+    rows = [{**_neighbour("jira:mjsax", ["MENTIONS"], None), "label": "Person"}]
+    ranked = dict(rank_neighbourhood(ANCHOR, rows, k=5, text={"jira:mjsax": 2.0}))
+    assert ranked["jira:mjsax"]["text"] == pytest.approx(NEUTRAL_FACTOR)
+    assert ranked["jira:mjsax"]["score"] == pytest.approx(0.35)

@@ -265,6 +265,46 @@ def test_s3_falls_back_to_a_nodes_own_text_when_nothing_quotes_it(ctx):
     assert all(any(p.chunk_id for p in i.provenance) for i in result.items)
 
 
+def test_s3_returns_the_document_the_question_named_first(ctx):
+    """The anchor is pinned: `KIP-5` was outside its own top-10 before (planner decision)."""
+    result = local_search(ctx, "Why was the design in KIP-5 chosen?", k=10, log=False)
+    assert result.items[0].key == "KIP-5"
+    assert result.items[0].props.get("pinned") is True
+    assert result.items[0].score >= result.items[1].score
+
+
+def test_s3_ranks_a_document_by_the_question_when_the_fulltext_indexes_exist(ctx):
+    """`Document`/`WorkItem` carry no vector, so their factor comes from `document_text`.
+
+    The indexes are `brain index`'s, not this namespace's, so they are created and dropped
+    here by name — never `db.awaitIndexes`, which would wait for every other agent's.
+    """
+    names = {"Document": "document_text", "WorkItem": "workitem_text"}
+    props = {"Document": ("title", "body_md"), "WorkItem": ("title", "description")}
+    try:
+        for label, index in names.items():
+            fields = ", ".join(f"n.`{p}`" for p in props[label])
+            ctx.client.write(
+                f"CREATE FULLTEXT INDEX `{ctx.index(index)}` IF NOT EXISTS "
+                f"FOR (n:{ctx.label(label)}) ON EACH [{fields}]"
+            )
+            assert ctx.await_index(ctx.index(index)) == "ONLINE"
+        result = local_search(
+            ctx, "Which client work implements the KIP-5 protocol?", k=10, log=False
+        )
+        check_envelope(result, "s3", ctx)
+        assert any("db.index.fulltext.queryNodes" in c for c in result.cypher_used)
+        factors = [
+            i.props["text_factor"] for i in result.items if i.props.get("text_factor") is not None
+        ]
+        assert factors, "no Document or WorkItem came back to carry the lexical factor"
+        assert max(factors) > 1.0, "the index answered but nothing was ranked by it"
+        assert all(i.props.get("text_factor") is None for i in result.items if i.kind == "Entity")
+    finally:
+        for index in names.values():
+            ctx.client.write(f"DROP INDEX `{ctx.index(index)}` IF EXISTS")
+
+
 # ------------------------------------------------------------------------------- S6
 
 

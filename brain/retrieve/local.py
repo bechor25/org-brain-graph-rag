@@ -18,8 +18,8 @@ the reasons hang off the `Feature`, not off the decision. Walking only the "prop
 rationale edges would answer 19% of the rationale questions. Walking `MENTIONS` too brings
 back the chunk that says why, with its quote.
 
-Ranking is degree × edge weight × (1 + cos(question, entity)), where *degree is inside the
-anchored neighbourhood*, not in the graph. Global degree would rank `Technology|kafka` first
+Ranking is degree × edge weight × a factor that reads the question, where *degree is inside
+the anchored neighbourhood*, not in the graph. Global degree would rank `Technology|kafka` first
 for every question ever asked; local degree ranks the node the anchors actually agree on.
 
 The third factor arrived after a measurement (planner decision, Plan 2 Task 3): with only
@@ -37,9 +37,25 @@ decides only the order inside it. The cosine spread over real `bge-m3` vectors i
 degree), so this breaks ties between comparable nodes rather than overturning the graph.
 
 `vector.similarity.cosine` is computed *in the database*, not by shipping 1,024 floats per
-neighbour back to Python. A node with no embedding — every `WorkItem`, `Document`, `Person`
-and `Component` — gets the neutral factor 1.0 rather than a zero, because "no vector" is an
-absence of evidence, not evidence of irrelevance.
+neighbour back to Python. A node with no embedding gets the neutral factor 1.0 rather than
+a zero, because "no vector" is an absence of evidence, not evidence of irrelevance.
+
+That neutral 1.0 was measured (planner decision, Plan 2 review) and found to be a second
+way for the ranking to stop reading the question: no `Document` or `WorkItem` carries an
+`entity_embedding`, so the top-1 of both questions above was `KIP-932` at exactly 1.4300 —
+the same number, from the same three edges, whatever was asked. Those two labels now take
+their factor from the *lexical* index instead: one `db.index.fulltext.queryNodes` per label
+(`document_text`, `workitem_text`), top-50, min-max normalised, `1 + normalised`. `Person`
+and `Component` keep the neutral factor — there is no index over them that answers a
+question — and `Entity` is untouched, because it already reads the question by vector.
+
+**The anchor is pinned.** When the question names a key, that node's own score used to be
+1.0 (one anchor, no incoming path) while a neighbour reached by three edges scored 1.43, so
+`KIP-848` fell out of the top-10 of "Why was the design in KIP-848 chosen?" — the document
+the question is *about* was not in the answer. A named anchor is now returned first with a
+score at least the best neighbour's. It is pinned, not recomputed: no factor is invented to
+justify the position, `degree_score`, `semantic` and `text` still say what the graph and the
+question measured, and `props.pinned` says the order came from the question naming it.
 """
 
 from __future__ import annotations
@@ -53,7 +69,7 @@ from brain.retrieve.evidence import as_provenance, own_chunks
 from brain.retrieve.keys import find_keys
 from brain.retrieve.nodes import key_case, label_case, to_item
 from brain.retrieve.types import EmbedModelMismatch, Item, Provenance, Result
-from brain.retrieve.vector import search_entity_vectors
+from brain.retrieve.vector import lucene_escape, search_entity_vectors
 
 #: The rationale/impact edges (spec §4.1 S3) and what each is worth in the ranking.
 #: `MENTIONS` is the weakest on purpose: co-occurrence in one chunk is evidence, not a
@@ -80,6 +96,13 @@ RESULT_LABELS = ("Entity", "WorkItem", "Document", "Component", "Person")
 #: What a node with no embedding is worth in the semantic factor — the neighbourhood's own
 #: average, which is what `1.0` means once the factor is re-centred (see `semantic_factor`).
 NEUTRAL_FACTOR = 1.0
+#: label -> the fulltext index that gives it a question-aware factor. These are exactly the
+#: labels S3 can return that carry no vector of their own but do carry text `brain index`
+#: indexed; `Person` and `Component` are nothing but a name, so they keep the neutral factor.
+TEXT_INDEXES: dict[str, str] = {"Document": "document_text", "WorkItem": "workitem_text"}
+#: Rows read per fulltext index before min-max normalisation. 50 is wide enough that the
+#: neighbourhood's documents are in it and narrow enough to stay one cheap index read.
+TEXT_TOP = 50
 #: Neo4j's normalised cosine for two orthogonal vectors, i.e. the plain `cos = 0` zero point.
 NEUTRAL_SIMILARITY = 0.5
 #: A question may demote a node the graph found, but not erase it.
@@ -214,6 +237,67 @@ def _evidence(ctx: RetrieveContext, keys: list[str], per_key: int = 2):
     return out, cypher
 
 
+def text_factors(rows: list[dict[str, Any]]) -> dict[str, float]:
+    """`1 + minmax(score)` per key, over the rows *one* fulltext index returned.
+
+    Lucene scores are not comparable across queries or indexes — a BM25 4.3 means nothing
+    on its own — so they are normalised inside the one list they came from. The best match
+    is worth 2.0, the worst returned match 1.0, and everything the index did not return
+    keeps the neutral 1.0: not being in the top-50 is the same non-evidence as having no
+    text at all.
+
+    A single row has no spread to normalise; it is the only document in the corpus whose
+    text matched the question, which is the strongest lexical evidence there is, so it is
+    the top of its own list rather than the bottom.
+    """
+    scores = {r["key"]: float(r["score"]) for r in rows if r.get("key") is not None}
+    if not scores:
+        return {}
+    lo, hi = min(scores.values()), max(scores.values())
+    if hi - lo <= 0.0:
+        return dict.fromkeys(scores, 2.0)
+    return {key: 1.0 + (value - lo) / (hi - lo) for key, value in scores.items()}
+
+
+def _text_scores(ctx: RetrieveContext, question: str) -> tuple[dict[str, float], list[str]]:
+    """One fulltext read per label in `TEXT_INDEXES`, normalised into ranking factors.
+
+    Two index reads per question, whatever the neighbourhood's size — the alternative,
+    scoring each of up to 250 neighbours against the question, is a round trip per node.
+
+    A namespace where `brain index` has not run has no `document_text`, and a question that
+    is all punctuation escapes to an empty Lucene query. Both mean "no lexical opinion", so
+    both return `{}` and the ranking is the one this function did not exist for: an
+    absent index must cost S3 its ordering, never its answer.
+
+    `boost_keys=False`, unlike S1. S1 boosts `KIP-848` ×8 because the key is what identifies
+    the chunks it is looking for; here the key already *chose* the neighbourhood, so boosting
+    it again scores every node on the one thing they all share. Measured on the two questions
+    this fix exists for: with the boost, the top WorkItem factors were 2.000/1.992/1.985 for
+    one question and 2.000/1.998/1.982 for the other — the same nodes, differing in the third
+    decimal, because the boosted key carried the score. Without it the question's own words
+    do (`KAFKA-16276` vs `KAFKA-17732` on top), which is the entire point of the factor.
+    """
+    escaped = lucene_escape(question, boost_keys=False)
+    if not escaped:
+        return {}, []
+    factors: dict[str, float] = {}
+    cyphers: list[str] = []
+    for label, index in TEXT_INDEXES.items():
+        cypher = (
+            "CALL db.index.fulltext.queryNodes($index, $q, {limit: $top}) YIELD node AS n, score\n"
+            f"WHERE n:{ctx.label(label)}" + ctx.synthetic_clause("n") + "\n"
+            f"RETURN {key_case('n', ctx.prefix)} AS key, score"
+        )
+        try:
+            rows = ctx.read(cypher, index=ctx.index(index), q=escaped, top=TEXT_TOP)
+        except Exception:  # noqa: BLE001 - a missing index degrades the rank, not the answer
+            continue
+        cyphers.append(cypher)
+        factors.update(text_factors(rows))
+    return factors, cyphers
+
+
 def _path_weight(path: list[str]) -> float:
     weight = 1.0
     for hop, rel in enumerate(path):
@@ -253,14 +337,29 @@ def semantic_factor(similarity: float | None, center: float = NEUTRAL_SIMILARITY
 
 
 def rank_neighbourhood(
-    anchors: list[dict[str, Any]], rows: list[dict[str, Any]], k: int
+    anchors: list[dict[str, Any]],
+    rows: list[dict[str, Any]],
+    k: int,
+    *,
+    text: dict[str, float] | None = None,
+    pin: bool = False,
 ) -> list[tuple[str, dict[str, Any]]]:
-    """degree × edge weight × (1 + cos), highest first. Pure: the graph is already read.
+    """degree × edge weight × question factor, highest first. Pure: the graph is already read.
 
-    Both halves of the product are kept on the entry (`degree_score`, `semantic`) because a
-    ranking whose numbers cannot be read back is a ranking nobody can debug — and Plan 3 has
-    to explain, per question type, *why* one strategy beat another.
+    The question factor is the cosine one for a node that carries a vector (`semantic`) and
+    the lexical one from `text_factors` for a `Document` or `WorkItem` (`text`); each is 1.0
+    where it does not apply, so `score` is always the product of the three and every factor
+    can be read back off the entry. A ranking whose numbers cannot be read back is a ranking
+    nobody can debug — and Plan 3 has to explain, per question type, why one strategy beat
+    another.
+
+    `pin` is set when the question named the anchors by key. They are then returned first,
+    with a score lifted to the best neighbour's if their own is lower. Nothing is
+    recomputed: the lift is visible as `pinned` and the three factors still report what was
+    measured. Without it — the entity-vector anchoring mode — nothing named these nodes,
+    they are this strategy's own guess, and the ranking is allowed to overrule a guess.
     """
+    text = text or {}
     scored: dict[str, dict[str, Any]] = {}
     anchor_keys = {a["key"] for a in anchors}
     for anchor in anchors:
@@ -278,13 +377,25 @@ def rank_neighbourhood(
         entry["paths"].append({"anchor": row["anchor"], "path": row["path"], "hops": row["hops"]})
 
     center = _center([e["row"].get("sim") for e in scored.values()])
-    for entry in scored.values():
+    for key, entry in scored.items():
         entry["semantic"] = semantic_factor(entry["row"].get("sim"), center)
-        entry["score"] = entry["degree_score"] * entry["semantic"]
+        entry["text"] = (
+            text.get(key, NEUTRAL_FACTOR)
+            if entry["row"].get("label") in TEXT_INDEXES
+            else NEUTRAL_FACTOR
+        )
+        entry["score"] = entry["degree_score"] * entry["semantic"] * entry["text"]
         entry["path_count"] = len(entry["paths"])
-    # The key breaks ties, so two runs over the same graph return the same order even though
+        entry["pinned"] = pin and key in anchor_keys
+
+    if pin:
+        best = max((e["score"] for key, e in scored.items() if key not in anchor_keys), default=0.0)
+        for key in anchor_keys & scored.keys():
+            scored[key]["score"] = max(scored[key]["score"], best)
+    # A pinned anchor sorts ahead of a neighbour it ties with, and the key breaks the
+    # remaining ties, so two runs over the same graph return the same order even though
     # Neo4j promises no row order.
-    return sorted(scored.items(), key=lambda kv: (-kv[1]["score"], kv[0]))[:k]
+    return sorted(scored.items(), key=lambda kv: (not kv[1]["pinned"], -kv[1]["score"], kv[0]))[:k]
 
 
 def _center(similarities: list[float | None]) -> float:
@@ -340,7 +451,14 @@ def local_search(
     if cypher:
         cyphers.append(cypher)
 
-    top = rank_neighbourhood(anchors, rows, k)
+    # Only when the neighbourhood actually holds a label the lexical factor applies to: two
+    # index reads are cheap, and two index reads nobody uses are still two round trips.
+    text: dict[str, float] = {}
+    if {r.get("label") for r in (*anchors, *rows)} & TEXT_INDEXES.keys():
+        text, text_cyphers = _text_scores(ctx, query)
+        cyphers.extend(text_cyphers)
+
+    top = rank_neighbourhood(anchors, rows, k, text=text, pin=anchored_by == "keys")
     evidence, cypher = _evidence(ctx, [key for key, _ in top])
     if cypher:
         cyphers.append(cypher)
@@ -359,10 +477,14 @@ def local_search(
         else:
             item.props["anchor"] = True
         item.props["anchored_by"] = anchored_by
-        # The two factors behind `score`, so a reader (and Plan 3) can see whether this item
-        # is here because the graph agrees or because the question does.
+        # The factors behind `score`, so a reader (and Plan 3) can see whether this item is
+        # here because the graph agrees, because the question does, or because it named it.
         item.props["degree_score"] = round(entry["degree_score"], 4)
         item.props["semantic"] = round(entry["semantic"], 4)
+        if label in TEXT_INDEXES:
+            item.props["text_factor"] = round(entry["text"], 4)
+        if entry["pinned"]:
+            item.props["pinned"] = True
         for ev in evidence.get(key, []):
             item.provenance.append(
                 Provenance(
