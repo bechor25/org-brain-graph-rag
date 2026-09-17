@@ -17,6 +17,13 @@ cells comparable, and each of them is a line of code here rather than a note in 
    the clock removed. `unchanged` is the expected result and is reported per file; a
    `changed` file is kept until `--force`, so a surprise is something you read before it
    overwrites the evidence.
+5. **The report is the run directory, not the invocation.** `build_report` reads every
+   `<qid>.<strategy>.json` on disk and builds a column per strategy it finds there. A
+   `--strategies s6` rerun therefore refreshes one column instead of publishing a matrix
+   with one column — which is what it used to do, silently deleting six strategies'
+   published numbers while their run files sat on disk untouched. Each column carries the
+   commit and the clock of its own newest run file (`columns`), is `stale` when any of its
+   runs was measured away from HEAD, and is `missing` when it has no run file at all.
 
 ### The three ways a strategy does not apply
 
@@ -96,6 +103,79 @@ def parse_strategies(value: str | None) -> tuple[str, ...]:
 
 def run_path(out_dir: Path | str, qid: str, strategy: str) -> Path:
     return Path(out_dir) / RUNS_DIRNAME / f"{qid}.{strategy}.json"
+
+
+def run_files(out_dir: Path | str, strategy: str) -> list[Path]:
+    """Every `<qid>.<strategy>.json` on disk for this column, in name order."""
+    return sorted((Path(out_dir) / RUNS_DIRNAME).glob(f"*.{strategy}.json"))
+
+
+def _file_strategy(path: Path) -> str | None:
+    """`cq01.s1r.json` -> `s1r`. A name that is not `<qid>.<strategy>.json` is not a run."""
+    parts = path.name.rsplit(".", 2)
+    return parts[1] if len(parts) == 3 and parts[2] == "json" and parts[0] else None
+
+
+def discover_strategies(out_dir: Path | str) -> tuple[str, ...]:
+    """The columns the run directory holds, in the canonical order, whoever ran them.
+
+    This is what makes `--strategies s6` a *partial refresh* rather than a report with one
+    column: the matrix is a fact about the evidence on disk, and the flags of the current
+    invocation say only which part of that evidence was re-measured.
+    """
+    found = {
+        strategy
+        for path in (Path(out_dir) / RUNS_DIRNAME).glob("*.json")
+        if (strategy := _file_strategy(path))
+    }
+    known = [name for name in STRATEGIES if name in found]
+    return tuple(known + sorted(found - set(STRATEGIES)))
+
+
+def column_stamps(
+    out_dir: Path | str,
+    columns: tuple[str, ...] | list[str],
+    *,
+    ran: tuple[str, ...] | list[str] = (),
+    head: str = "",
+) -> dict[str, dict[str, Any]]:
+    """Per-column freshness, read from the run files rather than from this invocation.
+
+    The whole-file `sections` index says when the *aggregation* was computed; it cannot say
+    that a column was measured three commits ago, because the aggregation is always fresh.
+    So each strategy carries the commit and the clock of its own newest run file, and is
+    `stale` whenever any of its runs was measured somewhere other than HEAD — the Plan 1
+    closing rule ("a measurement dragged forward carries the sha it was taken at"), applied
+    one column at a time. A strategy with no run file at all is `missing`: an empty column
+    that says so is not the same as a column nobody printed.
+    """
+    wanted = list(dict.fromkeys([*STRATEGIES, *columns]))
+    out: dict[str, dict[str, Any]] = {}
+    for strategy in wanted:
+        records = [r for p in run_files(out_dir, strategy) if (r := read_record(p)) is not None]
+        if not records:
+            out[strategy] = {
+                "status": "missing",
+                "stale": True,
+                "runs": 0,
+                "stale_runs": 0,
+                "sha": None,
+                "generated_at": None,
+                "ran": strategy in ran,
+            }
+            continue
+        latest = max(records, key=lambda r: str(r.get("generated_at") or ""))
+        stale_runs = sum(1 for r in records if bool(head) and str(r.get("sha") or "") != head)
+        out[strategy] = {
+            "status": "stale" if stale_runs else "fresh",
+            "stale": bool(stale_runs),
+            "runs": len(records),
+            "stale_runs": stale_runs,
+            "sha": latest.get("sha"),
+            "generated_at": latest.get("generated_at"),
+            "ran": strategy in ran,
+        }
+    return out
 
 
 # ----------------------------------------------------------------------------- applicability
@@ -452,8 +532,27 @@ def build_report(
     summary: dict[str, Any],
     out_dir: Path | str | None = None,
     sha: str = "",
+    head: str | None = None,
 ) -> dict[str, Any]:
-    """Layer 2 and the cost table, entirely computed — no number here is typed by hand."""
+    """Layer 2 and the cost table, entirely computed — no number here is typed by hand.
+
+    `strategies` is what *this invocation* ran. The report's columns are not: they are every
+    strategy that has run files in `out_dir`, read back from disk, so a `--strategies s6`
+    rerun refreshes one column and leaves the other six standing with the commit they were
+    measured at (`columns`). `records` is used only when there is no run directory to read
+    — a unit test that never wrote one.
+    """
+    columns = discover_strategies(out_dir) if out_dir is not None else ()
+    if columns:
+        records = load_records(rows, columns, out_dir) or records
+    else:
+        columns = tuple(strategies)
+    stamps = column_stamps(
+        out_dir if out_dir is not None else Path("."),
+        columns,
+        ran=tuple(strategies),
+        head=sha if head is None else head,
+    )
     scored = metrics.score_records(records, truth or {})
     pending = sum(1 for row in rows if metrics.is_pending(row))
     types = sorted({str(r.get("type") or "") for r in records})
@@ -465,7 +564,8 @@ def build_report(
         "sha": sha,
         "mode": MODE,
         "baseline": BASELINE,
-        "strategies": list(strategies),
+        "strategies": list(columns),
+        "columns": stamps,
         "types": types,
         "k": (records[0].get("k") if records else None),
         "budget_tokens": (records[0].get("budget_tokens") if records else None),
@@ -483,15 +583,18 @@ def build_report(
         "questions": metrics.question_rows(scored),
         "cross_lingual": metrics.cross_lingual(scored),
         "cost": cost_mod.table(scored),
-        "coverage": coverage(rows, strategies, out_dir if out_dir is not None else Path(".")),
+        "coverage": coverage(rows, columns, out_dir if out_dir is not None else Path(".")),
         "run": {
             "started_at": summary.get("started_at"),
             "duration_ms": summary.get("duration_ms"),
             "outcomes": summary.get("outcomes"),
             "changed": summary.get("changed"),
             "expected": summary.get("expected"),
+            # What this invocation re-measured, which `--strategies` may have narrowed to one
+            # column. `strategies` above is what the report covers.
+            "strategies": list(summary.get("strategies") or strategies),
         },
-        "notes": _notes(pending, questions_complete, unresolved),
+        "notes": _notes(pending, questions_complete, unresolved, stamps),
     }
 
 
@@ -517,9 +620,24 @@ def unresolved_gold(
 
 
 def _notes(
-    pending: int, complete: bool, unresolved: list[dict[str, Any]] | None = None
+    pending: int,
+    complete: bool,
+    unresolved: list[dict[str, Any]] | None = None,
+    columns: dict[str, dict[str, Any]] | None = None,
 ) -> list[str]:
     notes: list[str] = []
+    stale = [name for name, c in sorted((columns or {}).items()) if c["status"] == "stale"]
+    missing = [name for name, c in sorted((columns or {}).items()) if c["status"] == "missing"]
+    if stale or missing:
+        notes.append(
+            "The matrix is assembled from every run file on disk, not from the strategies of "
+            "the last invocation, so a partial `--strategies` rerun refreshes one column and "
+            "leaves the rest standing. Each column in `columns` carries the commit its own "
+            "runs were measured at"
+            + (f" — not at HEAD: {', '.join(stale)}" if stale else "")
+            + (f" — no run file at all: {', '.join(missing)}" if missing else "")
+            + "."
+        )
     if pending:
         notes.append(
             f"{pending} question(s) still carry `gold_source: pending`; they ran and their "
@@ -556,14 +674,18 @@ def write_report(report: dict[str, Any], path: Path | str) -> Path:
     path = Path(path)
     previous = read_record(path) or {}
     history = list(previous.get("runs") or [])
+    run = dict(report.get("run") or {})
     history.append(
         {
             "generated_at": report["generated_at"],
             "sha": report.get("sha"),
-            "strategies": report["strategies"],
+            # The history is a log of *invocations*: what was re-measured, which is not the
+            # same list as the columns the report covers once a partial rerun is possible.
+            "strategies": run.get("strategies") or report["strategies"],
+            "columns": report["strategies"],
             "questions_total": report["questions_total"],
             "questions_complete": report["questions_complete"],
-            **(report.get("run") or {}),
+            **run,
         }
     )
     sections = {key: value for key, value in report.items() if key != "run"}
@@ -605,6 +727,18 @@ def cell_text(cell: dict[str, Any] | None) -> str:
     return f"{cell['recall']:.2f}{mark}"
 
 
+def column_lines(columns: dict[str, dict[str, Any]]) -> list[str]:
+    """`s1 fresh 32 · s2 stale 32 @0f3a1b2 · s5 missing` — one word per column, measured."""
+    out: list[str] = []
+    for name, entry in sorted(columns.items()):
+        if entry["status"] == "missing":
+            out.append(f"{name} missing")
+            continue
+        stamp = f" @{str(entry.get('sha') or '')[:7]}" if entry["status"] == "stale" else ""
+        out.append(f"{name} {entry['status']} {entry['runs']}{stamp}")
+    return out
+
+
 def summary_lines(report: dict[str, Any]) -> list[str]:
     """What the command prints: the matrix, the cost table, and what did not apply."""
     out: list[str] = []
@@ -618,6 +752,7 @@ def summary_lines(report: dict[str, Any]) -> list[str]:
         for name, values in sorted(report["by_strategy"].items()):
             for reason, count in sorted(values.get("na_reasons", {}).items()):
                 out.append(f"  {name}: {count}× {reason[:110]}")
+    out.append("columns: " + ", ".join(column_lines(report.get("columns") or {})))
     coverage_block = report["coverage"]
     out.append(
         f"coverage: {coverage_block['present']}/{coverage_block['expected']} run files"

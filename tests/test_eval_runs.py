@@ -388,3 +388,151 @@ def test_gold_that_resolves_to_nothing_is_charged_to_the_question_set_not_to_ret
     ]
     note = "\n".join(runs._notes(0, True, runs.unresolved_gold(rows, truth)))
     assert "q002" in note and "not about retrieval" in note
+
+
+# ------------------------------------------------ the columns come from the files on disk
+
+
+OLD_SHA = "0" * 40
+NEW_SHA = "9" * 40
+OLD_CLOCK = "2026-09-01T00:00:00+00:00"
+
+
+def sweep(tmp_path, rows, strategies=runs.STRATEGIES, ask=None, force=False):
+    return runs.run_all(
+        None,
+        rows,
+        strategies=strategies,
+        out_dir=tmp_path,
+        ask=ask or fake_ask(),
+        select_example=fake_example(),
+        force=force,
+        sha=NEW_SHA,
+    )
+
+
+def backdate(tmp_path, strategies, *, sha=OLD_SHA, clock=OLD_CLOCK):
+    """Make these columns' run files look like they were measured at an older commit."""
+    for path in sorted((tmp_path / "fixed").glob("*.json")):
+        record = json.loads(path.read_text(encoding="utf-8"))
+        if record["strategy"] in strategies:
+            record["sha"], record["generated_at"] = sha, clock
+            path.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", "utf-8")
+
+
+def report_for(tmp_path, rows, summary, ran, *, head=NEW_SHA):
+    return runs.build_report(
+        summary["records"],
+        rows,
+        strategies=ran,
+        questions_path=tmp_path / "questions.jsonl",
+        questions_complete=True,
+        questions_total=len(rows),
+        truth={},
+        summary=summary,
+        out_dir=tmp_path,
+        sha=NEW_SHA,
+        head=head,
+    )
+
+
+def test_a_single_strategy_rerun_reports_seven_columns_and_rewrites_only_its_own(tmp_path):
+    """The bug this is here for: `--strategies s6` published a report with one column.
+
+    The other six strategies' run files were still on disk, unread and unreported — so the
+    report claimed a matrix that the evidence directory contradicted.
+    """
+    rows = [question("q001"), question("q002", qtype="impact")]
+    sweep(tmp_path, rows)
+    backdate(tmp_path, set(runs.STRATEGIES) - {"s6"})
+    before = {p.name: p.read_text(encoding="utf-8") for p in (tmp_path / "fixed").glob("*.json")}
+
+    summary = sweep(tmp_path, rows, strategies=("s6",), ask=fake_ask(result("s6", keys=("K-9",))))
+
+    assert set(summary["outcomes"]) == {"changed"}  # kept without --force
+    report = report_for(tmp_path, rows, summary, ("s6",))
+    assert report["strategies"] == list(runs.STRATEGIES)
+    assert set(report["matrix"]) == set(runs.STRATEGIES)
+    assert set(report["cost"]) == set(runs.STRATEGIES)
+    assert report["coverage"]["complete"] is True
+    untouched = {p.name: p.read_text(encoding="utf-8") for p in (tmp_path / "fixed").glob("*.json")}
+    assert {k: v for k, v in untouched.items() if ".s6." not in k} == {
+        k: v for k, v in before.items() if ".s6." not in k
+    }
+
+
+def test_every_column_carries_the_commit_its_own_runs_were_measured_at(tmp_path):
+    rows = [question("q001")]
+    sweep(tmp_path, rows)
+    backdate(tmp_path, set(runs.STRATEGIES) - {"s6"})
+    summary = sweep(tmp_path, rows, strategies=("s6",), force=True)
+
+    columns = report_for(tmp_path, rows, summary, ("s6",))["columns"]
+    assert columns["s6"] == {
+        "status": "fresh",
+        "stale": False,
+        "runs": 1,
+        "stale_runs": 0,
+        "sha": NEW_SHA,
+        "generated_at": columns["s6"]["generated_at"],
+        "ran": True,
+    }
+    assert columns["s1"]["sha"] == OLD_SHA
+    assert columns["s1"]["stale"] is True
+    assert columns["s1"]["status"] == "stale"
+    assert columns["s1"]["generated_at"] == OLD_CLOCK
+    assert columns["s1"]["ran"] is False
+
+
+def test_a_strategy_with_no_run_file_at_all_is_a_missing_column_not_a_silent_absence(tmp_path):
+    rows = [question("q001")]
+    summary = sweep(tmp_path, rows, strategies=("s1", "s3"))
+    report = report_for(tmp_path, rows, summary, ("s1", "s3"))
+
+    assert report["strategies"] == ["s1", "s3"]
+    assert report["columns"]["s5"] == {
+        "status": "missing",
+        "stale": True,
+        "runs": 0,
+        "stale_runs": 0,
+        "sha": None,
+        "generated_at": None,
+        "ran": False,
+    }
+    # A column nobody ever ran is not charged to this run's coverage.
+    assert report["coverage"]["complete"] is True
+    assert "s5" in "\n".join(runs.summary_lines(report))
+
+
+def test_the_report_reads_the_kept_file_not_the_result_a_rerun_refused_to_write(tmp_path):
+    rows = [question("q001")]
+    sweep(tmp_path, rows, strategies=("s1",))
+    summary = sweep(tmp_path, rows, strategies=("s1",), ask=fake_ask(result("s1", keys=("K-9",))))
+
+    report = report_for(tmp_path, rows, summary, ("s1",))
+    assert summary["changed"] == ["q001.s1"]
+    # The kept file found the gold; the result the rerun produced and did not write did not.
+    assert report["questions"][0]["strategies"]["s1"]["recall"] == 1.0
+
+
+def test_the_run_history_records_the_strategies_this_invocation_ran(tmp_path):
+    rows = [question("q001")]
+    sweep(tmp_path, rows)
+    summary = sweep(tmp_path, rows, strategies=("s6",), force=True)
+    report = report_for(tmp_path, rows, summary, ("s6",))
+
+    path = runs.write_report(report, tmp_path / "eval_retrieval.json")
+    written = json.loads(path.read_text(encoding="utf-8"))
+    assert written["strategies"] == list(runs.STRATEGIES)
+    assert written["runs"][-1]["strategies"] == ["s6"]
+    assert written["columns"]["s6"]["ran"] is True
+
+
+def test_the_printed_summary_names_the_columns_that_are_not_at_head(tmp_path):
+    rows = [question("q001")]
+    sweep(tmp_path, rows)
+    backdate(tmp_path, {"s2"})
+    summary = sweep(tmp_path, rows, strategies=("s6",), force=True)
+    text = "\n".join(runs.summary_lines(report_for(tmp_path, rows, summary, ("s6",))))
+    assert "columns:" in text
+    assert "s2" in text.split("columns:")[1].splitlines()[0]
