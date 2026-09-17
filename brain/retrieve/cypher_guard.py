@@ -48,7 +48,7 @@ from neo4j.exceptions import Neo4jError
 from brain.retrieve import log as retrieve_log
 from brain.retrieve.envelope import Timer, finish
 from brain.retrieve.pack import SNIPPET_CHARS, clip
-from brain.retrieve.types import Item, Result
+from brain.retrieve.types import Item, Provenance, Result
 
 #: Spec §4.5. 10 seconds is the *server's* limit on the transaction, not a client wait.
 DEFAULT_TIMEOUT_S = 10.0
@@ -504,6 +504,13 @@ def _row_item(row: dict[str, Any], index: int) -> Item:
     A row is not a node — `GraphClient.read()` gives back exactly the columns the query
     projected — so the `kind` is `Row` and the key is whatever the query called an
     identifier. Nothing is invented; `props` is the row itself, clipped (`_row_props`).
+
+    The provenance is `source_kind="row"`: a row has no chunk id and never will, and its
+    audit trail is `Result.cypher_used` — paste the query, get the row back. The query is
+    *referenced* rather than copied into every item, because a hundred copies of the same
+    400 characters is the answer's token budget spent on saying one thing a hundred times.
+    Without this entry a cite-check counts an aggregation as unciteable and the honest
+    answer to "which components have failing tests" scores zero.
     """
     props = _row_props(row)
     key = ""
@@ -526,6 +533,7 @@ def _row_item(row: dict[str, Any], index: int) -> Item:
         snippet=clip(snippet),
         score=1.0 / (index + 1),
         props=props,
+        provenance=[Provenance(source=f"row {index + 1} of cypher_used", source_kind="row")],
     )
 
 
@@ -613,11 +621,19 @@ def run_cypher(
 
     truncated_rows = rows[:limit]
     items = [_row_item(row, i) for i, row in enumerate(truncated_rows)]
+    # Two cuts the packer cannot see, because both happen before it is handed the items: a
+    # wide column clipped inside the row, and rows past `limit` dropped when the query's own
+    # `LIMIT` was larger than ours. `truncated` answers "is this everything?", and here the
+    # answer is no.
+    clipped = [i.key for i in items if "_clipped" in i.props]
+    cut_rows = len(rows) > len(truncated_rows)
     trace = dict(route or {})
     trace.update(
         {
             "tool": "run_cypher",
             "rows": len(rows),
+            "rows_returned": len(truncated_rows),
+            "clipped_rows": len(clipped),
             "limit_injected": prepared.limit_injected,
             "query_ms": query_ms,
         }
@@ -632,4 +648,5 @@ def run_cypher(
         mode=log_mode,
         log_path=log_path,
         log=log,
+        already_truncated=bool(clipped) or cut_rows,
     )

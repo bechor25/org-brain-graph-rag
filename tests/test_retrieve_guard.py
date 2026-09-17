@@ -221,6 +221,99 @@ def test_strings_inside_a_collected_list_are_clipped_too() -> None:
     assert item.props["_clipped"] == ["quotes"]
 
 
+def test_a_row_cites_the_query_that_produced_it() -> None:
+    """A row has no chunk id; what makes it checkable is `cypher_used` (`source_kind="row"`)."""
+    item = guard._row_item({"component": "clients", "open_bugs": 10}, 0)
+    assert [p.source_kind for p in item.provenance] == ["row"]
+    assert item.provenance[0].source == "row 1 of cypher_used"
+    assert item.provenance[0].chunk_id is None, "a row never gets a chunk id invented for it"
+
+
+def test_every_row_of_an_answer_is_auditable() -> None:
+    """The cite-check rule, asserted against the rule's own implementation."""
+    from brain.retrieve.report import auditable_items
+    from brain.retrieve.types import Result
+
+    rows = [{"key": "KAFKA-1"}, {"key": "KAFKA-2"}, {"key": "KAFKA-3"}]
+    result = Result(
+        strategy="s4",
+        items=[guard._row_item(row, i) for i, row in enumerate(rows)],
+        cypher_used=["MATCH (w:WorkItem) RETURN w.key AS key LIMIT 3"],
+    )
+    assert auditable_items(result, valid=set()) == 3
+
+
+def test_a_clipped_row_reports_the_answer_as_truncated() -> None:
+    """The packer never sees the cut: the column was clipped before it got the items."""
+    from brain.retrieve.cypher_guard import run_cypher
+
+    class _Wide:
+        prefix = ""
+
+        @property
+        def client(self):
+            return self
+
+        def explain(self, query: object, **params: object) -> dict:
+            return {"operatorType": "ProduceResults@neo4j", "children": []}
+
+        def read(self, query: object, **params: object):
+            return [{"key": "KIP-932", "body": "x" * 200_000}]
+
+    result = run_cypher(
+        _Wide(), "MATCH (d:Document) RETURN d.key AS key, d.body_md AS body", log=False
+    )
+    assert result.truncated is True
+    assert result.items[0].props["_clipped"] == ["body"]
+    assert result.route["clipped_rows"] == 1
+
+
+def test_rows_dropped_past_the_limit_report_as_truncated() -> None:
+    """The author's own `LIMIT 500` against our 2: three rows arrived, one was kept back."""
+    from brain.retrieve.cypher_guard import run_cypher
+
+    class _Many:
+        prefix = ""
+
+        @property
+        def client(self):
+            return self
+
+        def explain(self, query: object, **params: object) -> dict:
+            return {"operatorType": "ProduceResults@neo4j", "children": []}
+
+        def read(self, query: object, **params: object):
+            return [{"key": f"KAFKA-{i}"} for i in range(3)]
+
+    result = run_cypher(
+        _Many(), "MATCH (w:WorkItem) RETURN w.key AS key LIMIT 500", limit=2, log=False
+    )
+    assert result.truncated is True
+    assert result.route["rows"] == 3
+    assert result.route["rows_returned"] == 2
+
+
+def test_an_unclipped_answer_is_not_reported_as_truncated() -> None:
+    from brain.retrieve.cypher_guard import run_cypher
+
+    class _Small:
+        prefix = ""
+
+        @property
+        def client(self):
+            return self
+
+        def explain(self, query: object, **params: object) -> dict:
+            return {"operatorType": "ProduceResults@neo4j", "children": []}
+
+        def read(self, query: object, **params: object):
+            return [{"key": "KAFKA-1", "status": "Resolved"}]
+
+    result = run_cypher(_Small(), "MATCH (w:WorkItem) RETURN w.key AS key LIMIT 1", log=False)
+    assert result.truncated is False
+    assert result.route["clipped_rows"] == 0
+
+
 def test_a_row_that_fits_is_untouched() -> None:
     item = guard._row_item({"key": "KAFKA-1", "status": "Resolved"}, 0)
     assert item.props == {"key": "KAFKA-1", "status": "Resolved"}
