@@ -1,24 +1,24 @@
 # הערכה — דוח Plan 3
 
-נוצר אוטומטית ע"י `brain eval report` ב-2026-09-17T10:59:49+00:00 (HEAD `55598fe9`) מתוך דוחות השלבים ב-`data/reports`. **המספרים נלקחים מדוחות השלבים** ואין כאן מספר שהוקלד לתוך הדף; **הערות השלבים הן פרוזה של המהנדס/ת של השלב** (עמודות `הערות`/`note` שנגררות מה-JSON), ושני הסעיפים האחרונים נכתבים ביד ע"י המתכנן ונשמרים בכל יצירה מחדש.
+נוצר אוטומטית ע"י `brain eval report` ב-2026-09-17T11:04:16+00:00 (HEAD `c2ce8094`) מתוך דוחות השלבים ב-`data/reports`. **המספרים נלקחים מדוחות השלבים** ואין כאן מספר שהוקלד לתוך הדף; **הערות השלבים הן פרוזה של המהנדס/ת של השלב** (עמודות `הערות`/`note` שנגררות מה-JSON), ושני הסעיפים האחרונים נכתבים ביד ע"י המתכנן ונשמרים בכל יצירה מחדש.
 
 כל שורה בטבלה הבאה היא קלט של הדוח: מתי נמדד, באיזה commit, והאם ה-commit הזה הוא ה-HEAD. `STALE` = המספרים קיימים אבל נמדדו על קוד אחר; `חסר` = הסעיף שמתבסס עליו יופיע כ-**טרם נמדד** עם הפקודה שמייצרת אותו.
 
 | קובץ | מה מביא | מצב | נמדד ב | sha | הפקודה שכותבת | הערה |
 |---|---|---|---|---|---|---|
-| `data/reports/harvest.json` | שכבה 0 — מה נמשך מהמקורות | בלי sha | 2026-09-17T09:30:08+00:00 | — | `brain harvest` | הדוח לא חותם sha — אי אפשר לדעת באיזה commit נמדד |
-| `data/reports/index.json` | שכבה 1 — מפקד, provenance, קהילות | STALE | 2026-09-17T10:16:44+00:00 | 1ef67612 | `brain index` | נמדד ב-1ef67612, HEAD הוא 55598fe9 |
-| `data/reports/resolve.json` | שכבה 1 — P/R/F1 של איחוד ישויות | STALE | 2026-09-17T10:16:44+00:00 | 1ef67612 | `brain resolve eval` | נמדד ב-1ef67612, HEAD הוא 55598fe9 |
-| `data/reports/retrieve.json` | תשתית האחזור — reranker ו-guard | STALE | 2026-09-17T10:17:35+00:00 | 1ef67612 | `brain cypher-examples check` | נמדד ב-1ef67612, HEAD הוא 55598fe9 |
-| `data/reports/eval_questions.json` | סט השאלות | STALE | 2026-09-17T10:17:36+00:00 | 1ef67612 | `brain eval questions merge` | נמדד ב-1ef67612, HEAD הוא 55598fe9 |
-| `data/reports/eval_retrieval.json` | שכבה 2 | STALE | 2026-09-17T09:35:39+00:00 | 9dba7252 | `brain eval run --mode fixed` | נמדד ב-9dba7252, HEAD הוא 55598fe9 |
-| `data/reports/eval_answers.json` | שכבה 3 — תשובות ושיפוט עיוור | STALE | 2026-09-17T10:58:21+00:00 | 55598fe9 | `brain eval answers merge · brain eval judge merge` | סעיפים ישנים: answers_build, answers_merge, judge_build |
-| `data/reports/plan2_gate.json` | שער מצב B (ציטוטים) | STALE | 2026-09-17T09:18:15+00:00 | c15b8385 | `brain eval cite-check` | נמדד ב-c15b8385, HEAD הוא 55598fe9 |
-| `data/reports/incremental.json` | §5.5 — ריצת העדכון האינקרמנטלי (כל הפייפליין) | STALE | 2026-09-17T10:12:44+00:00 | 4cf28f9 | `brain harvest --since <date> --source jira` | נמדד ב-4cf28f9, HEAD הוא 55598fe9 |
+| `data/reports/harvest.json` | שכבה 0 — מה נמשך מהמקורות | עדכני | 2026-09-17T11:02:23+00:00 | c2ce8094 | `brain harvest` | — |
+| `data/reports/index.json` | שכבה 1 — מפקד, provenance, קהילות | עדכני | 2026-09-17T11:04:16+00:00 | c2ce8094 | `brain index` | — |
+| `data/reports/resolve.json` | שכבה 1 — P/R/F1 של איחוד ישויות | STALE | 2026-09-17T10:16:44+00:00 | 1ef67612 | `brain resolve eval` | נמדד ב-1ef67612, HEAD הוא c2ce8094 |
+| `data/reports/retrieve.json` | תשתית האחזור — reranker ו-guard | STALE | 2026-09-17T10:17:35+00:00 | 1ef67612 | `brain cypher-examples check` | נמדד ב-1ef67612, HEAD הוא c2ce8094 |
+| `data/reports/eval_questions.json` | סט השאלות | STALE | 2026-09-17T10:17:36+00:00 | 1ef67612 | `brain eval questions merge` | נמדד ב-1ef67612, HEAD הוא c2ce8094 |
+| `data/reports/eval_retrieval.json` | שכבה 2 | STALE | 2026-09-17T09:35:39+00:00 | 9dba7252 | `brain eval run --mode fixed` | נמדד ב-9dba7252, HEAD הוא c2ce8094 |
+| `data/reports/eval_answers.json` | שכבה 3 — תשובות ושיפוט עיוור | STALE | 2026-09-17T10:58:21+00:00 | 55598fe9 | `brain eval answers merge · brain eval judge merge` | נמדד ב-55598fe9, HEAD הוא c2ce8094 |
+| `data/reports/plan2_gate.json` | שער מצב B (ציטוטים) | STALE | 2026-09-17T09:18:15+00:00 | c15b8385 | `brain eval cite-check` | נמדד ב-c15b8385, HEAD הוא c2ce8094 |
+| `data/reports/incremental.json` | §5.5 — ריצת העדכון האינקרמנטלי (כל הפייפליין) | STALE | 2026-09-17T10:12:44+00:00 | 4cf28f9 | `brain harvest --since <date> --source jira` | נמדד ב-4cf28f9, HEAD הוא c2ce8094 |
 
 ## סט השאלות
 
-מקור: `data/reports/eval_questions.json` · נמדד ב-2026-09-17T10:17:36+00:00 · sha `1ef67612`. **STALE** — נמדד ב-1ef67612, HEAD הוא 55598fe9.
+מקור: `data/reports/eval_questions.json` · נמדד ב-2026-09-17T10:17:36+00:00 · sha `1ef67612`. **STALE** — נמדד ב-1ef67612, HEAD הוא c2ce8094.
 
 הסט: `data/eval/questions.jsonl` (sha256 `68df8e48c68b9476`), 32 שאלות מתוך יעד 32. רצפת העברית: 11.
 
@@ -48,7 +48,7 @@
 
 ## שכבה 0 — harvest
 
-מקור: `data/reports/harvest.json` · נמדד ב-2026-09-17T09:30:08+00:00. ⚠️ הדוח לא חותם sha — אי אפשר לדעת באיזה commit נמדד.
+מקור: `data/reports/harvest.json` · נמדד ב-2026-09-17T11:02:23+00:00 · sha `c2ce8094`.
 
 שכבה 0 של §5.2: מה בכלל נמשך מהמקורות. הספירות הן מה-checkpoint של כל קונקטור, כך שריצה חלקית נראית כחלקית ולא כקורפוס קטן.
 
@@ -71,9 +71,9 @@
 
 ## שכבה 1 — מפקד הגרף
 
-מקור: `data/reports/index.json` · נמדד ב-2026-09-17T10:16:44+00:00 · sha `1ef67612`. **STALE** — נמדד ב-1ef67612, HEAD הוא 55598fe9.
+מקור: `data/reports/index.json` · נמדד ב-2026-09-17T11:04:16+00:00 · sha `c2ce8094`.
 
-הגרף שעליו נמדד הכול: **58,560** צמתים ו-**162,330** קשתות (147,534 דטרמיניסטיות, 14,796 מ-LLM). שער Plan 1: לא עבר — 11/13, נכשל: person_resolution_recall, make_smoke_green. המפקד המלא: `docs/report/plan1-graph-census.md`.
+הגרף שעליו נמדד הכול: **58,560** צמתים ו-**162,330** קשתות (147,534 דטרמיניסטיות, 14,796 מ-LLM). שער Plan 1: לא עבר — 12/13, נכשל: person_resolution_recall. המפקד המלא: `docs/report/plan1-graph-census.md`.
 
 | מדד | ערך |
 |---|---|
@@ -89,14 +89,14 @@
 
 ### שכבה 1 — איחוד ישויות
 
-מקור: `data/reports/resolve.json` · נמדד ב-2026-09-17T10:16:44+00:00 · sha `1ef67612`. **STALE** — נמדד ב-1ef67612, HEAD הוא 55598fe9.
+מקור: `data/reports/resolve.json` · נמדד ב-2026-09-17T10:16:44+00:00 · sha `1ef67612`. **STALE** — נמדד ב-1ef67612, HEAD הוא c2ce8094.
 
 P/R/F1 מול זוגות הזהב בלבד (יעד 0.85); מיזוגים שהזהב לא אומר עליהם דבר נספרים כ-`ungraded` ולא נכנסים לאף צד.
 
 | סוג | זוגות זהב | P | R | F1 | TP | FP | FN | לפני | אחרי | ungraded (index.json) | ungraded (resolve.json) |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | entity | 100 | 1.0 | 0.98 | 0.9899 | 49 | 0 | 1 | 9,237 | 9,064 | 176 | 176 |
-| person | 633 | 0.9801 | 0.7789 | 0.868 | 444 | 9 | 126 | 2,187 | 1,217 | 1,656 | 1,657 |
+| person | 633 | 0.9801 | 0.7789 | 0.868 | 444 | 9 | 126 | 2,187 | 1,217 | 1,657 | 1,657 |
 
 שתי עמודות ה-ungraded אינן שגיאה: המפקד סופר את המיזוגים דרך tier אחד פחות מ-`brain resolve eval`, ולכן הן נבדלות ב-1 עבור `person`. שתיהן מודפסות עם הקובץ שלהן כדי שאיש לא יצטט את אחת מהן כ״המספר״.
 
@@ -104,7 +104,7 @@ P/R/F1 מול זוגות הזהב בלבד (יעד 0.85); מיזוגים שהז�
 
 ### שכבה 1 — כיסוי provenance
 
-מקור: `data/reports/index.json` · נמדד ב-2026-09-17T10:16:44+00:00 · sha `1ef67612`. **STALE** — נמדד ב-1ef67612, HEAD הוא 55598fe9.
+מקור: `data/reports/index.json` · נמדד ב-2026-09-17T11:04:16+00:00 · sha `c2ce8094`.
 
 כלל הבעלות: conventions rule 3: every LLM-derived node and edge carries ['evidence_chunk_ids', 'batch_id', 'model', 'extracted_at'] with a non-empty evidence list. — 14,796 קשתות מ-LLM, 100.0% מהן עם provenance.
 
@@ -125,7 +125,7 @@ P/R/F1 מול זוגות הזהב בלבד (יעד 0.85); מיזוגים שהז�
 
 ### שכבה 1 — כיסוי קהילות
 
-מקור: `data/reports/index.json` · נמדד ב-2026-09-17T10:16:44+00:00 · sha `1ef67612`. **STALE** — נמדד ב-1ef67612, HEAD הוא 55598fe9.
+מקור: `data/reports/index.json` · נמדד ב-2026-09-17T11:04:16+00:00 · sha `c2ce8094`.
 
 **1,066** קהילות, מהן 124 מסוכמות (11.63%). 47.5% מהחברים נמצאים בקהילה מסוכמת — זה הכיסוי ש-S5 (חיפוש גלובלי) יכול לראות בכלל.
 
@@ -136,7 +136,7 @@ P/R/F1 מול זוגות הזהב בלבד (יעד 0.85); מיזוגים שהז�
 
 ## שכבה 2 — אחזור (דטרמיניסטי)
 
-מקור: `data/reports/eval_retrieval.json` · נמדד ב-2026-09-17T09:35:39+00:00 · sha `9dba7252`. **STALE** — נמדד ב-9dba7252, HEAD הוא 55598fe9.
+מקור: `data/reports/eval_retrieval.json` · נמדד ב-2026-09-17T09:35:39+00:00 · sha `9dba7252`. **STALE** — נמדד ב-9dba7252, HEAD הוא c2ce8094.
 
 מצב fixed, k=10, תקציב הקשר 4,000 tokens לכל אסטרטגיה, baseline = `s1r`. 32 שאלות; כיסוי 224/224. כל התא נמדד דטרמיניסטית מול `gold_evidence` — אין כאן שופט.
 
@@ -262,7 +262,7 @@ P/R/F1 מול זוגות הזהב בלבד (יעד 0.85); מיזוגים שהז�
 
 ## שכבה 3 — תשובות ושיפוט עיוור
 
-מקור: `data/reports/eval_answers.json` · נמדד ב-2026-09-17T10:58:21+00:00 · sha `55598fe9`. **STALE** — סעיפים ישנים: answers_build, answers_merge, judge_build.
+מקור: `data/reports/eval_answers.json` · נמדד ב-2026-09-17T10:58:21+00:00 · sha `55598fe9`. **STALE** — נמדד ב-55598fe9, HEAD הוא c2ce8094.
 
 שיפוט עיוור לפי רובריקה 0–2 על ארבעה מדדים (§5.4). 229 שיפוטים על 190 מקרים, 143 הכרעות pairwise על 120 זוגות, 0 נדחו. **המסלול של מצב A:** 184 מקרים נבנו, 184 תשובות התקבלו במיזוג, 13 נשמטו לפני השיפוט; 190 מקרים נשפטו בפועל (מצב A + מצב B יחד, שכן תשובות מצב B מוזגו בנפרד).
 
@@ -452,7 +452,7 @@ P/R/F1 מול זוגות הזהב בלבד (יעד 0.85); מיזוגים שהז�
 
 ## עדכון אינקרמנטלי (§5.5)
 
-מקור: `data/reports/incremental.json` · נמדד ב-2026-09-17T10:12:44+00:00 · sha `4cf28f9`. **STALE** — נמדד ב-4cf28f9, HEAD הוא 55598fe9.
+מקור: `data/reports/incremental.json` · נמדד ב-2026-09-17T10:12:44+00:00 · sha `4cf28f9`. **STALE** — נמדד ב-4cf28f9, HEAD הוא c2ce8094.
 
 פרוסה `incremental` ממקור `jira` מאז 2026-01-01: 10 פריטים, 39.65 שניות בסך הכול. שורה לכל שלב בפייפליין — שלב בלי מדידה נשאר בטבלה ומסומן, ולא נעלם.
 

@@ -1,12 +1,12 @@
 # מפקד הגרף — שער Plan 1
 
-נוצר אוטומטית ע"י `brain index` ב-2026-09-17T09:53:19+00:00 מתוך `data/reports/index.json`. **אין כאן מספר שהוקלד ביד** — כל טבלה נגזרת מה-JSON, כך שריצה חוזרת של השלב מעדכנת את המסמך במקום להשאיר אותו מיושן.
+נוצר אוטומטית ע"י `brain index` ב-2026-09-17T11:02:40+00:00 מתוך `data/reports/index.json`. **אין כאן מספר שהוקלד ביד** — כל טבלה נגזרת מה-JSON, כך שריצה חוזרת של השלב מעדכנת את המסמך במקום להשאיר אותו מיושן.
 
-**מצב השער:** לא עבר — 11/13 קריטריונים.
+**מצב השער:** לא עבר — 12/13 קריטריונים.
 
 ## שער היציאה של Plan 1
 
-מקור הקריטריונים: `docs/superpowers/plans/2026-09-03-plan1-corpus-to-graph.md, Task 9 'Plan 1 exit gate'`. עברו 11 מתוך 13. טבלת ה-roadmap מחזיקה טיוטה מוקדמת יותר של שני ספים (issues: 1,500, kips: 80), שנכתבה לפני שה-probe מדד את הקורפוס; שניהם מדווחים ולא נבחר אחד בשקט.
+מקור הקריטריונים: `docs/superpowers/plans/2026-09-03-plan1-corpus-to-graph.md, Task 9 'Plan 1 exit gate'`. עברו 12 מתוך 13. טבלת ה-roadmap מחזיקה טיוטה מוקדמת יותר של שני ספים (issues: 1,500, kips: 80), שנכתבה לפני שה-probe מדד את הקורפוס; שניהם מדווחים ולא נבחר אחד בשקט.
 
 | קריטריון | דרישה | ערך שנמדד | תוצאה |
 |---|---|---|---|
@@ -20,7 +20,7 @@
 | entity_resolution_recall | >= 0.85 | 0.98 | PASS |
 | llm_edges_without_provenance | == 0 | 0 | PASS |
 | all_indexes_online | every managed index ONLINE | 12/12 ONLINE | PASS |
-| make_smoke_green | `make smoke` exits 0 on this commit | STALE (PASS on 602f5bf) | STALE |
+| make_smoke_green | `make smoke` exits 0 on this commit | PASS | PASS |
 | lessons_01_09 | docs/lessons/01..09 present | 9/9 | PASS |
 | progress_complete | every Plan 1 row in progress.md is done | 11/11 rows done | PASS |
 
@@ -31,7 +31,7 @@
 - **kips_referenced_all_embedded** (PASS): the 'all referenced' half of the Task 9 criterion.
 - **person_resolution_recall** (FAIL): known and accepted by the planner (progress.md, 'הכרעות מתכנן — resolve'): the road to 0.85 is a wider adjudication band (~3,133 pairs, ~78 more batches), not a better judge. Reported as FAIL because the criterion is the criterion.
 - **llm_edges_without_provenance** (PASS): counted over 14796 LLM-derived edges plus the adjudicated SAME_AS links, read back from the graph.
-- **make_smoke_green** (STALE): the recorded result is from 2026-09-17T06:40:51+00:00, on commit 602f5bf; HEAD is now 81a2010. It says nothing about this tree — re-run `brain index --smoke`.
+- **make_smoke_green** (PASS): recorded 2026-09-17T11:04:16+00:00 on c2ce809 in 95.0s
 
 ## הקורפוס
 
@@ -194,7 +194,7 @@ tiers 1-2 are deterministic (name rules, cosine) and carry rule/score instead of
 
 ## איחוד ישויות (resolution)
 
-מקור: `data/reports/resolve.json` (נוצר 2026-09-17T09:48:08+00:00); יעד 0.85.
+מקור: `data/reports/resolve.json` (נוצר 2026-09-17T10:16:44+00:00); יעד 0.85.
 
 | סוג | צמתים לפני | צמתים אחרי | זהויות | זהויות/צומת | שיעור כפילות | זוגות זהב | P | R | F1 |
 |---|---|---|---|---|---|---|---|---|---|
@@ -346,7 +346,7 @@ Decision 5: an IndexMeta row advertises the LIVE count — what the index can ac
 
 ## `make smoke`
 
-**PASS** — יצא עם קוד 0 אחרי 45.7 שניות, ב-2026-09-17T06:40:51+00:00.
+**PASS** — יצא עם קוד 0 אחרי 95.0 שניות, ב-2026-09-17T11:04:16+00:00.
 
 ## ספי שפיות
 
