@@ -33,7 +33,7 @@
 | Task | סטטוס | commit | הערות |
 |---|---|---|---|
 | 1 ספריית אחזור S1/S2/S3/S6 + `brain ask` | ✅ | f7262d8 | 21 מודולים; 18/18 שאלות עם ראיה תקפה; HE↔EN 4/4 זהות ב-S3 (S1 hybrid 0.48 — הגרף נושא את ה-cross-lingual, לא ה-embedding); p50 S1 139 / S2 176 / S3 125 / S6 26 ms; `SEARCH` לא נתמך ב-2026.06 CE → `queryNodes`; S3 דירג לפי degree בלבד → תיקון ב-0472aae |
-| 2 Text2Cypher מוגן + reranker + בנק דוגמאות | 🟡 רץ (סוכן חדש אחרי 2 נפילות API) | — | guard/schema/examples/rerank/text2cypher על הדיסק; `brain doctor` מזהה reranker; cypher-author ענה 19/19 (cq12 `global` → יידחה מ-S4 בכוונה; פערי סכמה: אין sample values ל-source/kind/status, MOTIVATED_BY רק Entity→Entity) |
+| 2 Text2Cypher מוגן + reranker + בנק דוגמאות | ✅ | 602f5bf | guard: 42/42 נחסמו (deny-list 21 / allowlist 17 / static 4; `EXPLAIN CREATE` מתקבל ב-READ → שכבת plan-scan), 16/16 קריאות, timeout מוכח בשרת; בנק: author 19 → 15 validated → 13 accepted, 3 rationale נפלו על "Aggregation column contains implicit grouping" → batch 002 תיקן → **20 דוגמאות, 5/סוג, 20/20 רצות**; `sample_values` נוסף ל-`get_schema`; reranker bge-reranker-v2-m3: 19/19 top-1 השתנה (RRF ~0.002 מרווח), +1.6s p50, ברירת מחדל off; S4 מצב A על cq03/cq06 = similarity 1.0 (הבנק מכיל את השאלה) — Plan 3 מודד על שאלות חדשות; `merge` exit 1 כשיש rejects (קוסמטי — לתקן: exit 0 כשהבנק מלא) |
 | 3 Global search S5 + שרת MCP | ✅ | 0472aae, 342ba80 | 15 כלים + 2 resources + prompt על stdio ו-HTTP; p50 lookup 9 ms / local 260 / global 148; truncation 46→17 פריטים (10.1k→3.9k tokens) עם כל kind; S5 מאחד 22 זוגות member_hash; cq12 → "New async consumer…", "OAuth/TLS client auth…", "Streams error handling…"; `.mcp.json` + `brain-mcp` ב-compose (profile `mcp`, לא הורם — build ארוך); 1,565 בדיקות |
 | 4 שער: 19 שאלות במצב B | ⬜ brief `steps/12-plan2-gate.md` | | דורש סשן חדש של המשתמש (`.mcp.json` נטען בעלייה) |
 
@@ -56,6 +56,9 @@
 - Plan 1 שלב 09: `docs/lessons/08-communities.md`
 - Plan 1 שלב 10: `docs/lessons/09-index.md`
 - Plan 1 שלב 11: `docs/lessons/10-modularity.md`
+- Plan 2 Task 1: `docs/lessons/11-retrieval.md`
+- Plan 2 Task 2: `docs/lessons/12-text2cypher.md`
+- Plan 2 Task 3: `docs/lessons/13-mcp.md`
 
 ## ממצאים (findings)
 - (2026-09-06 21:11) שינה של המק + מכסת session של Opus הפילו 4 סוכנים באמצע; status.json לכל shard אפשר להמשיך מהנקודה. **אין למנוע שינה (caffeinate) על דעת המתכנן** — המשתמש הכריע (2026-09-07): שינה = השהיה, ממשיכים מ-status.json.
