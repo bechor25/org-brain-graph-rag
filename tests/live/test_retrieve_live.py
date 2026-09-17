@@ -420,6 +420,38 @@ def test_impact_on_a_component_walks_in_component(ctx):
     assert result.items[0].props["anchor_label"] == "Component"
 
 
+def test_impact_answers_the_same_question_the_same_way_twice(ctx):
+    """The file slice used to come off an unordered `collect`: same question, other files."""
+    first = impact(ctx, "clients", depth=2, log=False)
+    second = impact(ctx, "clients", depth=2, log=False)
+    assert [(i.kind, i.key) for i in first.items] == [(i.kind, i.key) for i in second.items]
+    assert first.items[0].props["files"] == second.items[0].props["files"]
+    assert first.cypher_used == second.cypher_used
+
+
+def test_a_covering_test_is_a_row_that_cites_its_execution(ctx):
+    """Not a `WorkItem`: `lookup` cannot resolve an XT- key, and a run is not a quote."""
+    result = impact(ctx, "KAFKA-100", depth=2, log=False)
+    tests = [i for i in result.items if i.props.get("category") == "test"]
+    assert tests, "XT-1 tests KAFKA-100"
+    assert {i.kind for i in tests} == {"Row"}
+    entries = [p for i in tests for p in i.provenance]
+    assert entries and all(p.source_kind == "row" for p in entries)
+    assert all(p.quote for p in entries), "a row cites what it recorded, or says it never ran"
+
+
+def test_a_derived_answer_never_calls_the_nodes_own_text_a_quote(ctx):
+    """S6 reads events, not prose. Its citations must say which kind of evidence they are."""
+    for result in (
+        status_at(ctx, "KAFKA-100", "2024-01-20", log=False),
+        timeline(ctx, "KAFKA-100", log=False),
+        assignees_over_time(ctx, "KAFKA-100", log=False),
+    ):
+        kinds = {p.source_kind for i in result.items for p in i.provenance}
+        assert kinds, "a derived answer with no provenance at all is not checkable"
+        assert kinds <= {"row", "node-text"}, kinds
+
+
 # -------------------------------------------------------------------------------- ask
 
 
