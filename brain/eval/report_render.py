@@ -449,8 +449,18 @@ def _na_cell(reasons: Sequence[str]) -> str:
     return _fmt(list(reasons[:NA_REASONS_SHOWN])) + f" · ועוד {rest} סיבות ב-JSON"
 
 
+#: The column, and the one line that has to sit under the table whenever it is empty.
+#: `agent_time_ms` can only ever be filled by mode B — mode A answers from a packed context
+#: and has no agent to time — and mode B was run per question without a stopwatch. An empty
+#: column with an unqualified header reads as "the agent took no time", which is the one
+#: thing it does not mean.
+AGENT_TIME_HEADER = "זמן סוכן (מצב B בלבד)"
+AGENT_TIME_NOTE = "זמן סוכן — לא נמדד ב-POC; ב-Plan 3 נמדד רק latency של כלים."
+
+
 def _cost_table(layer2: Mapping[str, Any]) -> list[str]:
-    return _table(
+    rows = list(layer2.get("cost") or [])
+    out = _table(
         [
             "אסטרטגיה",
             "ריצות",
@@ -461,7 +471,7 @@ def _cost_table(layer2: Mapping[str, Any]) -> list[str]:
             'tokens סה"כ',
             "tool calls",
             "Cypher",
-            "זמן סוכן",
+            AGENT_TIME_HEADER,
             "סיבות ל-n/a",
         ],
         [
@@ -478,9 +488,12 @@ def _cost_table(layer2: Mapping[str, Any]) -> list[str]:
                 r.get("agent_time_ms"),
                 _na_cell(r.get("na_reasons") or []),
             ]
-            for r in layer2.get("cost") or []
+            for r in rows
         ],
     )
+    if rows and all(r.get("agent_time_ms") in (None, "") for r in rows):
+        out += _p(f"> {AGENT_TIME_NOTE}")
+    return out
 
 
 def _cross_lingual(layer2: Mapping[str, Any]) -> list[str]:

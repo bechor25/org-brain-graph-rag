@@ -20,6 +20,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from brain.common import stamp
 from brain.graph.client import GraphClient
 from brain.graph.context import GraphContext
 from brain.harvest.base import utc_now_iso, write_json_atomic
@@ -204,19 +205,23 @@ def kip_entity_coverage(ctx: GraphContext, present: set[str]) -> dict[str, Any]:
 
 
 def head_sha(repo: Path) -> str | None:
-    """The commit `make smoke` was measured on, so a later report can spot a stale result."""
-    try:
-        proc = subprocess.run(  # noqa: S603 - fixed argv, no shell
-            ["git", "rev-parse", "HEAD"],
-            cwd=repo,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except OSError:
-        return None
-    sha = proc.stdout.strip()
-    return sha if proc.returncode == 0 and sha else None
+    """The commit `make smoke` was measured on, so a later report can spot a stale result.
+
+    `None` and not `"unknown"` outside a checkout: the gate *compares* this value, and a
+    placeholder that is not a sha would be compared as if it were one.
+    """
+    return stamp.head_sha(repo, default=None)
+
+
+def write_index_report(reports_dir: Path, report: dict[str, Any]) -> Path:
+    """Merge into `data/reports/index.json` and stamp the file with the write's commit.
+
+    The merge keeps what an earlier run recorded (`smoke`, above all); the stamp says which
+    tree the file as a whole now describes, which is what `brain eval report` reads.
+    """
+    path = Path(reports_dir) / REPORT_NAME
+    write_json_atomic(path, stamp.stamp_report(_merge_report(path, report)))
+    return path
 
 
 def run_smoke(repo_root: Path, echo: Callable[[str], None] = print) -> dict[str, Any]:
@@ -380,10 +385,7 @@ def run_index(
     census_path = docs_dir / "report" / CENSUS_NAME
     report["census_document"] = str(census_path)
     if write_report:
-        write_json_atomic(
-            reports_dir / REPORT_NAME, _merge_report(reports_dir / REPORT_NAME, report)
-        )
-        echo(f"report: {reports_dir / REPORT_NAME}")
+        echo(f"report: {write_index_report(reports_dir, report)}")
     if write_census:
         census_path.parent.mkdir(parents=True, exist_ok=True)
         census_path.write_text(render_mod.render(report), encoding="utf-8")

@@ -14,6 +14,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from brain.common.stamp import stamp_report
 from brain.harvest import jira as jira_mod
 from brain.harvest.base import HarvestResult, utc_now_iso, write_json_atomic
 from brain.harvest.registry import Registry, get_registry
@@ -166,7 +167,14 @@ def build_report(
 
 
 def write_report(path: Path, report: dict[str, Any]) -> Path:
-    write_json_atomic(path, report)
+    """Write the report, stamped with the commit and the time of *this* write.
+
+    `build_report` already set `generated_at`, and it is re-set here on purpose: the stamp
+    describes the file on disk, which is what `brain eval report` later compares against
+    HEAD. One writer, one stamp, no second convention about which of two times is the real
+    one.
+    """
+    write_json_atomic(path, stamp_report(report))
     return path
 
 

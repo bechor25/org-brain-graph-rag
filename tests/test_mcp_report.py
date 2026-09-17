@@ -128,7 +128,10 @@ def test_merge_survives_a_corrupt_report_instead_of_refusing_to_write(tmp_path: 
     rep.merge({"mcp": {"ok": True}}, target)
     written = json.loads(target.read_text(encoding="utf-8"))
     assert written["mcp"]["ok"] is True
-    assert set(written) == {"mcp", "sections"}, "nothing is invented to replace what was lost"
+    # The file's own stamp is not "invented": it describes this write, not the lost content.
+    assert set(written) == {"mcp", "sections", "sha", "generated_at"}, (
+        "nothing is invented to replace what was lost"
+    )
     assert written["mcp"] == {"ok": True}
 
 

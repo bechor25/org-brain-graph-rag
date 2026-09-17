@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from brain.common.stamp import stamp_report
 from brain.eval import paths as paths_mod
 from brain.eval.paths import QUESTION_TYPES, PathSample
 from brain.extract.build import (
@@ -816,8 +817,11 @@ def write_section(reports_dir: Path, section: str, payload: Mapping[str, Any]) -
         except (OSError, json.JSONDecodeError):
             report = {}
     report["step"] = "eval.questions"
-    report["generated_at"] = utc_now_iso()
     report[section] = dict(payload)
+    # `build`, `merge` and `gold_competency` all land here, so the stamp is the whole
+    # file's: the commit of the write that produced what is now on disk. Without it
+    # `brain eval report` can only print "בלי sha" for the question set.
+    stamp_report(report)
     Path(reports_dir).mkdir(parents=True, exist_ok=True)
     write_json_atomic(path, report)
     return path

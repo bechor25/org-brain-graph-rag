@@ -24,11 +24,11 @@ from __future__ import annotations
 
 import json
 import statistics
-import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from brain.common import stamp
 from brain.retrieve import competency
 from brain.retrieve.context import CHUNK_FULLTEXT, CHUNK_INDEX, ENTITY_INDEX, RetrieveContext
 from brain.retrieve.hybrid import search_chunks
@@ -48,18 +48,19 @@ EVIDENCE_TYPES: frozenset[str] = frozenset({"traceability", "impact", "rationale
 
 
 def head_sha() -> str:
-    """The commit these numbers were measured at, or `""` outside a checkout."""
-    try:
-        done = subprocess.run(  # noqa: S603 - a fixed argv, no shell
-            ["git", "rev-parse", "HEAD"],  # noqa: S607
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return ""
-    return done.stdout.strip() if done.returncode == 0 else ""
+    """The commit these numbers were measured at, or `""` outside a checkout.
+
+    `""` and not `"unknown"`: this value goes into the per-section index, where it is
+    *compared* against HEAD, and an empty string is what `_adopt` already writes for a
+    section that never stamped itself.
+    """
+    return stamp.head_sha(default="") or ""
+
+
+#: Top-level keys that describe the file rather than a section of it, so they are stamped
+#: once by `stamp_report` and never given a row in the `sections` index. A stamp that indexes
+#: itself reads as a stale sub-section called "sha", which is noise with a scary name.
+STAMP_KEYS: frozenset[str] = frozenset({"sha", "generated_at"})
 
 
 def merge_sections(
@@ -93,15 +94,19 @@ def merge_sections(
         existing = {}
 
     now = datetime.now(UTC).isoformat(timespec="seconds")
-    stamp = sha if sha is not None else head_sha()
+    stamp_sha = sha if sha is not None else head_sha()
     index: dict[str, Any] = dict(existing.pop("sections", {}) or {})
 
     existing.update(sections)
     for name in sections:
-        index[name] = {"sha": stamp, "generated_at": now, "stale": False}
+        if name in STAMP_KEYS:
+            continue
+        index[name] = {"sha": stamp_sha, "generated_at": now, "stale": False}
 
     head = head_sha()
     for name in list(existing):
+        if name in STAMP_KEYS:
+            continue
         entry = index.get(name) or _adopt(existing[name])
         entry["stale"] = bool(entry.get("sha") != head)
         index[name] = entry
@@ -111,6 +116,10 @@ def merge_sections(
     # not records with room for metadata, and three extra keys in them break every reader
     # that iterates the map. One index, every key, lists and scalars included.
     existing["sections"] = {name: index[name] for name in sorted(index) if name in existing}
+    # …and the file as a whole carries one more stamp, on top of the per-section index: the
+    # nine-input table in `brain eval report` reads `sha` at the top level, and a file that
+    # only stamps its parts renders as "בלי sha" — neither fresh nor stale.
+    stamp.stamp_report(existing, sha=stamp_sha or None, generated_at=now)
     tmp = target.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(existing, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     tmp.replace(target)

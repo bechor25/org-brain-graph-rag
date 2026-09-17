@@ -18,6 +18,8 @@ from tests.eval_report_helpers import (
     SHA,
     eval_answers,
     eval_retrieval,
+    index,
+    without_sha,
     write_agentic,
     write_reports,
 )
@@ -101,10 +103,23 @@ def test_same_commit(measured, sha, same):
 
 
 def test_an_input_without_a_sha_cannot_prove_it_is_fresh(tmp_path):
-    doc = build(tmp_path, only=["index"])
+    """The five writers stamp now, but a file written before they did is still on disk."""
+    doc = build(tmp_path, only=["index"], index=without_sha(index()))
     row = next(r for r in doc["inputs"] if r["key"] == "index")
     assert row["stale"] is None
     assert "sha" in row["note"]
+
+
+def test_a_stamped_input_is_fresh_or_stale_and_never_neither(tmp_path):
+    """Five inputs used to have no top-level `sha` at all; each writer stamps one now."""
+    doc = build(tmp_path)
+    five = ("harvest", "index", "resolve", "retrieve", "eval_questions")
+    rows = {r["key"]: r for r in doc["inputs"] if r["key"] in five}
+
+    assert sorted(rows) == sorted(five)
+    for key, row in rows.items():
+        assert row["sha"] == SHA, key
+        assert row["stale"] is False, key
 
 
 def test_a_stale_subsection_marks_the_file_even_at_head(tmp_path):

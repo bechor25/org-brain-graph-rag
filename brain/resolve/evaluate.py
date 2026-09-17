@@ -17,10 +17,12 @@ ledger rows that tier wrote.
 from __future__ import annotations
 
 import itertools
-from collections.abc import Callable, Sequence
+import json
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from brain.common.stamp import stamp_report
 from brain.harvest.base import utc_now_iso, write_json_atomic
 from brain.resolve.gold import GOLD_NAME, read_gold
 from brain.resolve.ledger import ResolutionLedger
@@ -204,15 +206,26 @@ def run_eval(
         }
     }
     if write_report:
-        path = reports_dir / REPORT_NAME
-        existing: dict[str, Any] = {}
-        if path.exists():
-            import json
-
-            try:
-                existing = json.loads(path.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
-                existing = {}
-        existing.update(section)
-        write_json_atomic(path, existing)
+        write_report_section(reports_dir, section)
     return section, 0
+
+
+def write_report_section(reports_dir: Path, section: Mapping[str, Any]) -> Path:
+    """Merge this section into `data/reports/resolve.json`, stamped at write time.
+
+    `brain resolve` and `brain resolve eval` both write this file, so the merge keeps the
+    other one's keys — and the stamp is re-taken on every write, because the freshest thing
+    the file can honestly claim is the commit of the write that produced it.
+    """
+    path = Path(reports_dir) / REPORT_NAME
+    existing: dict[str, Any] = {}
+    if path.exists():
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            existing = {}
+    if not isinstance(existing, dict):
+        existing = {}
+    existing.update(section)
+    write_json_atomic(path, stamp_report(existing))
+    return path

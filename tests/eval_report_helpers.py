@@ -26,12 +26,22 @@ def _stamps(keys, *, sha: str = SHA, at: str = AT, stale: tuple[str, ...] = ()) 
 
 
 # --------------------------------------------------------------------------- layers 0-1
+#
+# Every fixture carries the top-level `sha` its writer stamps (`brain/common/stamp.py`), so
+# the header table renders `עדכני`/`STALE` rather than the third state, "בלי sha", which
+# says only that nobody can tell. `without_sha()` builds the legacy shape on purpose.
+
+
+def without_sha(report: dict[str, Any]) -> dict[str, Any]:
+    """A report as the writers wrote it before they stamped — still on disk, still readable."""
+    return {key: value for key, value in report.items() if key != "sha"}
 
 
 def harvest() -> dict[str, Any]:
     return {
         "step": "harvest",
         "generated_at": AT,
+        "sha": SHA,
         "last_run": {"since": None},
         "sources": {
             "jira": {
@@ -55,6 +65,7 @@ def index() -> dict[str, Any]:
     return {
         "step": "index",
         "generated_at": AT,
+        "sha": SHA,
         "census_document": "docs/report/plan1-graph-census.md",
         "corpus": {
             "real_issues": 1416,
@@ -146,6 +157,7 @@ def resolve() -> dict[str, Any]:
     return {
         "step": "resolve",
         "generated_at": AT,
+        "sha": SHA,
         "eval": {
             "note": "gold pairs only",
             "entity": {
@@ -160,6 +172,7 @@ def retrieve() -> dict[str, Any]:
     return {
         "step": "plan2-task1-retrieval",
         "generated_at": AT,
+        "sha": SHA,
         "rerank": {
             "model": "BAAI/bge-reranker-v2-m3",
             "available": True,
@@ -189,6 +202,7 @@ def eval_questions() -> dict[str, Any]:
     return {
         "step": "eval.questions",
         "generated_at": AT,
+        "sha": SHA,
         "merge": {
             "questions_path": "data/eval/questions.jsonl",
             "sha256": "c" * 64,

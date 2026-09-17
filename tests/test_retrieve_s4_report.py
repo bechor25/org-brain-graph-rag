@@ -105,7 +105,8 @@ def test_merge_survives_a_corrupt_file(tmp_path) -> None:
     s4_report.merge({"guard": {"ok": True}}, path)
     written = json.loads(path.read_text(encoding="utf-8"))
     assert written["guard"] == {"ok": True}
-    assert set(written) == {"guard", "sections"}
+    # `sha`/`generated_at` are this write's own stamp, not recovered content.
+    assert set(written) == {"guard", "sections", "sha", "generated_at"}
 
 
 # ------------------------------------------------------------------ the claims

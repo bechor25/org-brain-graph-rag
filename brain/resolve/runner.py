@@ -19,6 +19,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
+from brain.common.stamp import stamp_report
 from brain.embed.client import OllamaEmbedder
 from brain.graph.client import GraphClient
 from brain.graph.context import GraphContext
@@ -877,7 +878,9 @@ def run_resolve(
         history=this_run,
     )
     if write_report:
-        write_json_atomic(report_path, report)
+        # The same stamp `brain resolve eval` puts on this file: whichever of the two wrote
+        # last, `data/reports/resolve.json` says which commit produced what is in it.
+        write_json_atomic(report_path, stamp_report(report))
     for line in warnings:
         echo(f"[WARN] {line}")
     echo(f"resolve: {total}s" + ("  [dry-run: nothing written]" if dry_run else ""))

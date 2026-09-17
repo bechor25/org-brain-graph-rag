@@ -22,8 +22,10 @@ from tests.eval_report_helpers import (
     SHA,
     eval_answers,
     eval_retrieval,
+    harvest,
     incremental,
     index,
+    without_sha,
     write_agentic,
     write_reports,
 )
@@ -118,6 +120,50 @@ def test_a_stale_section_is_marked_where_its_numbers_are_printed(tmp_path):
     text = page(tmp_path, eval_retrieval=eval_retrieval(sha="b" * 40))
     layer2 = text.split("## שכבה 2")[1].split("## שכבה 3")[0]
     assert "**STALE**" in layer2
+
+
+def test_the_five_unstamped_inputs_now_render_as_fresh_or_stale(tmp_path):
+    """`harvest`/`index`/`resolve`/`retrieve`/`eval_questions` used to print "בלי sha".
+
+    That third state is neither of the two the rule defines: it says only that the file
+    cannot say which tree produced it. Once each writer stamps, the header table has a
+    verdict for all nine inputs and the word disappears from the page.
+    """
+    text = page(tmp_path)
+    header = text.split("## סט השאלות")[0]
+    for name in ("harvest", "index", "resolve", "retrieve", "eval_questions"):
+        row = next(ln for ln in header.splitlines() if f"`data/reports/{name}.json`" in ln)
+        assert "בלי sha" not in row, row
+        assert "עדכני" in row, row
+
+
+def test_an_input_written_before_stamping_still_renders_its_old_state(tmp_path):
+    """The sentence stays in the renderer for the files already on disk without a stamp."""
+    text = page(tmp_path, harvest=without_sha(harvest()))
+    assert "בלי sha" in text
+
+
+def test_the_agent_time_column_says_which_mode_could_ever_fill_it(tmp_path):
+    """Mode A has no agent to time and mode B was not timed per question.
+
+    An empty column headed "זמן סוכן" reads as "the agent took no time", which is the one
+    thing it does not mean — so the header names the only mode that could fill it and a line
+    under the table says it was not measured.
+    """
+    text = page(tmp_path)
+    layer2 = text.split("## שכבה 2")[1].split("## שכבה 3")[0]
+    assert "זמן סוכן (מצב B בלבד)" in layer2
+    assert "לא נמדד ב-POC; ב-Plan 3 נמדד רק latency של כלים" in layer2
+
+
+def test_the_not_measured_line_is_dropped_once_something_measures_it(tmp_path):
+    report = eval_retrieval()
+    for row in report["cost"].values():
+        row["agent_time_ms"] = 1234
+    text = page(tmp_path, eval_retrieval=report)
+    layer2 = text.split("## שכבה 2")[1].split("## שכבה 3")[0]
+    assert "1,234" in layer2
+    assert "לא נמדד ב-POC" not in layer2
 
 
 def test_a_present_file_missing_a_section_does_not_say_the_file_is_missing(tmp_path):

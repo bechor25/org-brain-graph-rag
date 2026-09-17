@@ -28,11 +28,11 @@ from __future__ import annotations
 
 import json
 import re
-import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from brain.common import stamp
 from brain.retrieve import cypher_guard as guard
 from brain.retrieve.keys import find_keys
 from brain.retrieve.schema import compact_schema, get_schema
@@ -79,22 +79,12 @@ def head_sha() -> str | None:
     """The commit a measurement was taken on.
 
     Plan 1's closing review made this a convention: a number carried forward without the
-    sha it was measured on is STALE, not evidence. `brain index` keeps its own copy of this
-    for `make smoke`; importing it here would drag the whole index step into a retrieval
-    import.
+    sha it was measured on is STALE, not evidence. The git call itself lives in
+    `brain/common/stamp.py` — stdlib only, so importing it drags in no pipeline step; this
+    is the repo it asks about, which is the checkout the bank was validated against and not
+    whatever directory the CLI happened to be run from.
     """
-    try:
-        proc = subprocess.run(  # noqa: S603 - fixed argv, no shell
-            ["git", "rev-parse", "HEAD"],  # noqa: S607
-            cwd=Path(__file__).resolve().parents[2],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except OSError:
-        return None
-    sha = proc.stdout.strip()
-    return sha if proc.returncode == 0 and sha else None
+    return stamp.head_sha(Path(__file__).resolve().parents[2], default=None)
 
 
 #: One hand-written, live-verified example per type. Written against the real graph, with
