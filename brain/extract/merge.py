@@ -154,6 +154,17 @@ class Plan:
         corpus, and `brain reset --synthetic` must leave it standing. The conservative
         direction is deliberate: a kept entity is visible and can be deleted later, a
         deleted one takes its provenance with it.
+
+        Note that this is derived from *this run's* chunks, not from the union — unlike
+        the provenance lists, which :func:`brain.extract.graph.union_provenance` merges
+        onto what the node already carries. A partial merge (`--slice`) whose chunks were
+        all synthetic would therefore restamp a base entity with real evidence as
+        `synthetic = true`, and `brain reset --synthetic` would then delete it. It is left
+        this way on purpose (planner decision, 2026-09-17): the path is unreachable —
+        `brain/extract/select.py` excludes synthetic work items from the selection and
+        documents are never synthetic, so no extract batch ever cites a synthetic chunk —
+        and `brain.extract.graph.stamp_entity_synthetic` is the source of truth for this
+        flag regardless, re-deriving it from the evidence chunks the graph actually holds.
         """
         synthetic = set(synthetic_chunks)
         rows = []
