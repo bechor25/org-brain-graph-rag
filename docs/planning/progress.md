@@ -82,6 +82,7 @@
 - Plan 2 Task 2: `docs/lessons/12-text2cypher.md`
 - Plan 2 Task 3: `docs/lessons/13-mcp.md`
 - Plan 3 Tasks 1–2: `docs/lessons/14-eval-questions-and-matrix.md`
+- Plan 2 Task 4: `docs/lessons/15-agentic-gate.md`
 
 ## ממצאים (findings)
 - (2026-09-06 21:11) שינה של המק + מכסת session של Opus הפילו 4 סוכנים באמצע; status.json לכל shard אפשר להמשיך מהנקודה. **אין למנוע שינה (caffeinate) על דעת המתכנן** — המשתמש הכריע (2026-09-07): שינה = השהיה, ממשיכים מ-status.json.
