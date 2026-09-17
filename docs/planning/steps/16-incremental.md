@@ -65,12 +65,14 @@ uv run brain reset --slice incremental --yes      # מוחק
 מה נמחק: רשומות עם `slice: "incremental"` מחמשת הקבצים הקנוניים, הצמתים שלהן, ה-chunks שלהן, ישויות שכל chunk-הראיה שלהן בפרוסה הזאת, ושורות ledger שמצביעות על זהות שנמחקה.
 מה **נשאר**, והמניפסט אומר את זה: `data/raw/jira/since-2026-01-01/` (ריצת `brain canon` תחזיר את הרשומות — צריך `--data` כדי למחוק גם את הגלם) וצמתי `Community` (החברות בהן השתנתה, ורק `brain communities build` יודע להחזיר אותה).
 
+**איפה זה מוכח:** השורה עם `--yes` **לא רצה על הגרף האמיתי**. היא מוכחת ב-`tests/live/test_reset_live.py` במרחב ה-labels `_ResetTest`, על fixture שיש בו corpus בסיס + פרוסה אינקרמנטלית אמיתית (רשומה קנונית עם `slice: "incremental"` שנטענת דרך `run_load`, ה-chunks שלה וישות שכל ראיותיה בפרוסה). על הגרף האמיתי ה-rollback נמדד ב-**dry run בלבד** (26 ישויות), וזה מה שדווח.
+
 ## קריטריוני קבלה
 - [ ] 10 פריטים בגרף עם provenance מלא; `keys` בדוח = 10 המפתחות של הפרוב.
 - [ ] 0 כפילויות: ריצה שנייה של canon = אותם בתים, ריצה שנייה של load = 0 צמתים חדשים.
 - [ ] `data/reports/incremental.json` עובר את `validate_incremental()` — שורה לכל אחד מ-11 השלבים עם זמן, `communities.member_hash_changed`, 5 שאלות.
 - [ ] ≥4/5 שאלות עם ציטוט תקף.
-- [ ] `brain reset --slice incremental --yes` מחזיר את המפקד למספרים של `index.before-incremental.json` (פרט לקהילות, שמסתדרות ב-`communities build` נוסף).
+- [ ] rollback: **מוכח ב-`_ResetTest` עם fixture של slice, לא בהרצה על הגרף האמיתי** — `test_a_slice_reset_restores_the_exact_base_census` מראה ש-`reset --slice incremental --yes` על גרף בסיס + פרוסה אינקרמנטלית מחזיר את המפקד **המדויק** של הבסיס: צמתים לפי label **וקשתות לפי type** (המדידה: הפרוסה הוסיפה 8 צמתים ו-15 קשתות ב-9 טיפוסים; אחרי ה-reset שני החצאים זהים לבסיס — 44 צמתים ב-16 labels, 76 קשתות ב-21 טיפוסים). `test_the_increment_moves_both_halves_of_the_census` הוא השומר שלו, ו-`test_the_slice_reset_names_what_it_deleted_and_keeps_the_touched_entity` מוודא שההחזרה באה ממחיקת הפרוסה ולא מטעינה מחדש של הבסיס. **לעולם לא להריץ `--yes` על הגרף האמיתי**; שם ה-rollback נמדד ב-dry-run בלבד (26 ישויות), וזה המספר שמדווח. `Community` נשאר מחוץ להשוואה — הוא נבנה מחדש ב-`communities build`.
 - [ ] `make check` ירוק; `make smoke` רץ פעם אחת בסוף, ע"י המתכנן, כשאף סוכן לא נוגע ב-DB.
 
 ## מה תלמד בשלב הזה

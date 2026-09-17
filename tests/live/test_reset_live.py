@@ -20,7 +20,7 @@ from brain.graph.client import GraphClient
 from brain.graph.context import GraphContext
 from brain.graph.runner import run_load, wipe
 from brain.graph.schema import UNIQUE_KEYS, drop_schema
-from brain.reset import census, wipe_graph, wipe_slice, wipe_synthetic
+from brain.reset import census, run_reset, wipe_graph, wipe_slice, wipe_synthetic
 
 pytestmark = pytest.mark.live
 
@@ -367,3 +367,185 @@ def test_the_slice_reset_leaves_the_base_corpus_loadable(ctx, sliced, tmp_path_f
     # from the files too, so the graph it rebuilds is the one the reset left behind.
     assert census(ctx)["WorkItem"] == after["WorkItem"]
     assert by_slice(ctx, "WorkItem").get("incremental", 0) == 0
+
+
+# ----------------------------------- the rollback criterion (Plan 3 Task 4, decision 7)
+
+#: The increment's one new issue. It links to a base work item, names base people and a
+#: base component, and carries a changelog — so it arrives with edges into the base corpus
+#: and `StatusChange` nodes of its own, which is what makes "restores the census" a claim
+#: about more than a single node.
+ROLLBACK_KEY = "KAFKA-103"
+QUIET = lambda _m: None  # noqa: E731
+
+
+def edges_by_type(ctx: GraphContext) -> dict[str, int]:
+    """Every edge with an endpoint in this namespace, counted by type.
+
+    `census()` counts nodes only, and a slice reset that left an edge standing would pass
+    a node-only comparison. Relationship types are not namespaced, so the label prefix is
+    the only thing that keeps this fixture's edges apart from the real graph's.
+    """
+    rows = ctx.read(
+        "MATCH (a)-[r]->(b) WHERE any(l IN labels(a) WHERE l STARTS WITH $p) "
+        "OR any(l IN labels(b) WHERE l STARTS WITH $p) "
+        "RETURN type(r) AS type, count(r) AS c ORDER BY type",
+        p=PREFIX,
+    )
+    return {r["type"]: r["c"] for r in rows}
+
+
+def full_census(ctx: GraphContext) -> dict[str, dict[str, int]]:
+    """Nodes by label and edges by type — the two halves the acceptance line is about."""
+    return {"nodes": census(ctx), "edges": edges_by_type(ctx)}
+
+
+def chunk_every_workitem(ctx: GraphContext) -> None:
+    """One chunk per work item, carrying its parent's slice — what `brain chunk` writes.
+
+    Idempotent, so running it again after the increment loads adds the increment's chunk
+    and leaves the base ones exactly as they were.
+    """
+    for row in ctx.read(
+        f"MATCH (w:{ctx.label('WorkItem')}) RETURN w.key AS key, w.slice AS slice ORDER BY key"
+    ):
+        ctx.write(
+            f"MATCH (w:{ctx.label('WorkItem')} {{key: $key}})\n"
+            f"MERGE (c:{ctx.label('Chunk')} {{id: $id}}) SET c.slice = $slice\n"
+            "MERGE (w)-[:HAS_CHUNK]->(c)",
+            key=row["key"],
+            id=f"chunk-{row['key']}",
+            slice=row["slice"],
+        )
+
+
+def put_entity(ctx: GraphContext, entity_id: str, chunk_ids: list[str]) -> None:
+    ctx.write(
+        f"MERGE (e:{ctx.label('Entity')} {{id: $id}}) SET e.evidence_chunk_ids = $ids",
+        id=entity_id,
+        ids=chunk_ids,
+    )
+
+
+def append_incremental_record(canonical: Path) -> None:
+    """Write the `--since` pull's new issue into the canonical file `brain load` reads."""
+    path = canonical / "workitems.jsonl"
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+    base = next(r for r in rows if r["key"] == "KAFKA-100")
+    rows.append(
+        {
+            **base,
+            "id": f"jira:{ROLLBACK_KEY}",
+            "key": ROLLBACK_KEY,
+            "title": "Follow-up found by the since-pull",
+            "description": "Follow-up work the incremental pull brought in.",
+            "slice": "incremental",
+            "links": [{"type": "blocker", "target": "KAFKA-100", "direction": "out"}],
+        }
+    )
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+
+
+@pytest.fixture
+def rollback(ctx, canonical, loaded, tmp_path_factory):
+    """A base graph, measured, then an increment loaded on top of it.
+
+    The base half is chunked and extracted first and measured *before* anything
+    incremental exists, so the number the reset is compared against is a real earlier
+    state of this graph rather than a recomputation after the fact.
+    """
+    chunk_every_workitem(ctx)
+    put_entity(ctx, "Feature|base", ["chunk-KAFKA-100"])
+    put_entity(ctx, "Feature|touched", ["chunk-KAFKA-101"])
+    before = full_census(ctx)
+
+    append_incremental_record(canonical)
+    report, code = run_load(
+        client=ctx.client,
+        canonical_dir=canonical,
+        reports_dir=tmp_path_factory.mktemp("reports"),
+        prefix=PREFIX,
+        write_report=False,
+        echo=QUIET,
+    )
+    assert code == 0, [c for c in report["checks"] if not c["ok"]]
+    chunk_every_workitem(ctx)
+    put_entity(ctx, "Feature|new", [f"chunk-{ROLLBACK_KEY}"])
+    # the increment also cites an entity the base corpus already had: it must survive
+    put_entity(ctx, "Feature|touched", ["chunk-KAFKA-101", f"chunk-{ROLLBACK_KEY}"])
+    try:
+        yield {"canonical": canonical, "before": before}
+    finally:
+        for label in ("Chunk", "Entity"):
+            ctx.write(f"MATCH (n:{ctx.label(label)}) DETACH DELETE n")
+
+
+def reset_slice(ctx, canonical: Path, tmp_path: Path) -> tuple[dict, int]:
+    """`brain reset --slice incremental --yes`, one layer under the CLI.
+
+    The CLI builds a `GraphContext` with no prefix — the real graph — so the command
+    itself cannot be pointed at a scratch namespace. Everything below `typer` is what
+    this calls, with `confirmed=True` being exactly what `--yes` sets.
+    """
+    return run_reset(
+        data_dir=tmp_path / "data",
+        canonical_dir=canonical,
+        batches_dir=tmp_path / "batches",
+        reports_dir=tmp_path / "reports",
+        ctx=ctx,
+        slice_="incremental",
+        confirmed=True,
+        write_report=False,
+        echo=QUIET,
+    )
+
+
+def test_the_increment_moves_both_halves_of_the_census(ctx, rollback):
+    """The guard that keeps the next test honest: a reset that restored nothing would also
+    pass if the increment had never changed the graph."""
+    now = full_census(ctx)
+    before = rollback["before"]
+
+    assert now["nodes"]["WorkItem"] == before["nodes"]["WorkItem"] + 1
+    assert now["nodes"]["StatusChange"] > before["nodes"]["StatusChange"]
+    assert now["nodes"]["Chunk"] == before["nodes"]["Chunk"] + 1
+    assert now["nodes"]["Entity"] == before["nodes"]["Entity"] + 1
+    assert any(now["edges"][t] > before["edges"].get(t, 0) for t in now["edges"])
+
+
+def test_a_slice_reset_restores_the_exact_base_census(ctx, rollback, tmp_path):
+    """The acceptance line of step 16, proven here instead of on the real graph.
+
+    Nodes by label *and* edges by type: the increment arrives with edges into the base
+    corpus (`IN_COMPONENT` to a base component, a link to a base work item, `REPORTED_BY`
+    to a base person), and those are the ones a sweep that only matched on `n.slice` would
+    leave dangling.
+    """
+    before = rollback["before"]
+
+    report, code = reset_slice(ctx, rollback["canonical"], tmp_path)
+
+    assert code == 0 and report["applied"] is True
+    assert full_census(ctx) == before
+
+
+def test_the_slice_reset_names_what_it_deleted_and_keeps_the_touched_entity(
+    ctx, rollback, tmp_path
+):
+    """Restoring the census is not enough on its own — deleting the base corpus and
+    reloading it would do that too. This is the other half: it deleted the increment."""
+    report, _code = reset_slice(ctx, rollback["canonical"], tmp_path)
+    manifest = report["slice"]
+
+    assert manifest["nodes_by_label"]["WorkItem"] == 1
+    assert manifest["nodes_by_label"]["Chunk"] == 1
+    assert manifest["entities_only_in_slice"] == 1
+    assert manifest["entity_ids"] == ["Feature|new"]
+    assert manifest["records"]["workitems"] == 1
+    ids = [
+        r["id"] for r in ctx.read(f"MATCH (e:{ctx.label('Entity')}) RETURN e.id AS id ORDER BY id")
+    ]
+    assert ids == ["Feature|base", "Feature|touched"]
+    assert not ctx.read(
+        f"MATCH (w:{ctx.label('WorkItem')} {{key: $key}}) RETURN w", key=ROLLBACK_KEY
+    )
