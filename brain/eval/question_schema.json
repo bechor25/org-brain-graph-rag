@@ -1,0 +1,201 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://org-brain.local/brain/eval/question_schema.json",
+  "title": "evaluation question batch output (NNN.out.json) and the merged row",
+  "description": "Two contracts in one file because they are one shape at two moments. `#` (the top level) is what `question-forger` writes next to its `.in.json`: an envelope plus `questions[]`, each of which must be derivable from ONE path in that input. `#/$defs/row` is what `brain eval questions merge` appends to data/eval/questions.jsonl — the same fields plus the bookkeeping the merge adds (`origin`, `batch_id`, `shape`) and one relaxation: a competency question carried over from Plan 2 has no gold yet, so `gold_source` may be `pending` and `gold_answer` may be null. Four rules merge enforces that a schema cannot state: every `source_path_id` must be a path in the matching `.in.json`; every `gold_evidence` entry must exist in the graph (or, when prefixed `truth:`, in data/canonical/synthetic_truth.json); a key on the ANSWER side of the path must not appear verbatim in the question (leakage); and the accepted set must hit the per-type/per-language plan the build wrote into MANIFEST.json.",
+  "type": "object",
+  "required": ["batch_id", "questions"],
+  "additionalProperties": false,
+  "properties": {
+    "batch_id": {
+      "type": "string",
+      "description": "Exactly the `batch_id` of the .in.json this answers, e.g. \"shard-01/002\".",
+      "pattern": "^shard-[0-9]{2}/[0-9]{3}$"
+    },
+    "questions": {
+      "type": "array",
+      "description": "One entry per `asks[]` slot in the input, in any order. A path you cannot write a fair question about is a `failed` entry in status.json (or a substitution from a `spare: true` path of the same type), never a silently missing question.",
+      "items": { "$ref": "#/$defs/question" },
+      "minItems": 1,
+      "maxItems": 60
+    },
+    "notes": {
+      "type": "array",
+      "description": "Free-text remarks for the planner — a path whose snippets contradict its edges, a shape that produced only unfair questions. Never a place to hide a rule you could not follow.",
+      "items": { "type": "string", "maxLength": 500 },
+      "maxItems": 50
+    }
+  },
+  "$defs": {
+    "type": {
+      "type": "string",
+      "description": "The question type (spec §5.1). Copied from the path's `question_type`; a question of a different type than the path it came from unbalances the set.",
+      "enum": ["traceability", "impact", "rationale", "global", "temporal"]
+    },
+    "lang": {
+      "type": "string",
+      "description": "The language the question is written in. Identifiers (KAFKA-…, KIP-…, XT-…, component names, versions) stay untranslated in both.",
+      "enum": ["en", "he"]
+    },
+    "gold_source": {
+      "type": "string",
+      "description": "Where the gold answer comes from, which is what makes the leakage guard meaningful. `graph` = a fact the extracted graph states; `text` = a fact the raw chunk text states, so S1 can reach it without the graph; `truth` = data/canonical/synthetic_truth.json, the known truth of the synthetic Xray/ADO layer. `pending` is reserved for the merge, for a competency question whose gold the planner still owes.",
+      "enum": ["graph", "truth", "text"]
+    },
+    "strategy": {
+      "type": "string",
+      "description": "The strategy you would expect to win this question (spec §4): s1 hybrid, s2 graph-enhanced vector, s3 entity-anchored local, s4 guarded Text2Cypher, s5 global community search, s6 temporal tools. A hint for the run matrix, never a restriction on it — mode A runs every strategy on every question anyway.",
+      "enum": ["s1", "s2", "s3", "s4", "s5", "s6"]
+    },
+    "evidence_id": {
+      "type": "string",
+      "description": "One citable key from the path: a node key exactly as the input spells it (`KAFKA-14649`, `KIP-848`, `XT-10007`, a 40-hex commit sha, `Decision|…`, `L0-6`), a chunk id from `snippets[].chunk_id`, or `truth:<section>:<index>` for a synthetic-truth excerpt offered in `truth[]`. Never a key you did not see in this batch.",
+      "minLength": 1,
+      "maxLength": 300
+    },
+    "question": {
+      "type": "object",
+      "required": [
+        "id",
+        "type",
+        "lang",
+        "question",
+        "gold_answer",
+        "gold_evidence",
+        "difficulty",
+        "expected_strategy",
+        "source_path_id",
+        "gold_source"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "`q` + three digits, unique across the whole set, e.g. \"q007\". The build reserves a disjoint id range per shard in the input's `id_range`; use ids from it so two shards never collide.",
+          "pattern": "^q[0-9]{3}$"
+        },
+        "type": { "$ref": "#/$defs/type" },
+        "lang": { "$ref": "#/$defs/lang" },
+        "question": {
+          "type": "string",
+          "description": "What a real engineer would type. It may name the path's `anchors[]`; it must NOT contain any key listed in the path's `answers[]`, and must not restate the gold answer — merge rejects both.",
+          "minLength": 12,
+          "maxLength": 400,
+          "pattern": "\\S"
+        },
+        "gold_answer": {
+          "type": "string",
+          "description": "The correct answer in one or two sentences, in the SAME language as the question, naming the keys a right answer must contain. Derivable from this path alone.",
+          "minLength": 2,
+          "maxLength": 1200,
+          "pattern": "\\S"
+        },
+        "gold_evidence": {
+          "type": "array",
+          "description": "Every key or chunk id a correct answer has to rest on — this is what layer 2 measures recall against, so a key that is merely related does not belong here.",
+          "items": { "$ref": "#/$defs/evidence_id" },
+          "minItems": 1,
+          "maxItems": 20,
+          "uniqueItems": true
+        },
+        "difficulty": {
+          "type": "integer",
+          "description": "1 = one hop from the anchor, 2 = two hops or a join, 3 = three or more hops, an aggregation, or a whole-corpus theme.",
+          "minimum": 1,
+          "maximum": 3
+        },
+        "expected_strategy": { "$ref": "#/$defs/strategy" },
+        "source_path_id": {
+          "type": "string",
+          "description": "The `path_id` of the path in this batch the question came from, copied exactly.",
+          "minLength": 3,
+          "maxLength": 200
+        },
+        "gold_source": { "$ref": "#/$defs/gold_source" },
+        "notes": {
+          "type": "string",
+          "description": "Optional: why this question is fair, or what about the path made it hard.",
+          "maxLength": 500
+        }
+      }
+    },
+    "row": {
+      "type": "object",
+      "description": "One line of data/eval/questions.jsonl. Everything `question` requires, with gold allowed to be pending for the 19 competency questions carried over from Plan 2, plus what the merge stamps.",
+      "required": [
+        "id",
+        "type",
+        "lang",
+        "question",
+        "gold_answer",
+        "gold_evidence",
+        "difficulty",
+        "expected_strategy",
+        "source_path_id",
+        "gold_source",
+        "origin"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "`q###` for a forged question, `cq##` for a competency question.",
+          "pattern": "^(q[0-9]{3}|cq[0-9]{2})$"
+        },
+        "type": { "$ref": "#/$defs/type" },
+        "lang": { "$ref": "#/$defs/lang" },
+        "question": { "type": "string", "minLength": 8, "maxLength": 400, "pattern": "\\S" },
+        "gold_answer": {
+          "type": ["string", "null"],
+          "description": "null only while `gold_source` is `pending`.",
+          "maxLength": 1200
+        },
+        "gold_evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidence_id" },
+          "maxItems": 20,
+          "uniqueItems": true
+        },
+        "difficulty": { "type": "integer", "minimum": 1, "maximum": 3 },
+        "expected_strategy": { "$ref": "#/$defs/strategy" },
+        "source_path_id": { "type": ["string", "null"], "maxLength": 200 },
+        "gold_source": {
+          "type": "string",
+          "enum": ["graph", "truth", "text", "pending"]
+        },
+        "origin": {
+          "type": "string",
+          "description": "`forged` = written by question-forger from a sampled path; `competency` = one of the 19 questions brain competency built from the graph in Plan 2.",
+          "enum": ["forged", "competency"]
+        },
+        "difficulty_source": {
+          "type": "string",
+          "description": "`forged` = the agent judged it from the path; `type_default` = the merge filled the type's default because a competency question has no path to count hops on.",
+          "enum": ["forged", "type_default"]
+        },
+        "shape": {
+          "type": ["string", "null"],
+          "description": "The path shape the question came from (`brain/eval/paths.py`), or null for a competency question.",
+          "maxLength": 80
+        },
+        "batch_id": {
+          "type": ["string", "null"],
+          "description": "The batch the question arrived in, or null for a competency question.",
+          "maxLength": 40
+        },
+        "pair": {
+          "type": "string",
+          "description": "Competency only: the tag that ties an English row to its Hebrew twin for the cross-lingual comparison.",
+          "maxLength": 40
+        },
+        "anchors": {
+          "type": "array",
+          "description": "The keys the question is allowed to name — its subject, not its answer.",
+          "items": { "type": "string", "maxLength": 300 },
+          "maxItems": 20
+        },
+        "notes": { "type": "string", "maxLength": 500 }
+      }
+    }
+  }
+}

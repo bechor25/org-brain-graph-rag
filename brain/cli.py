@@ -11,6 +11,8 @@ from pathlib import Path
 
 import typer
 
+from brain.eval.cli_questions import questions_app
+
 app = typer.Typer(
     help="Organizational brain — Graph RAG POC CLI",
     no_args_is_help=True,
@@ -1204,6 +1206,11 @@ eval_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(eval_app, name="eval")
+# Plan 3 Task 1 keeps its commands in a sub-app of its own, so two agents growing
+# `brain eval` touch one line each here instead of the same block. `cli_questions` imports
+# nothing heavier than typer at module level, so `brain --help` stays free of the
+# retrieval stack.
+eval_app.add_typer(questions_app, name="questions")
 
 
 @eval_app.command("cite-check")
