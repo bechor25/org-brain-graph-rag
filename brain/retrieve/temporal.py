@@ -128,7 +128,7 @@ def status_at(
                 "changes_after": len(after),
                 "synthetic": row["synthetic"],
             },
-            provenance=[Provenance(source=f"StatusChange of {key}")],
+            provenance=[Provenance(source=f"StatusChange of {key}", source_kind="row")],
         )
     )
     evidence, evidence_cypher = own_chunks(ctx, [key])
@@ -222,7 +222,7 @@ def timeline(
                     "at": row["at"],
                     "by": row["by"],
                 },
-                provenance=[Provenance(source=f"StatusChange of {key}")],
+                provenance=[Provenance(source=f"StatusChange of {key}", source_kind="row")],
             )
         )
     return finish(
@@ -292,6 +292,7 @@ def changes_between(
             item.provenance = [
                 Provenance(
                     source=sha,
+                    source_kind="node-text",
                     quote=clip(row["commit_messages"][0] if row["commit_messages"] else "", 160),
                 )
                 for sha in row["commits"][:2]
@@ -369,7 +370,7 @@ def assignees_over_time(
                     "source": row["source"],
                 },
                 provenance=[
-                    Provenance(source=f"ASSIGNED_TO interval on {key}"),
+                    Provenance(source=f"ASSIGNED_TO interval on {key}", source_kind="row"),
                     *provenance,
                 ],
             )

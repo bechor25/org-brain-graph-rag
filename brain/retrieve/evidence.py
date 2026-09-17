@@ -9,6 +9,11 @@ description chunk of the issue the answer is about.
 `kind = 'description'` first, then anything, and orphans never: an orphaned chunk is text
 that has since been rewritten, so citing it would point a reader at a page that no longer
 says that.
+
+Every entry this module makes is stamped `source_kind="node-text"`, and that stamp is the
+honest half of the trick: the answer is not backed by anyone writing about this node, it is
+backed by the node describing itself. Task 4's cite-check counts the two apart, so an answer
+built entirely out of self-description cannot pass as an answer built out of evidence.
 """
 
 from __future__ import annotations
@@ -50,9 +55,19 @@ def own_chunks(
     return {r["key"]: r["chunks"] for r in rows}, cypher
 
 
-def as_provenance(chunks: list[dict[str, Any]], source: str | None = None) -> list[Provenance]:
+def as_provenance(
+    chunks: list[dict[str, Any]],
+    source: str | None = None,
+    source_kind: str = "node-text",
+) -> list[Provenance]:
+    """The node's own chunks as provenance. `node-text` by default — see the module docstring."""
     return [
-        Provenance(chunk_id=c["id"], quote=(c.get("text") or "")[:280], source=source)
+        Provenance(
+            chunk_id=c["id"],
+            quote=(c.get("text") or "")[:280],
+            source=source,
+            source_kind=source_kind,
+        )
         for c in chunks
         if c.get("id")
     ]

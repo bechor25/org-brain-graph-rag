@@ -158,8 +158,15 @@ def lookup(
     item.props["neighbors"] = neighbours
     item.props["neighbor_count"] = total
     item.props["neighbor_types"] = sorted({g["rel"] for g in groups})
+    # A `MENTIONS.quote` is the corpus writing *about* this node; the node's own chunk is
+    # the node describing itself. Both are checkable, only one is independent — so the two
+    # are labelled rather than blended (Task 4's cite-check counts them apart).
     item.provenance.extend(
-        Provenance(chunk_id=c["id"], quote=(c.get("quote") or c.get("text") or "")[:280])
+        Provenance(
+            chunk_id=c["id"],
+            quote=(c.get("quote") or c.get("text") or "")[:280],
+            source_kind="quote" if c.get("quote") else "node-text",
+        )
         for c in chunks
     )
 

@@ -58,7 +58,7 @@ def _related_work_items(ctx: RetrieveContext, label: str, key: str, depth: int):
         f"MATCH (a:{ctx.label(label)}) WHERE {key_case('a', ctx.prefix)} = $key\n"
         "CALL (a) {\n"
         f"  MATCH (a)-[rels:{rels}*1..{depth}]-(w:{ctx.label('WorkItem')})\n"
-        "  RETURN DISTINCT w, size(rels) AS hops ORDER BY hops LIMIT $limit\n"
+        "  RETURN DISTINCT w, size(rels) AS hops ORDER BY hops, w.key LIMIT $limit\n"
         "}\n"
         "RETURN w.key AS key, w.title AS title, w.type AS type, w.status AS status,\n"
         "  w.resolution AS resolution, coalesce(w.synthetic, false) AS synthetic, hops\n"
@@ -74,11 +74,14 @@ def _tests_with_last_run(ctx: RetrieveContext, keys: list[str]):
         "UNWIND $keys AS k\n"
         f"MATCH (t:{ctx.label('Test')})-[:TESTS]->(w:{ctx.label('WorkItem')} {{`key`: k}})\n"
         f"OPTIONAL MATCH (x:{ctx.label('TestExecution')})-[r:HAS_RUN]->(t)\n"
-        "WITH t, k, r, x ORDER BY r.at DESC\n"
+        # Two total orders, not one: `r.at DESC, x.key DESC` decides which run is *the*
+        # last run when two executions share a timestamp, and `t.key` decides which twenty
+        # tests survive the cap. Either left open is an answer that changes between runs.
+        "WITH t, k, r, x ORDER BY r.at DESC, x.key DESC\n"
         "WITH t, k, head(collect({status: r.status, at: toString(r.at), execution: x.key,\n"
         "  reason: r.reason})) AS last_run\n"
         "RETURN t.key AS test, t.title AS title, t.status AS status, k AS covers, last_run,\n"
-        "  coalesce(t.synthetic, false) AS synthetic LIMIT $limit"
+        "  coalesce(t.synthetic, false) AS synthetic ORDER BY t.key LIMIT $limit"
     )
     return ctx.read(cypher, keys=keys, limit=MAX_TESTS), cypher
 
@@ -90,7 +93,7 @@ def _documents(ctx: RetrieveContext, label: str, key: str, depth: int):
         f"MATCH (a:{ctx.label(label)}) WHERE {key_case('a', ctx.prefix)} = $key\n"
         "CALL (a) {\n"
         f"  MATCH (a)-[rels:{rels}*1..{depth}]-(d:{ctx.label('Document')})\n"
-        "  RETURN DISTINCT d, size(rels) AS hops ORDER BY hops LIMIT $limit\n"
+        "  RETURN DISTINCT d, size(rels) AS hops ORDER BY hops, d.key LIMIT $limit\n"
         "}\n"
         "RETURN d.key AS key, d.title AS title, d.kind AS kind, hops,\n"
         "  coalesce(d.synthetic, false) AS synthetic ORDER BY hops, d.key"
@@ -107,17 +110,61 @@ def _commits_on_the_same_files(ctx: RetrieveContext, keys: list[str]):
         f"MATCH (c:{ctx.label('Commit')})-[:RESOLVES]->"
         f"(w:{ctx.label('WorkItem')} {{`key`: k}})\n"
         f"MATCH (c)-[:TOUCHES]->(f:{ctx.label('File')})\n"
-        "WITH collect(DISTINCT f.path)[..$files] AS paths, collect(DISTINCT c.sha) AS fixes\n"
+        # The cap is what keeps a 300-file formatting commit from making the whole
+        # repository "impacted" — but a slice of an unordered collect is a different
+        # twenty files on every run, so the rows are ordered before they are cut.
+        "WITH DISTINCT f.path AS path, c.sha AS sha\n"
+        "ORDER BY path, sha\n"
+        "WITH collect(DISTINCT path)[..$files] AS paths, collect(DISTINCT sha) AS fixes\n"
         f"MATCH (o:{ctx.label('Commit')})-[:TOUCHES]->(f2:{ctx.label('File')})\n"
         "WHERE f2.path IN paths\n"
         "WITH paths, fixes, o, count(DISTINCT f2) AS shared_files\n"
         "RETURN paths, fixes, o.sha AS sha, o.message AS message,\n"
         "  toString(o.at) AS at, shared_files, coalesce(o.synthetic, false) AS synthetic\n"
-        "ORDER BY shared_files DESC, o.at DESC LIMIT $limit"
+        "ORDER BY shared_files DESC, o.at DESC, o.sha LIMIT $limit"
     )
     rows = ctx.read(cypher, keys=keys, files=MAX_FILES, limit=MAX_COMMITS)
     paths = rows[0]["paths"] if rows else []
     return rows, paths, cypher
+
+
+def _test_item(row: dict[str, Any], score: float) -> Item:
+    """One covering test and its last execution.
+
+    `kind="Row"`, not `WorkItem`: an `XT-` test is not an issue, and calling it one puts a
+    key in the answer that `lookup` cannot resolve and the packer protects as if it were the
+    only work item in the answer. Its provenance is the execution — `source_kind="row"`,
+    because the evidence is a tuple the graph recorded, not words anyone wrote about it.
+    """
+    last = row["last_run"] or {}
+    ran = bool(last.get("status"))
+    return Item(
+        kind="Row",
+        key=row["test"],
+        title=row["title"] or row["test"],
+        snippet=(
+            f"covers {row['covers']}; last run "
+            + (f"{last.get('status')} at {last.get('at')}" if ran else "never")
+        ),
+        score=score,
+        props={
+            "category": "test",
+            "covers": row["covers"],
+            "test_status": row["status"],
+            "last_run_status": last.get("status"),
+            "last_run_at": last.get("at"),
+            "last_run_execution": last.get("execution"),
+            "last_run_reason": last.get("reason"),
+            "synthetic": row["synthetic"],
+        },
+        provenance=[
+            Provenance(
+                source=last.get("execution") or row["test"],
+                source_kind="row",
+                quote=f"{last.get('status')} at {last.get('at')}" if ran else "never run",
+            )
+        ],
+    )
 
 
 def impact(
@@ -191,32 +238,7 @@ def impact(
         items.append(item)
 
     for index, t in enumerate(tests):
-        last = t["last_run"] or {}
-        items.append(
-            Item(
-                kind="WorkItem",
-                key=t["test"],
-                title=t["title"] or t["test"],
-                snippet=(
-                    f"covers {t['covers']}; last run "
-                    + (
-                        f"{last.get('status')} at {last.get('at')}"
-                        if last.get("status")
-                        else "never"
-                    )
-                ),
-                score=round(0.8 - index / 200, 4),
-                props={
-                    "category": "test",
-                    "covers": t["covers"],
-                    "last_run_status": last.get("status"),
-                    "last_run_at": last.get("at"),
-                    "last_run_execution": last.get("execution"),
-                    "synthetic": t["synthetic"],
-                },
-                provenance=[Provenance(source=last.get("execution") or t["test"])],
-            )
-        )
+        items.append(_test_item(t, round(0.8 - index / 200, 4)))
 
     for index, d in enumerate(docs):
         item = to_item("Document", d, round(0.7 - index / 200, 4))
@@ -239,7 +261,13 @@ def impact(
                     "fixes_anchor": c["sha"] in (c["fixes"] or []),
                     "synthetic": c["synthetic"],
                 },
-                provenance=[Provenance(source=c["sha"], quote=clip(c["message"], 160))],
+                provenance=[
+                    Provenance(
+                        source=c["sha"],
+                        source_kind="node-text",
+                        quote=clip(c["message"], 160),
+                    )
+                ],
             )
         )
 
