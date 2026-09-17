@@ -6,9 +6,14 @@ can test. The live tests in `tests/live/test_retrieve_live.py` prove the Cypher 
 
 from __future__ import annotations
 
+from typing import get_args
+
+import pytest
+from pydantic import ValidationError
+
 from brain.retrieve.envelope import Timer, dedupe_provenance, finish
 from brain.retrieve.nodes import FIELDS, ITEM_KIND, KEY_FIELD, key_case, label_case, projection
-from brain.retrieve.types import ITEM_KINDS, Item, Provenance
+from brain.retrieve.types import ITEM_KINDS, SOURCE_KINDS, Item, ItemKind, Provenance
 
 
 def test_every_projected_label_declares_a_key_and_an_item_kind() -> None:
@@ -119,3 +124,25 @@ def test_finish_packs_dedupes_and_can_stay_out_of_the_log(tmp_path) -> None:
     assert result.cypher_used == ["A"]
     assert len(result.items[0].provenance) == 1
     assert not (tmp_path / "retrieval.jsonl").exists()
+
+
+# ------------------------------------------------------- the closed sets of the envelope
+
+
+def test_item_kind_is_a_closed_set_the_model_enforces() -> None:
+    """`ITEM_KINDS` is the packer's per-kind guarantee; a typo in it is a silent new kind."""
+    assert set(ITEM_KINDS) == set(get_args(ItemKind))
+    with pytest.raises(ValidationError):
+        Item(kind="Sprint", key="x")  # a label, not an item kind
+    with pytest.raises(ValidationError):
+        Item(kind="row", key="x")  # the right word, the wrong case
+
+
+def test_provenance_says_which_kind_of_evidence_it_is() -> None:
+    """Task 4's cite-check counts a quoted chunk and a node's own text separately."""
+    assert Provenance(chunk_id="c1").source_kind == "quote"
+    assert set(SOURCE_KINDS) == {"quote", "node-text", "row"}
+    for kind in SOURCE_KINDS:
+        assert Provenance(chunk_id="c1", source_kind=kind).source_kind == kind
+    with pytest.raises(ValidationError):
+        Provenance(chunk_id="c1", source_kind="vibes")
