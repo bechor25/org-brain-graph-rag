@@ -37,6 +37,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from brain.canon.models import INCREMENTAL_SLICE
 from brain.harvest.base import HarvestError, utc_now_iso, write_json_atomic
 from brain.harvest.jira import (
     SEARCH_PATH,
@@ -248,6 +249,10 @@ class StepRecord:
     started_at: str = ""
     report: dict[str, Any] = field(default_factory=dict)
     notes: str = ""
+    #: The commit this step was measured on. Per step, not only per run: the eleven steps
+    #: span days and two agent dispatches, and a duration that cannot name its tree is a
+    #: number nobody can reproduce (conventions, Plan 1 close-out).
+    sha: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -255,9 +260,22 @@ class StepRecord:
             "command": self.command,
             "started_at": self.started_at,
             "duration_s": round(self.duration_s, 2),
+            "sha": self.sha,
             "report": self.report,
             "notes": self.notes,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> StepRecord:
+        return cls(
+            step=str(data.get("step") or ""),
+            command=str(data.get("command") or ""),
+            duration_s=float(data.get("duration_s") or 0.0),
+            started_at=str(data.get("started_at") or ""),
+            report=dict(data.get("report") or {}),
+            notes=str(data.get("notes") or ""),
+            sha=str(data.get("sha") or ""),
+        )
 
 
 @dataclass
@@ -271,7 +289,9 @@ class IncrementalRun:
     reports_dir: Path
     since: str
     source: str = "jira"
-    slice: str = "incremental"
+    slice: str = INCREMENTAL_SLICE
+    #: `git rev-parse --short HEAD` when the run started. Every step row copies it.
+    sha: str = ""
     keys: list[str] = field(default_factory=list)
     steps: list[StepRecord] = field(default_factory=list)
     graph: dict[str, Any] = field(default_factory=dict)
@@ -303,6 +323,7 @@ class IncrementalRun:
             started_at=utc_now_iso(),
             report=dict(report or {}),
             notes=notes,
+            sha=self.sha,
         )
         self.steps = [s for s in self.steps if s.step != step] + [row]
         self.write()
@@ -316,6 +337,14 @@ class IncrementalRun:
         self.graph.update(values)
         self.write()
 
+    def set_chunks(self, **values: Any) -> None:
+        self.chunks.update(values)
+        self.write()
+
+    def set_entities(self, **values: Any) -> None:
+        self.entities.update(values)
+        self.write()
+
     def set_communities(self, **values: Any) -> None:
         self.communities.update(values)
         self.write()
@@ -327,10 +356,16 @@ class IncrementalRun:
     # -- output ------------------------------------------------------------
 
     def as_dict(self) -> dict[str, Any]:
+        # `at` is what the harvest family of reports calls the write time and `generated_at`
+        # is what every other data/reports/*.json calls it. Same instant, both names, so
+        # neither a reader nor a validator of either family has to know which file this is.
+        now = utc_now_iso()
         return {
             "step": "incremental",
-            "at": utc_now_iso(),
+            "at": now,
+            "generated_at": now,
             "started_at": self.started_at,
+            "sha": self.sha,
             "slice": self.slice,
             "source": self.source,
             "since": self.since,
@@ -350,6 +385,50 @@ class IncrementalRun:
         path = Path(self.reports_dir) / REPORT_NAME
         write_json_atomic(path, self.as_dict())
         return path
+
+    # -- resuming ----------------------------------------------------------
+
+    @classmethod
+    def load(cls, reports_dir: Path, **defaults: Any) -> IncrementalRun:
+        """Pick the run back up from `incremental.json`, or start one if it is not there.
+
+        The eleven steps do not fit in one process: an agent runs harvest…extract build,
+        the extractor agent runs, and a second dispatch finishes the pipeline. A second
+        run object that started empty would `write()` a file without the first five steps'
+        timings — the report's whole point. `defaults` fills the fields of a fresh run
+        (`since`, `sha`, …) and is ignored when a report is already on disk.
+        """
+        import json
+
+        path = Path(reports_dir) / REPORT_NAME
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            data = None
+        if not isinstance(data, dict):
+            return cls(
+                reports_dir=Path(reports_dir), since=str(defaults.pop("since", "")), **defaults
+            )
+        run = cls(
+            reports_dir=Path(reports_dir),
+            since=str(data.get("since") or defaults.get("since") or ""),
+            source=str(data.get("source") or defaults.get("source") or "jira"),
+            slice=str(data.get("slice") or defaults.get("slice") or INCREMENTAL_SLICE),
+            sha=str(data.get("sha") or defaults.get("sha") or ""),
+            keys=[str(k) for k in data.get("keys") or []],
+            steps=[StepRecord.from_dict(row) for row in data.get("steps") or []],
+            graph=dict(data.get("graph") or {}),
+            chunks=dict(data.get("chunks") or {}),
+            entities=dict(data.get("entities") or {}),
+            communities=dict(data.get("communities") or {}),
+            questions=[dict(q) for q in data.get("questions") or []],
+            warnings=[str(w) for w in data.get("warnings") or []],
+            errors=[str(e) for e in data.get("errors") or []],
+        )
+        # The run started when the *first* dispatch started; a resumed run that restamped
+        # it would report a wall-clock that excludes the work it is resuming.
+        run.started_at = str(data.get("started_at") or run.started_at)
+        return run
 
 
 class _Timed:

@@ -371,3 +371,47 @@ def test_the_validator_names_what_an_unfinished_run_is_missing(tmp_path, mutate,
     mutate(report)
     problems = validate_incremental(report)
     assert any(expected in p for p in problems), problems
+
+
+# ------------------------------------------------ the run's identity, and resuming it
+
+
+def test_the_report_carries_the_commit_it_was_measured_on(tmp_path):
+    """Conventions, Plan 1 close-out: a measurement that gets carried forward has to say
+    which tree produced it. The sha rides the run and every step row it stamps."""
+    run = IncrementalRun(reports_dir=tmp_path, since="2026-01-01", sha="0b73a80")
+    run.record("harvest", duration_s=1.0)
+    report = json.loads((tmp_path / REPORT_NAME).read_text(encoding="utf-8"))
+    assert report["sha"] == "0b73a80"
+    assert report["steps"][0]["sha"] == "0b73a80"
+    # `generated_at` is what every other data/reports/*.json calls the write time.
+    assert report["generated_at"] == report["at"]
+
+
+def test_a_run_resumes_from_what_is_already_on_disk(tmp_path):
+    """The eleven steps span two agent dispatches. A second process that started empty
+    would rewrite the file and delete the timings of the steps that already ran."""
+    first = IncrementalRun(reports_dir=tmp_path, since="2026-01-01", sha="abc1234")
+    first.keys = ["KAFKA-20035"]
+    first.record("harvest", command="uv run brain harvest", duration_s=2.5, report={"records": 10})
+    first.set_chunks(created=7)
+
+    resumed = IncrementalRun.load(tmp_path)
+    assert resumed.since == "2026-01-01"
+    assert resumed.sha == "abc1234"
+    assert resumed.keys == ["KAFKA-20035"]
+    assert resumed.started_at == first.started_at
+    assert resumed.chunks == {"created": 7}
+    assert [s.step for s in resumed.steps] == ["harvest"]
+    assert resumed.steps[0].duration_s == 2.5
+    assert resumed.steps[0].report == {"records": 10}
+
+    resumed.record("canon", duration_s=1.0)
+    steps = json.loads((tmp_path / REPORT_NAME).read_text(encoding="utf-8"))["steps"]
+    assert [s["step"] for s in steps] == ["harvest", "canon"]
+    assert steps[0]["duration_s"] == 2.5
+
+
+def test_loading_a_report_that_is_not_there_is_a_fresh_run(tmp_path):
+    run = IncrementalRun.load(tmp_path, since="2026-01-01", sha="abc1234")
+    assert run.steps == [] and run.since == "2026-01-01" and run.sha == "abc1234"

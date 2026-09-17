@@ -329,6 +329,22 @@ def remove_stale_files(root: Path, planned: Sequence[PlannedBatch]) -> dict[str,
     return {"removed_inputs": removed, "moved_outputs": moved}
 
 
+def batches_root(batches_dir: Path, slice_: str | None = None) -> Path:
+    """Where this build's shards live: `data/batches/extract[/<slice>]`.
+
+    A slice gets its own root rather than more shards in the shared one. The base shards
+    hold a finished run — `shards_in_flight` refuses to touch them, and rightly — and the
+    incremental batches are a different question over different text. Separate roots also
+    keep each run's MANIFEST, `status.json` and stale-file sweep confined to its own work.
+    """
+    return batches_dir / TASK / slice_ if slice_ else batches_dir / TASK
+
+
+def report_section(slice_: str | None = None) -> str:
+    """`build` for the corpus, `build.<slice>` for a slice — never overwriting each other."""
+    return f"build.{slice_}" if slice_ else "build"
+
+
 def run_build(
     *,
     ctx: GraphContext,
@@ -338,18 +354,19 @@ def run_build(
     shards: int = DEFAULT_SHARDS,
     batch_size: int = DEFAULT_BATCH_SIZE,
     min_chars: int | None = None,
+    slice_: str | None = None,
     schema_path: Path = SCHEMA_PATH,
     write_report: bool = True,
     echo: Callable[[str], None] = print,
 ) -> tuple[dict[str, Any], int]:
-    """Write `data/batches/extract/<shard>/NNN.in.json` + status + manifest. Idempotent."""
+    """Write `data/batches/extract[/<slice>]/<shard>/NNN.in.json` + status + manifest."""
     from brain.extract import select as select_mod
 
     started = time.perf_counter()
     if not schema_path.is_file():
         raise BuildError(f"the output contract is missing: {schema_path}")
 
-    root = batches_dir / TASK
+    root = batches_root(batches_dir, slice_)
     busy = shards_in_flight(root)
     if busy:
         listed = ", ".join(f"{shard} ({why})" for shard, why in busy.items())
@@ -363,11 +380,16 @@ def run_build(
     kwargs: dict[str, Any] = {}
     if min_chars is not None:
         kwargs["min_chars"] = min_chars
+    if slice_:
+        kwargs["slice_"] = slice_
     selection = select_mod.select(ctx, canonical_dir=canonical_dir, **kwargs)
     if not selection.chunks:
+        where = "namespace " + ctx.prefix if ctx.prefix else "database"
         raise BuildError(
-            "no Phase A chunks in the graph. Has `brain chunk` run against this "
-            f"{'namespace ' + ctx.prefix if ctx.prefix else 'database'}?"
+            f"no Phase A chunks with slice = '{slice_}' in the graph. Has `brain chunk` "
+            f"run since the {slice_} records were loaded?"
+            if slice_
+            else f"no Phase A chunks in the graph. Has `brain chunk` run against this {where}?"
         )
     commit_parents = sorted({c.parent_key for c in selection.chunks if c.parent_kind == "Commit"})
     if commit_parents:
@@ -445,6 +467,7 @@ def run_build(
         generated_at=generated_at,
         stale=stale,
         prefix=ctx.prefix,
+        slice_=slice_,
         duration_ms=round((time.perf_counter() - started) * 1000),
     )
     write_json_atomic(root / MANIFEST_NAME, manifest)
@@ -456,7 +479,7 @@ def run_build(
     echo(f"manifest: {root / MANIFEST_NAME}")
 
     if write_report:
-        write_section(reports_dir, "build", manifest)
+        write_section(reports_dir, report_section(slice_), manifest)
     return manifest, (1 if oversize else 0)
 
 
@@ -474,6 +497,7 @@ def build_manifest(
     stale: dict[str, list[str]],
     prefix: str,
     duration_ms: int,
+    slice_: str | None = None,
 ) -> dict[str, Any]:
     sizes = [b["bytes"] for b in written]
     per_shard: Counter = Counter(b["id"].split("/")[0] for b in written)
@@ -486,6 +510,7 @@ def build_manifest(
     return {
         "step": "extract.build",
         "phase": PHASE,
+        "slice": slice_,
         "generated_at": generated_at,
         "duration_ms": duration_ms,
         "label_prefix": prefix,
@@ -547,8 +572,8 @@ def summarize_build(manifest: dict[str, Any]) -> str:
     )
 
 
-def load_manifest(batches_dir: Path) -> dict[str, Any] | None:
-    path = batches_dir / TASK / MANIFEST_NAME
+def load_manifest(batches_dir: Path, slice_: str | None = None) -> dict[str, Any] | None:
+    path = batches_root(batches_dir, slice_) / MANIFEST_NAME
     if not path.is_file():
         return None
     try:

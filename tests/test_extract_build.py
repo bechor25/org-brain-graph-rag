@@ -49,7 +49,14 @@ def chunk(key: str, position: int = 0, chars: int = 500, kind: str = "Document")
 
 
 def selection(chunks) -> Selection:
-    return Selection(chunks=list(chunks), stats={"chunks": len(chunks), "parents": 0})
+    return Selection(
+        chunks=list(chunks),
+        stats={
+            "chunks": len(chunks),
+            "parents": len({(c.parent_kind, c.parent_key) for c in chunks}),
+            "token_est": sum(c.token_est for c in chunks),
+        },
+    )
 
 
 def sizes(batches) -> list[int]:
@@ -290,3 +297,82 @@ def test_build_and_merge_write_into_one_step_report(tmp_path):
     assert report["build"]["totals"]["batches"] == 12
     assert report["merge"]["planned"]["entities"] == 40
     assert report["generated_at"]
+
+
+# ----------------------------------------------------------------------------- slices
+
+
+class FakeCtx:
+    """Enough of a GraphContext for `run_build` once the selection is stubbed."""
+
+    prefix = ""
+
+    def label(self, name: str) -> str:
+        return f"`{name}`"
+
+    def read(self, cypher: str, **params):  # pragma: no cover - selection is stubbed
+        return []
+
+
+def test_a_sliced_build_gets_its_own_root_and_leaves_the_base_shards_alone(tmp_path, monkeypatch):
+    """Plan 3 Task 4. The base shards are finished work: `shards_in_flight` would refuse a
+    rebuild there, and it should not have to — the increment is a different question, so it
+    gets a different root and its own MANIFEST, status and report section."""
+    from pathlib import Path
+
+    from brain.extract import select as select_mod
+    from brain.extract.build import run_build
+
+    chunks = [chunk("KAFKA-20035", 0, 500, kind="WorkItem")]
+    monkeypatch.setattr(select_mod, "select", lambda ctx, **kw: selection(chunks))
+
+    base = tmp_path / "batches" / "extract" / "shard-01"
+    base.mkdir(parents=True)
+    (base / "status.json").write_text(
+        json.dumps({"shard": "shard-01", "done": ["001"], "failed": []}), encoding="utf-8"
+    )
+
+    manifest, code = run_build(
+        ctx=FakeCtx(),
+        canonical_dir=Path("data/canonical"),
+        batches_dir=tmp_path / "batches",
+        reports_dir=tmp_path / "reports",
+        shards=1,
+        batch_size=25,
+        slice_="incremental",
+        echo=lambda *_: None,
+    )
+
+    root = tmp_path / "batches" / "extract" / "incremental"
+    assert code == 0
+    assert (root / "shard-01" / "001.in.json").is_file()
+    assert (root / "shard-01" / "status.json").is_file()
+    assert (root / "MANIFEST.json").is_file()
+    assert manifest["slice"] == "incremental"
+    assert manifest["batches"][0]["path"] == "shard-01/001.in.json"
+    # the base shards were not read, rebuilt, or emptied
+    assert not (base / "001.in.json").exists()
+    assert json.loads((base / "status.json").read_text(encoding="utf-8"))["done"] == ["001"]
+
+    report = json.loads((tmp_path / "reports" / "extract.json").read_text(encoding="utf-8"))
+    assert "build.incremental" in report
+    assert "build" not in report
+
+
+def test_a_slice_with_no_chunks_says_which_slice_is_empty(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from brain.extract import select as select_mod
+    from brain.extract.build import run_build
+
+    monkeypatch.setattr(select_mod, "select", lambda ctx, **kw: selection([]))
+    with pytest.raises(BuildError, match="incremental"):
+        run_build(
+            ctx=FakeCtx(),
+            canonical_dir=Path("data/canonical"),
+            batches_dir=tmp_path / "batches",
+            reports_dir=tmp_path / "reports",
+            shards=1,
+            slice_="incremental",
+            echo=lambda *_: None,
+        )

@@ -24,12 +24,14 @@ class FakeContext:
         self.doc_rows = list(doc_rows)
         self.issue_rows = list(issue_rows)
         self.calls: list[dict] = []
+        self.queries: list[str] = []
 
     def label(self, name: str) -> str:
         return f"`{name}`"
 
     def read(self, cypher: str, **params):
         self.calls.append(params)
+        self.queries.append(cypher)
         return self.doc_rows if "$doc_keys" in cypher else self.issue_rows
 
 
@@ -129,3 +131,24 @@ def test_a_scoped_document_with_no_chunks_is_reported_not_hidden():
     ctx = FakeContext([], [])
     stats = select(ctx, canonical_dir=MINI).stats
     assert stats["documents_in_scope_without_chunks"] == 1
+
+
+# ----------------------------------------------------------------------------- slices
+
+
+def test_selecting_a_slice_asks_the_graph_for_that_slices_chunks_only():
+    """Plan 3 Task 4: `brain extract build --slice incremental` must not re-send the base
+    corpus to an agent. The filter is the chunk's own `slice`, written by `brain chunk`."""
+    ctx = FakeContext([doc_row()], [issue_row()])
+    result = select(ctx, canonical_dir=MINI, slice_="incremental")
+    assert all("c.slice = $slice" in q for q in ctx.queries)
+    assert [params["slice"] for params in ctx.calls] == ["incremental", "incremental"]
+    assert result.stats["slice"] == "incremental"
+
+
+def test_without_a_slice_the_queries_are_the_ones_plan_1_ran():
+    ctx = FakeContext([doc_row()], [issue_row()])
+    result = select(ctx, canonical_dir=MINI)
+    assert all("slice" not in q for q in ctx.queries)
+    assert all("slice" not in params for params in ctx.calls)
+    assert result.stats["slice"] is None

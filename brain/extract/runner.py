@@ -34,6 +34,7 @@ def build_from_settings(
     shards: int = DEFAULT_SHARDS,
     batch_size: int = DEFAULT_BATCH_SIZE,
     min_chars: int | None = None,
+    slice_: str | None = None,
     echo: Callable[[str], None] = print,
 ) -> tuple[dict[str, Any], int]:
     client, ctx = _context()
@@ -46,6 +47,7 @@ def build_from_settings(
             shards=shards,
             batch_size=batch_size,
             min_chars=min_chars,
+            slice_=slice_,
             echo=echo,
         )
 

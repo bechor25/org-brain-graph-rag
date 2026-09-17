@@ -85,6 +85,7 @@ class Selection:
 DOC_CYPHER = """
 MATCH (d:{doc})-[:HAS_CHUNK]->(c:{chunk})
 WHERE d.key IN $doc_keys AND c.kind = $kind AND coalesce(c.orphaned, false) = false
+{slice}
 OPTIONAL MATCH (d)-[:REFERENCES|IMPLEMENTS_KIP]->(k:{doc})
   WHERE k.key STARTS WITH 'KIP-' AND k.key <> d.key
 WITH c, d, collect(DISTINCT k.key) AS kips
@@ -99,6 +100,7 @@ MATCH (w:{item})-[:HAS_CHUNK]->(c:{chunk})
 WHERE c.kind = $kind AND coalesce(c.orphaned, false) = false
   AND coalesce(w.synthetic, false) = false
   AND c.char_len >= $min_chars
+{slice}
 OPTIONAL MATCH (w)-[:REFERENCES|IMPLEMENTS_KIP]->(k:{doc}) WHERE k.key STARTS WITH 'KIP-'
 WITH c, w, collect(DISTINCT k.key) AS kips
 WHERE w.type IN $types OR size(kips) > 0
@@ -110,11 +112,17 @@ ORDER BY parent_key, position
 """
 
 
-def _cypher(ctx: GraphContext, template: str) -> str:
+#: The one line `--slice` adds. Spliced in only when a slice was asked for, so the
+#: unsliced query stays the byte-identical one Plan 1 measured its selection with.
+SLICE_PREDICATE = "  AND c.slice = $slice"
+
+
+def _cypher(ctx: GraphContext, template: str, *, slice_: str | None = None) -> str:
     return template.format(
         doc=ctx.label("Document"),
         item=ctx.label("WorkItem"),
         chunk=ctx.label("Chunk"),
+        slice=SLICE_PREDICATE if slice_ else "",
     )
 
 
@@ -142,16 +150,31 @@ def select(
     canonical_dir: Path,
     min_chars: int = MIN_CHARS,
     issue_types: Sequence[str] = ISSUE_TYPES,
+    slice_: str | None = None,
 ) -> Selection:
-    """Every Phase A chunk, in a stable order, with its context and its size."""
+    """Every Phase A chunk, in a stable order, with its context and its size.
+
+    `slice_` narrows the same three rules to one slice of the corpus — `"incremental"` is
+    the ten issues Plan 3 Task 4 adds. It filters on `Chunk.slice`, the property
+    `brain chunk` copied from the record, not on the parent: a base work item whose text
+    an incremental pull rewrote keeps its base chunks, and only genuinely new text is
+    extracted from twice.
+    """
     doc_keys, scope_stats = kip_document_keys(canonical_dir)
 
-    doc_rows = ctx.read(_cypher(ctx, DOC_CYPHER), doc_keys=doc_keys, kind=DOC_CHUNK_KIND)
+    extra = {"slice": slice_} if slice_ else {}
+    doc_rows = ctx.read(
+        _cypher(ctx, DOC_CYPHER, slice_=slice_),
+        doc_keys=doc_keys,
+        kind=DOC_CHUNK_KIND,
+        **extra,
+    )
     issue_rows = ctx.read(
-        _cypher(ctx, ISSUE_CYPHER),
+        _cypher(ctx, ISSUE_CYPHER, slice_=slice_),
         kind=ISSUE_CHUNK_KIND,
         min_chars=min_chars,
         types=list(issue_types),
+        **extra,
     )
 
     chunks: list[SelectedChunk] = []
@@ -168,11 +191,13 @@ def select(
     stats = {
         "min_chars": min_chars,
         "issue_types": list(issue_types),
+        "slice": slice_,
         "rule": (
             "KIP sections of the documents brain.chunk.scope selected (referenced + "
             f"ambiguous-kip variants); description chunks >= {min_chars} chars of real "
             f"work items that are {'/'.join(issue_types)} or reference a KIP. "
             "No comments, no commits, no synthetic (Phase B)."
+            + (f" Restricted to chunks with slice = '{slice_}'." if slice_ else "")
         ),
         "scope": scope_stats,
         "kip_sections": len(doc_rows),

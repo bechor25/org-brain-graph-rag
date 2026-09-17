@@ -409,8 +409,16 @@ def extract_build(
         help="Read the canonical JSONL from here instead of data/canonical. The KIP set "
         "comes from it via brain.chunk.scope, so it must be the one brain chunk used.",
     ),
+    slice_: str | None = typer.Option(
+        None,
+        "--slice",
+        metavar="NAME",
+        help="Build only the chunks of one slice (`incremental`). They get their own root, "
+        "data/batches/extract/<slice>/, so the finished corpus shards are neither resharded "
+        "nor re-sent to an agent.",
+    ),
 ) -> None:
-    """Write data/batches/extract/<shard>/NNN.in.json from the Phase A chunks in the graph."""
+    """Write the Phase A chunks of the graph into data/batches/extract/.../NNN.in.json."""
     from brain.config import get_settings
     from brain.extract.build import BuildError
     from brain.extract.runner import build_from_settings
@@ -419,6 +427,14 @@ def extract_build(
     source = Path(canonical_dir) if canonical_dir else settings.canonical_dir
     if not source.is_dir():
         raise typer.BadParameter(f"{source} is not a directory", param_hint="--canonical-dir")
+    if slice_ is not None:
+        from brain.reset import SLICES
+
+        if slice_ not in SLICES:
+            raise typer.BadParameter(
+                f"unknown slice {slice_!r}; --slice takes one of {', '.join(SLICES)}",
+                param_hint="--slice",
+            )
     try:
         _, code = build_from_settings(
             source,
@@ -427,6 +443,7 @@ def extract_build(
             shards=shards,
             batch_size=batch_size,
             min_chars=min_chars,
+            slice_=slice_,
             echo=typer.echo,
         )
     except (BuildError, OSError, ValueError) as exc:
