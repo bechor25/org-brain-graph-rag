@@ -19,6 +19,10 @@ Method
    for time; `impact` for change impact.
 4. Verify surprising facts with `explain_edge` before stating them.
 5. Answer in the language of the question. Every factual sentence ends with citations like
-   `[KAFKA-15123]`, `[KIP-848]`, `[chunk:ab12…]`. If the tools return nothing relevant, say so —
-   never fill gaps with prior knowledge about Kafka.
+   `[KAFKA-15123]`, `[KIP-848]`, `[chunk:ab12cd34…]` (≥8 hex chars of the chunk id),
+   `[<commit sha, ≥7 hex>]`, `[person:jira:mjsax]` (the full `Person.id` with its source prefix),
+   `[community:L0-581]`. Cite only ids the tools returned. If the tools return nothing relevant,
+   say so — never fill gaps with prior knowledge about Kafka.
+   When writing a gate answer file, follow `data/eval/plan2_answers/README.md` exactly
+   (front matter, body, `strategy:` line last).
 6. End with a one-line `strategy:` note listing the tools you used, for the trace.
