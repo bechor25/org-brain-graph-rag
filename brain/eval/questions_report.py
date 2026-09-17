@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -43,6 +44,7 @@ from brain.eval.questions import (
     LANGS,
     SCHEMA_PATH,
     Demand,
+    water_fill,
     write_section,
 )
 from brain.extract.build import IN_GLOB, OUT_GLOB
@@ -585,6 +587,14 @@ def build_report(
     shortfall = {k: v for k, v in shortfall.items() if v > 0}
     leaked = sum(1 for v in rejected if any(r.startswith("leak_") for r in v.reasons))
     target_total = demand.existing_total + demand.new_total
+    # Planner ruling: the accepted target is the most even split of N over the five types —
+    # computed from zero, so it is a property of the set and not of whatever the 19 happened
+    # to start at — with Hebrew at least a third. `per_type_goal` (8) stays in the report as
+    # what the plan asked for and what five types × 8 would have cost, but it is not the bar.
+    even_split = water_fill([0] * len(QUESTION_TYPES), len(rows))
+    split_met = sorted(by_type.values(), reverse=True) == even_split
+    hebrew_floor = max(math.ceil(len(rows) / 3), demand.hebrew_min)
+    pending_gold = [r["id"] for r in rows if r["gold_source"] == "pending" or not r["gold_answer"]]
     checks = [
         {
             "name": "every planned batch answered",
@@ -601,15 +611,34 @@ def build_report(
         },
         {
             "name": "per-type balance",
-            "ok": by_type == demand.final_by_type,
-            "detail": f"{by_type} vs planned {demand.final_by_type}",
-            "met": "OK" if by_type == demand.final_by_type else "SHORT",
+            "ok": split_met,
+            "detail": f"{by_type} — the most even split of {len(rows)} over "
+            f"{len(QUESTION_TYPES)} types is {even_split}",
+            "met": "OK" if split_met else "SHORT",
+            "gate": True,
         },
         {
-            "name": f"Hebrew >= {demand.hebrew_min}",
-            "ok": by_lang["he"] >= demand.hebrew_min,
-            "detail": f"{by_lang['he']} Hebrew of {len(rows)}",
-            "met": "OK" if by_lang["he"] >= demand.hebrew_min else "SHORT",
+            "name": f"Hebrew >= {hebrew_floor}",
+            "ok": by_lang["he"] >= hebrew_floor,
+            "detail": f"{by_lang['he']} Hebrew of {len(rows)} (floor is a third, "
+            f"ceil({len(rows)}/3) = {math.ceil(len(rows) / 3)})",
+            "met": "OK" if by_lang["he"] >= hebrew_floor else "SHORT",
+            "gate": True,
+        },
+        {
+            "name": "every row has gold",
+            "ok": not pending_gold,
+            "detail": f"{len(rows) - len(pending_gold)}/{len(rows)} rows carry a gold answer"
+            + (f" — still pending: {', '.join(pending_gold[:6])}" if pending_gold else ""),
+            "met": "OK" if not pending_gold else "PENDING",
+            "gate": True,
+        },
+        {
+            "name": "no failed batches",
+            "ok": not failures,
+            "detail": f"{len(failures)} batches could not be read",
+            "met": "OK" if not failures else "FAILED",
+            "gate": True,
         },
         {
             "name": "gold_evidence exists",
@@ -625,13 +654,30 @@ def build_report(
             "met": "OK",
         },
     ]
-    complete = all(c["ok"] for c in checks)
+    # Not `all(checks)`: "every planned batch answered" and "question count" are progress,
+    # and a set can be complete without them (a merge of a reduced --n, a batch the planner
+    # dropped). The three below are the ruling, and the one that used to be missing entirely
+    # is `every row has gold` — 32 questions with 19 pending golds read as complete before.
+    complete = split_met and by_lang["he"] >= hebrew_floor and not pending_gold and not failures
     return {
         "step": "eval.questions.merge",
         "generated_at": utc_now_iso(),
         "questions_path": str(questions_path),
         "sha256": sha,
         "complete": complete,
+        "target": {
+            "rule": "the most even split of N over the five types, Hebrew at least a third",
+            "even_split": even_split,
+            "split_met": split_met,
+            "hebrew_floor": hebrew_floor,
+            "pending_gold": pending_gold,
+            # Informational: the plan asked for 8 per type, which five types cannot have at
+            # 32 questions. Kept so the number in the plan and the number in the report can
+            # be told apart by a reader who only has the report.
+            "per_type_goal_8": by_type == dict.fromkeys(QUESTION_TYPES, demand.per_type_goal),
+            "per_type_goal": demand.per_type_goal,
+            "questions_for_per_type_goal": demand.questions_for_goal,
+        },
         "totals": {
             "questions": len(rows),
             "target": target_total,

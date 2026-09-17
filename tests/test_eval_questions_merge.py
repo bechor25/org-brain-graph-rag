@@ -20,10 +20,12 @@ from pathlib import Path
 
 import pytest
 
+from brain.eval.questions import Demand, plan_demand
 from brain.eval.questions_report import (
     DIFFICULTY_DEFAULT,
     KEY_LOOKUPS,
     Verdict,
+    build_report,
     competency_row,
     existing_keys,
     longest_shared_run,
@@ -447,3 +449,128 @@ def test_an_output_with_no_input_beside_it_is_refused(tmp_path: Path):
 @pytest.mark.parametrize("qtype", ["traceability", "impact", "rationale", "global", "temporal"])
 def test_the_schema_and_the_shape_registry_agree_on_the_question_types(qtype):
     assert qtype in SCHEMA["$defs"]["type"]["enum"]
+
+
+# ------------------------------------------------------------------- when a set is done
+
+
+def _row(qid: str, qtype: str, lang: str, *, gold: str | None = "an answer"):
+    return {
+        "id": qid,
+        "type": qtype,
+        "lang": lang,
+        "gold_answer": gold,
+        "gold_source": "graph" if gold else "pending",
+        "origin": "competency",
+    }
+
+
+def _set_of(counts: dict[str, int], hebrew: int, *, pending: int = 0):
+    """`counts` questions per type, `hebrew` of them Hebrew, `pending` of them without gold."""
+    rows, n = [], 0
+    for qtype, total in counts.items():
+        for _ in range(total):
+            n += 1
+            rows.append(
+                _row(
+                    f"cq{n:02d}",
+                    qtype,
+                    "he" if n <= hebrew else "en",
+                    gold=None if n <= pending else "an answer",
+                )
+            )
+    return rows
+
+
+def _report(rows, *, failures=(), demand: Demand | None = None):
+    return build_report(
+        rows=rows,
+        kept=[],
+        surplus=[],
+        rejected=[],
+        failures=list(failures),
+        demand=demand or plan_demand(_COMPETENCY_SHAPE, new_total=13),
+        planned=["shard-01/001"],
+        answered=[],
+        questions_path=Path("data/eval/questions.jsonl"),
+        sha="0" * 64,
+    )
+
+
+EVEN_32 = {"traceability": 7, "impact": 7, "rationale": 6, "global": 6, "temporal": 6}
+
+#: The 19 competency questions by type and language, as `brain competency` builds them.
+_COMPETENCY_SHAPE = [
+    {"type": t, "lang": lang}
+    for t, en, he in (
+        ("traceability", 4, 1),
+        ("impact", 4, 1),
+        ("rationale", 3, 1),
+        ("global", 1, 0),
+        ("temporal", 3, 1),
+    )
+    for lang, n in (("en", en), ("he", he))
+    for _ in range(n)
+]
+
+
+def test_the_target_is_the_most_even_split_not_eight_per_type():
+    """Five types x 8 is 40 questions; 32 cannot be 8 each and the report says so."""
+    report = _report(_set_of(EVEN_32, hebrew=11))
+    assert report["target"]["even_split"] == [7, 7, 6, 6, 6]
+    assert report["target"]["split_met"] is True
+    assert report["target"]["per_type_goal_8"] is False
+    assert report["target"]["questions_for_per_type_goal"] == 40
+
+
+def test_a_set_on_the_even_split_with_gold_and_no_failed_batches_is_complete():
+    report = _report(_set_of(EVEN_32, hebrew=11))
+    assert report["complete"] is True
+
+
+def test_an_unanswered_batch_does_not_make_a_finished_set_incomplete():
+    """`planned` has a batch with no output; the set is still 32/32 with gold."""
+    report = _report(_set_of(EVEN_32, hebrew=11))
+    assert any(not c["ok"] for c in report["checks"])
+    assert report["complete"] is True
+
+
+def test_a_lopsided_set_is_not_complete_however_many_questions_it_has():
+    report = _report(
+        _set_of(
+            {"traceability": 20, "impact": 3, "rationale": 3, "global": 3, "temporal": 3}, hebrew=11
+        )
+    )
+    assert report["target"]["split_met"] is False
+    assert report["complete"] is False
+
+
+def test_a_row_without_gold_keeps_the_set_incomplete():
+    """32 questions with pending golds used to read as complete. That was the hole."""
+    report = _report(_set_of(EVEN_32, hebrew=11, pending=19))
+    assert report["target"]["pending_gold"][:2] == ["cq01", "cq02"]
+    assert report["complete"] is False
+    assert any(c["name"] == "every row has gold" and not c["ok"] for c in report["checks"])
+
+
+def test_too_little_hebrew_keeps_the_set_incomplete():
+    report = _report(_set_of(EVEN_32, hebrew=5))
+    assert report["target"]["hebrew_floor"] == 11
+    assert report["complete"] is False
+
+
+def test_the_hebrew_floor_is_a_third_of_the_set_rounded_up():
+    rows = _set_of(
+        {"traceability": 2, "impact": 2, "rationale": 2, "global": 2, "temporal": 2}, hebrew=4
+    )
+    demand = plan_demand([], new_total=10, hebrew_min=0)
+    assert _report(rows, demand=demand)["target"]["hebrew_floor"] == 4
+    assert _report(rows, demand=demand)["complete"] is True
+
+
+def test_a_failed_batch_keeps_the_set_incomplete():
+    report = _report(
+        _set_of(EVEN_32, hebrew=11), failures=[{"batch": "shard-01/001", "reason": "x"}]
+    )
+    assert report["complete"] is False
+    assert any(c["name"] == "no failed batches" and not c["ok"] for c in report["checks"])
