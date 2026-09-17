@@ -37,9 +37,9 @@ def test_every_section_carries_the_sha_and_time_it_was_measured_at(tmp_path: Pat
         assert entry["sha"] == head
         assert entry["generated_at"]
         assert entry["stale"] is False
-    # A dict section also carries it inline, where a reader of that section will see it.
-    assert written["mcp"]["sha"] == head
-    assert written["mcp"]["stale"] is False
+    # And the sections themselves are untouched: `latency` is a map of measurements, not a
+    # record with room for metadata, so the stamp lives in the index and only there.
+    assert written["mcp"] == {"transport": "stdio"}
 
 
 def test_a_section_measured_at_another_commit_is_marked_stale(tmp_path: Path) -> None:
@@ -50,7 +50,6 @@ def test_a_section_measured_at_another_commit_is_marked_stale(tmp_path: Path) ->
     written = json.loads(target.read_text(encoding="utf-8"))
     assert written["sections"]["guard"]["sha"] == "0" * 40
     assert written["sections"]["guard"]["stale"] is True
-    assert written["guard"]["stale"] is True, "the section itself says so, not only the index"
     assert written["sections"]["mcp"]["stale"] is False
     assert written["guard"]["attacks"] == 42, "stale is a label, not a delete"
 
@@ -65,6 +64,18 @@ def test_a_section_written_before_stamping_cannot_prove_it_is_fresh(tmp_path: Pa
     assert written["sections"]["rerank"]["stale"] is True
 
 
+def test_a_section_that_stamped_itself_is_believed(tmp_path: Path) -> None:
+    """The guard's check writes its own `sha`. Calling that section stale would be noise."""
+    target = tmp_path / "retrieve.json"
+    target.write_text(
+        json.dumps({"guard": {"attacks": 42, "sha": rep.head_sha(), "generated_at": "now"}}),
+        encoding="utf-8",
+    )
+    rep.merge_sections({"mcp": {}}, target)
+    index = json.loads(target.read_text(encoding="utf-8"))["sections"]
+    assert index["guard"] == {"sha": rep.head_sha(), "generated_at": "now", "stale": False}
+
+
 def test_writing_task_1_keeps_the_sections_the_other_steps_wrote(tmp_path: Path) -> None:
     """`brain competency`, `brain serve --check` and the guard's check, in any order."""
     target = tmp_path / "retrieve.json"
@@ -76,6 +87,14 @@ def test_writing_task_1_keeps_the_sections_the_other_steps_wrote(tmp_path: Path)
     assert written["questions"] == [1, 2, 3]
     assert written["mcp"]["transport"] == "stdio"
     assert written["guard"]["attacks"] == 42
+
+
+def test_a_map_of_measurements_is_never_polluted_with_metadata(tmp_path: Path) -> None:
+    """`for name, stats in report["latency"].items()` must not meet a string called `sha`."""
+    target = tmp_path / "retrieve.json"
+    rep.merge_sections({"latency": {"s1": {"p50_ms": 139}}}, target)
+    latency = json.loads(target.read_text(encoding="utf-8"))["latency"]
+    assert set(latency) == {"s1"}
 
 
 def test_a_corrupt_report_is_replaced_rather_than_left_unwritten(tmp_path: Path) -> None:

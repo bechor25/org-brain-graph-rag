@@ -76,6 +76,10 @@ def merge_sections(
     every key it leaves alone is re-checked against that HEAD and marked `stale` when it does
     not match — including a section from before stamping existed, which cannot prove anything
     about itself and is therefore stale by default.
+
+    The stamps live in one `sections` index rather than inside each section, because a
+    section may be a list (`questions`), a scalar (`step`) or a map of measurements
+    (`latency`) with no room for three metadata keys that readers would then trip over.
     """
     target = Path(path) if path is not None else DEFAULT_PATH
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -98,22 +102,31 @@ def merge_sections(
 
     head = head_sha()
     for name in list(existing):
-        entry = index.get(name) or {"sha": None, "generated_at": None}
+        entry = index.get(name) or _adopt(existing[name])
         entry["stale"] = bool(entry.get("sha") != head)
         index[name] = entry
-        section = existing[name]
-        if isinstance(section, dict):
-            # Inline too: a reader who opens `report["guard"]` must not have to know that a
-            # separate index exists to find out whether they are reading today's number.
-            section["sha"] = entry["sha"]
-            section["generated_at"] = section.get("generated_at") or entry["generated_at"]
-            section["stale"] = entry["stale"]
 
+    # The stamp lives in `sections` and nowhere else. Writing `sha`/`stale` into each
+    # section itself was tried and is wrong: `latency` and `graph` are maps of measurements,
+    # not records with room for metadata, and three extra keys in them break every reader
+    # that iterates the map. One index, every key, lists and scalars included.
     existing["sections"] = {name: index[name] for name in sorted(index) if name in existing}
     tmp = target.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(existing, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     tmp.replace(target)
     return target
+
+
+def _adopt(section: Any) -> dict[str, Any]:
+    """A section this writer did not write: take the stamp it put on itself, if it did.
+
+    `brain cypher-examples check` stamps its own sections inline. Ignoring that would mark a
+    section measured a minute ago `stale` — which would make the flag noise, and a flag that
+    is usually wrong is a flag nobody reads.
+    """
+    if isinstance(section, dict) and isinstance(section.get("sha"), str):
+        return {"sha": section["sha"], "generated_at": section.get("generated_at")}
+    return {"sha": None, "generated_at": None}
 
 
 def anchor_keys(result: Result, limit: int = 5) -> list[str]:

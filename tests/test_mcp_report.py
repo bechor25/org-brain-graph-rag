@@ -129,6 +129,7 @@ def test_merge_survives_a_corrupt_report_instead_of_refusing_to_write(tmp_path: 
     written = json.loads(target.read_text(encoding="utf-8"))
     assert written["mcp"]["ok"] is True
     assert set(written) == {"mcp", "sections"}, "nothing is invented to replace what was lost"
+    assert written["mcp"] == {"ok": True}
 
 
 def test_merge_stamps_its_sections_and_leaves_the_others_labelled(tmp_path: Path) -> None:
