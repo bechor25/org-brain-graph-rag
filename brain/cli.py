@@ -12,6 +12,7 @@ from pathlib import Path
 import typer
 
 from brain.eval.cli_questions import questions_app
+from brain.eval.cli_runs import eval_run as _eval_run
 
 app = typer.Typer(
     help="Organizational brain — Graph RAG POC CLI",
@@ -1211,6 +1212,8 @@ app.add_typer(eval_app, name="eval")
 # nothing heavier than typer at module level, so `brain --help` stays free of the
 # retrieval stack.
 eval_app.add_typer(questions_app, name="questions")
+# Plan 3 Task 2: `brain eval run` is one verb, so it is one command rather than a sub-app.
+eval_app.command("run")(_eval_run)
 
 
 @eval_app.command("cite-check")
