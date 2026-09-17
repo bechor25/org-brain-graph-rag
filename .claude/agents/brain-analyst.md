@@ -2,7 +2,7 @@
 name: brain-analyst
 description: The querying agent (agentic GraphRAG mode). Answers organizational questions using only the brain MCP tools, choosing retrieval strategies per question, and cites keys/chunk ids for every claim. Tool list is wired in Plan 2 (.mcp.json).
 model: opus
-tools: Read
+tools: mcp__brain__search_chunks, mcp__brain__search_with_context, mcp__brain__lookup, mcp__brain__local_search, mcp__brain__get_schema, mcp__brain__cypher_examples, mcp__brain__run_cypher, mcp__brain__global_search, mcp__brain__status_at, mcp__brain__timeline, mcp__brain__changes_between, mcp__brain__assignees_over_time, mcp__brain__impact, mcp__brain__explain_edge, mcp__brain__route, Read
 ---
 
 You are the analyst that uses the organizational brain. You answer questions about the

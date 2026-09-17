@@ -19,7 +19,6 @@ app = typer.Typer(
 NOT_IMPLEMENTED_EXIT = 2
 
 _PLANNED: dict[str, tuple[str, str]] = {
-    "serve": ("Run the MCP server (stdio or HTTP)", "Plan 2"),
     "eval": ("Run the evaluation harness and generate the report", "Plan 3"),
 }
 
@@ -1035,6 +1034,50 @@ def competency(
         typer.echo(f"  [{'ok' if check['ok'] else 'FAIL'}] {check['name']}: {check['detail']}")
     typer.echo(f"report: {path}")
     raise typer.Exit(code=0 if all(c["ok"] for c in report["checks"]) else 1)
+
+
+# ------------------------------------------------------------------- MCP server (Plan 2)
+
+
+@app.command()
+def serve(
+    stdio: bool = typer.Option(
+        False, "--stdio", help="Speak MCP over stdin/stdout. What `.mcp.json` launches."
+    ),
+    http: bool = typer.Option(
+        False, "--http", help="Serve streamable HTTP at /mcp (and /healthz)."
+    ),
+    host: str = typer.Option("127.0.0.1", "--host", help="HTTP bind address."),
+    port: int = typer.Option(8765, "--port", help="HTTP port."),
+    check: bool = typer.Option(
+        False,
+        "--check",
+        help="Round-trip every tool over stdio, then write the `mcp` and `global` sections "
+        "of data/reports/retrieve.json.",
+    ),
+) -> None:
+    """Run the MCP server that exposes the retrieval library to an asking agent [Plan 2].
+
+    `--stdio` is the transport Claude Code uses; `--http` is the one `docker compose` runs.
+    Exactly one of them, unless `--check`, which starts its own server and measures it.
+    """
+    from brain.mcp.server import serve_http, serve_stdio
+
+    if check:
+        from brain.mcp.report import run as run_mcp_report
+
+        report, path = run_mcp_report(echo=typer.echo)
+        typer.echo(f"report: {path}")
+        raise typer.Exit(code=0 if all(c["ok"] for c in report["mcp"]["checks"]) else 1)
+    if stdio == http:
+        typer.echo("serve: choose exactly one of --stdio or --http (or use --check)", err=True)
+        raise typer.Exit(code=2)
+    if stdio:
+        # Nothing may be printed on stdout: it is the protocol channel.
+        serve_stdio()
+    else:
+        typer.echo(f"brain MCP on http://{host}:{port}/mcp  (health: /healthz)", err=True)
+        serve_http(host=host, port=port)
 
 
 @app.command()

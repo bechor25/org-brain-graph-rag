@@ -23,6 +23,62 @@ services:
       timeout: 5s
       retries: 30
 
+  # The same MCP server `.mcp.json` launches over stdio, on streamable HTTP instead — for a
+  # client that is not Claude Code, and for `curl http://127.0.0.1:8765/mcp`.
+  #
+  # No image and no Dockerfile on purpose. The repo is bind-mounted and `uv run` builds the
+  # environment inside the container, so there is nothing to rebuild when the code changes
+  # and no second definition of the dependencies to drift from `pyproject.toml`.
+  # `UV_PROJECT_ENVIRONMENT` points that build at `/opt/venv`: without it `uv` would write a
+  # Linux `.venv` over the macOS one the host is using.
+  #
+  # Profiles keep it out of `make up`: Neo4j is needed by every step, the MCP server only by
+  # a client that wants HTTP. Start it with `docker compose --profile mcp up -d --wait`.
+  brain-mcp:
+    image: ghcr.io/astral-sh/uv:python3.11-bookworm-slim
+    container_name: brain-mcp
+    profiles: ["mcp"]
+    working_dir: /app
+    command: ["uv", "run", "brain", "serve", "--http", "--host", "0.0.0.0", "--port", "8765"]
+    ports:
+      - "127.0.0.1:8765:8765"
+    environment:
+      UV_PROJECT_ENVIRONMENT: /opt/venv
+      UV_LINK_MODE: copy
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: ${NEO4J_USER:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-brainpass}
+      NEO4J_DATABASE: ${NEO4J_DATABASE:-neo4j}
+      # Ollama runs on the host, not in compose: the model is 2.2 GB and pulling it into a
+      # container for every `up` is a download nobody asked for.
+      OLLAMA_URL: ${OLLAMA_URL_IN_DOCKER:-http://host.docker.internal:11434}
+      EMBED_MODEL: ${EMBED_MODEL:-bge-m3}
+      EMBED_DIM: ${EMBED_DIM:-1024}
+    volumes:
+      - .:/app
+      - mcp_venv:/opt/venv
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    healthcheck:
+      # `/healthz` answers as soon as the server is listening and before Neo4j is touched:
+      # "the server is up" and "the graph is loaded" are two different facts, and a
+      # healthcheck that conflates them reports a corpus problem as a container problem.
+      # This image has Python and neither curl nor wget.
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8765/healthz', timeout=3).status==200 else 1)\"",
+        ]
+      interval: 10s
+      timeout: 5s
+      # The first start builds the environment from `uv.lock` inside the container.
+      start_period: 180s
+      retries: 10
+
 volumes:
   neo4j_data:
   neo4j_logs:
+  mcp_venv:

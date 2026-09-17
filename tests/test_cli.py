@@ -23,10 +23,25 @@ def test_help_lists_every_pipeline_step(runner):
 
 
 def test_unimplemented_step_exits_2_and_names_plan(runner):
-    """`serve` is the stub now — `index` stopped being one in step 10 (see below)."""
-    result = runner.invoke(app, ["serve"])
+    """`eval` is the last stub — `serve` stopped being one in Plan 2 Task 3 (see below)."""
+    result = runner.invoke(app, ["eval"])
     assert result.exit_code == NOT_IMPLEMENTED_EXIT
-    assert "Plan 2" in result.output
+    assert "Plan 3" in result.output
+
+
+def test_serve_is_implemented_and_offers_both_transports(runner):
+    result = runner.invoke(app, ["serve", "--help"])
+    assert result.exit_code == 0
+    for option in ("--stdio", "--http", "--port", "--check"):
+        assert option in result.output
+
+
+def test_serve_refuses_to_guess_a_transport(runner):
+    """Neither flag and both flags are the same mistake, and stdout is the protocol channel."""
+    for argv in ([], ["--stdio", "--http"]):
+        result = runner.invoke(app, ["serve", *argv])
+        assert result.exit_code == 2
+        assert "exactly one" in result.output
 
 
 def test_index_is_implemented_and_offers_the_gate_check(runner):
