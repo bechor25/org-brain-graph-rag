@@ -392,12 +392,14 @@ NOTES: tuple[str, ...] = (
     "factor that reads the question's own embedding, so its Jaccard is below 1.0 without "
     "the anchor moving. `set_sizes` says how many keys each side had — two of the four "
     "pairs are single-key sets, where one differing neighbour costs half the score.",
-    "The S1 gap is *not* caused by the Lucene half. Fulltext is a query in the question's "
-    "own language and no analyzer here bridges Hebrew and English, so the expectation was "
-    "that removing it would help — it does the opposite: vector-only scores 0.396 against "
-    "the hybrid's 0.479. The fusion with a lexical half is what narrows the gap; what is "
-    "left is bge-m3's own cross-lingual limit on this corpus, which is exactly why the "
-    "graph (S3), not the embedding, is what carries a bilingual question here.",
+    "The S1 gap is *not* caused by the Lucene half — an earlier draft of this report said "
+    "it was. Fulltext is a query in the question's own language and no analyzer here "
+    "bridges Hebrew and English, so removing it should have raised the score; measured, "
+    "`s1_vector_mean_jaccard` comes out *below* `s1_mean_jaccard` (per pair it is mixed: "
+    "the lexical half wins a version-window question on its shared numerals and loses a "
+    "test question). What is left when the fusion is undone is bge-m3's own cross-lingual "
+    "limit on this corpus — which is exactly why the graph (S3), not the embedding, is "
+    "what carries a bilingual question here.",
     "A `Chunk-[:MENTIONS]->Component` edge does not exist in this graph (extract produced "
     "MENTIONS only to Entity, WorkItem and Document), so a component anchor walks nowhere "
     "in S3's relation set — which is why a component question is answered by `impact`, "
