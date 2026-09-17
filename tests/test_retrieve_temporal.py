@@ -20,6 +20,7 @@ from brain.retrieve.temporal import (
     _pad,
     _status_on,
     assignees_over_time,
+    changes_between,
     status_at,
     timeline,
     version_key,
@@ -397,3 +398,19 @@ def test_assignees_of_a_document_are_the_referencing_items_people() -> None:
     assert people[0].props["via"] == "REFERENCES"
     assert people[0].props["work_items"] == ["KAFKA-100"]
     assert any(p.source == "KAFKA-100" and p.source_kind == "row" for p in people[0].provenance)
+
+
+def test_changes_between_orders_before_it_collects_and_before_python_cuts() -> None:
+    """The one S6 query with no timestamp in it, and the same determinism hole.
+
+    Its rows were unordered while Python kept the first one per work item and scored it by
+    position, and its five commits were a slice of an unordered `collect` — two ways for
+    one question to have two answers.
+    """
+    ctx = _FakeCtx([])
+    changes_between(ctx, "clients", "3.6", "3.7", log=False)
+    cypher = ctx.cyphers[0]
+    assert cypher.index("ORDER BY commit.at, commit.sha") < cypher.index(
+        "collect(DISTINCT commit.sha)"
+    )
+    assert cypher.rstrip().endswith("ORDER BY w.key, v.name")

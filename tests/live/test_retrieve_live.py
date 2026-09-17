@@ -351,6 +351,15 @@ def test_changes_between_uses_the_version_window_not_string_order(ctx):
         changes_between(ctx, "clients", "3.7", "3.6", log=False)
 
 
+def test_changes_between_returns_the_same_answer_twice(ctx):
+    """No timestamp to order by is not a licence to return the rows in whatever order."""
+    first = changes_between(ctx, "clients", "3.6", "3.7", log=False)
+    second = changes_between(ctx, "clients", "3.6", "3.7", log=False)
+    assert [(i.key, i.score, i.props.get("commits")) for i in first.items] == [
+        (i.key, i.score, i.props.get("commits")) for i in second.items
+    ]
+
+
 def test_assignees_over_time_marks_the_open_interval_as_current(ctx):
     result = assignees_over_time(ctx, "KAFKA-100", log=False)
     check_envelope(result, "s6", ctx)

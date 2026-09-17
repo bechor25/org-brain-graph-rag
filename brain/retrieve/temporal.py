@@ -41,7 +41,10 @@ KAFKA-100 resolves, is resolved as Fixed and gets its fix version all at `2024-0
 scored by its *position* in the result, the same query scored the same three rows
 differently on different runs. Every time-ordered read here therefore carries a second,
 unique key (`s.id`, `c.sha`, `p.id`): a retrieval whose ranking moves between two runs
-cannot be evaluated, and an answer nobody can reproduce is not evidence.
+cannot be evaluated, and an answer nobody can reproduce is not evidence. `changes_between`
+had the same hole with no timestamp in sight — an unordered scan whose first `limit` rows
+Python kept, and a slice of an unordered `collect` for the commits — and is ordered now
+for the same reason.
 
 A fix version has no timestamp of its own (`FIX_VERSION` is a plain edge), so it is dated
 by the `Fix Version` changelog row that first set it, or by the item's resolution when the
@@ -778,23 +781,36 @@ def changes_between(
         f"(c:{ctx.label('Component')} {{`name`: $component}})\n"
         f"MATCH (w)-[:FIX_VERSION]->(v:{ctx.label('Version')})\n"
         f"OPTIONAL MATCH (commit:{ctx.label('Commit')})-[:RESOLVES]->(w)\n"
+        # Two orders, and both are load-bearing. A slice of an unordered `collect` is a
+        # different five commits on every run, so the commits are ordered *before* they are
+        # collected; and the rows themselves are ordered before Python keeps the first one
+        # per work item and scores it by position, so the answer is one answer.
+        "WITH w, v, commit ORDER BY commit.at, commit.sha\n"
+        "WITH w, v, collect(DISTINCT commit.sha)[..5] AS commits,\n"
+        "  collect(DISTINCT commit.message)[..1] AS commit_messages\n"
         "RETURN w.key AS key, w.title AS title, w.type AS type, w.status AS status,\n"
         "  w.resolution AS resolution, coalesce(w.synthetic, false) AS synthetic,\n"
-        "  v.name AS version, collect(DISTINCT commit.sha)[..5] AS commits,\n"
-        "  collect(DISTINCT commit.message)[..1] AS commit_messages"
+        "  v.name AS version, commits, commit_messages\n"
+        "ORDER BY w.key, v.name"
     )
     rows = ctx.read(cypher, component=component)
     low, high = _pad(_bound(v1, ceiling=True)), _pad(_bound(v2, ceiling=True))
     if low >= high:
         raise RetrieveError(f"version window is empty: {v1!r} is not before {v2!r}")
 
+    in_window = [r for r in rows if low < _pad(version_key(r["version"])) <= high]
+    # One row per work item — the earliest release inside the window that carried it — and
+    # then one order for the answer: by that release, then by key. Sorted here rather than
+    # in Cypher because `ORDER BY v.name` is the `"3.10" < "3.9"` trap this module exists to
+    # avoid; `version_key` compares releases as numbers.
+    earliest: dict[str, dict[str, Any]] = {}
+    for row in sorted(in_window, key=lambda r: (r["key"], version_key(r["version"]))):
+        earliest.setdefault(row["key"], row)
+    ordered = sorted(earliest.values(), key=lambda r: (version_key(r["version"]), r["key"]))
+    cut = len(ordered) > limit
+
     items: list[Item] = []
-    seen: set[str] = set()
-    for row in rows:
-        key = _pad(version_key(row["version"]))
-        if not (low < key <= high) or row["key"] in seen:
-            continue
-        seen.add(row["key"])
+    for index, row in enumerate(ordered[:limit]):
         item = to_item(
             "WorkItem",
             {
@@ -805,7 +821,7 @@ def changes_between(
                 "resolution": row["resolution"],
                 "synthetic": row["synthetic"],
             },
-            round(1.0 / (1 + len(seen)), 4),
+            round(1.0 / (2 + index), 4),
         )
         item.props.update({"fix_version": row["version"], "component": component})
         if row["commits"]:
@@ -819,8 +835,6 @@ def changes_between(
                 for sha in row["commits"][:2]
             ]
         items.append(item)
-        if len(items) >= limit:
-            break
 
     evidence, evidence_cypher = own_chunks(ctx, [i.key for i in items])
     for item in items:
@@ -832,9 +846,10 @@ def changes_between(
             kind="Row",
             key=f"{component}:{v1}..{v2}",
             title=f"{component} between {v1} and {v2}",
-            snippet=f"{len(seen)} work items with a fix version in ({v1}, {v2}]",
+            snippet=f"{len(earliest)} work items with a fix version in ({v1}, {v2}]"
+            + (f", of which the first {len(items)} fit the answer" if cut else ""),
             score=1.0,
-            props={"component": component, "from": v1, "to": v2, "work_items": len(seen)},
+            props={"component": component, "from": v1, "to": v2, "work_items": len(earliest)},
         ),
     )
     return finish(
@@ -847,6 +862,7 @@ def changes_between(
         mode=log_mode,
         log_path=log_path,
         log=log,
+        already_truncated=cut,
     )
 
 
