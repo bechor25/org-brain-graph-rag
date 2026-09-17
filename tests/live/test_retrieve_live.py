@@ -365,54 +365,51 @@ def test_assignees_over_time_marks_the_open_interval_as_current(ctx):
 # reference it — `KAFKA-100` (two status changes, fix version 3.7.0) and `KAFKA-101`
 # (three status changes, none).
 
-#: sha256 of `Result.model_dump()` as the *committed* S6 produced it on this corpus before
-#: a Document could be an anchor (captured from `git show 0b73a80:brain/retrieve/temporal.py`
-#: and run against this same fixture). Regenerated from the live result on every run.
+#: sha256 of `Result.model_dump()` without `latency_ms`, regenerated from the live result
+#: on every run. The *rows* in it are the ones the pre-change code returned (captured from
+#: `git show 0b73a80:brain/retrieve/temporal.py` against this same fixture and asserted
+#: below, row by row); what the digest adds is their order and their scores, which only
+#: became worth pinning once `ORDER BY s.at, s.id` made them the same on every run.
 GOLDEN_WORKITEM_S6: dict[str, str] = {
-    "timeline(KAFKA-100)": "e947d43f99f00c8ffd450e9a2fe32879448918a330126eada410770bd57bb4ec",
+    "timeline(KAFKA-100)": "8ec2a367d56a4908e605091e8f22379a2b93e97f2a6efba8db7eadb69e586a19",
     "status_at(KAFKA-100,2024-01-20)": (
-        "d715aa63d82fe7da24597cef7dd9bae47f37a6bc6256051d340b921c9516e892"
+        "936865a5f7a1832115e54808b7055db439d2172f71846cb511df6517af163ec2"
     ),
     "assignees_over_time(KAFKA-100)": (
-        "6882f58e46998ca75cfbd386fa41f3f8bd9111bf378b09ebc04cbb6613c0fe49"
+        "5970856257e6cd799778725ef1e4b4eb838873f483d05372b822931f80944305"
     ),
-    "assignees_over_time(XT-1)": "fb7ef9ef454bdfc4ad63a052bb3e83c9cb736080a9d2310b0fb7a195e896d40a",
+    "assignees_over_time(XT-1)": "7fd25abe25e3153a8affc56687713029c73dd6937c595ea1f4c4c14b1d7f5040",
 }
 
 
 def _digest(result: Result) -> str:
-    """The answer hashed with `score` dropped and the items in key order.
-
-    Not the raw dump, because the raw dump is not stable: three of KAFKA-100's changelog
-    rows carry the same timestamp, `ORDER BY s.at` does not break that tie, and `timeline`
-    scores a row by its position — so which tied row is item 3, and what it scores, differs
-    between runs of the *unchanged* code. What must not move is the set of rows, their
-    text, their provenance and the Cypher that produced them.
-    """
-    dump = result.model_dump()
-    dump.pop("latency_ms")
-    dump["items"] = sorted(
-        ({k: v for k, v in item.items() if k != "score"} for item in dump["items"]),
-        key=lambda item: item["key"],
-    )
+    dump = {k: v for k, v in result.model_dump().items() if k != "latency_ms"}
     return hashlib.sha256(json.dumps(dump, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
-def test_a_work_items_own_temporal_answer_did_not_move(ctx):
-    """The Document anchor is an addition, not a change: same rows, same Cypher, same scores.
+def test_a_work_items_own_temporal_answer_is_the_same_one_every_run(ctx):
+    """Same rows as before the Document anchor existed, and now in one fixed order.
 
-    `XT-1` is in here because "this item has no assignee" is the case the Document branch
-    is reached *through*, and a work item with no interval must still get the old sentence.
+    KAFKA-100's resolution, its fix version and its move to Resolved are all stamped
+    `2024-03-02T10:00:00Z`. `ORDER BY s.at` left that three-way tie to the database and
+    `timeline` scores a row by its position, so the same query used to hand the same three
+    rows different scores on different runs. The tie-break reorders them once, on purpose;
+    what may never change again is this list.
+
+    `XT-1` is here because "this item has no assignee" is the case the Document branch is
+    reached *through*, and a work item with no interval must still get the old sentence.
     """
     result = timeline(ctx, "KAFKA-100", limit=60, log=False)
-    assert sorted((i.title, i.snippet) for i in result.items if i.kind == "Row") == [
-        ("2024-01-12T08:00:00Z · assignee", "None → Dana Lee (by jrao)"),
-        ("2024-01-15T08:00:00Z · status", "Open → In Progress (by dlee)"),
-        ("2024-03-02T10:00:00Z · Fix Version", "None → 3.7.0 (by dlee)"),
-        ("2024-03-02T10:00:00Z · resolution", "None → Fixed (by dlee)"),
-        ("2024-03-02T10:00:00Z · status", "In Progress → Resolved (by dlee)"),
+    assert [(i.title, i.snippet, i.score) for i in result.items if i.kind == "Row"] == [
+        ("2024-01-12T08:00:00Z · assignee", "None → Dana Lee (by jrao)", 1.0),
+        ("2024-01-15T08:00:00Z · status", "Open → In Progress (by dlee)", 0.8),
+        ("2024-03-02T10:00:00Z · status", "In Progress → Resolved (by dlee)", 0.6),
+        ("2024-03-02T10:00:00Z · Fix Version", "None → 3.7.0 (by dlee)", 0.4),
+        ("2024-03-02T10:00:00Z · resolution", "None → Fixed (by dlee)", 0.2),
     ]
-    assert sorted(i.score for i in result.items) == [0.2, 0.4, 0.6, 0.8, 1.0, 1.0]
+    assert _digest(timeline(ctx, "KAFKA-100", limit=60, log=False)) == _digest(result), (
+        "two runs of one query against one graph must not differ"
+    )
     assert {
         "timeline(KAFKA-100)": _digest(result),
         "status_at(KAFKA-100,2024-01-20)": _digest(

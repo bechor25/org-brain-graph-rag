@@ -460,10 +460,12 @@ async def global_search(query: str, level: str = "any", k: int = 5) -> dict[str,
 
 @mcp.tool()
 async def status_at(key: str, date: str) -> dict[str, Any]:
-    """S6 — what a work item's status was on a date (`YYYY-MM-DD`), from its changelog.
+    """S6 — what a work item or document held on a date (`YYYY-MM-DD`), from the changelog.
 
     Deterministic: it replays `StatusChange` events up to the end of that day, so it answers
-    "what did we know then", not "what is true now".
+    "what did we know then", not "what is true now". A document (a KIP) has no status of its
+    own, so it is answered derived: the status on that date of each work item that
+    references it, one row each, plus the page's own status when it carries one.
     """
     return await _tool(
         "s6", f"{key} @ {date}", lambda ctx: retrieve.status_at(ctx, key, date, log_mode="mcp")
@@ -472,7 +474,14 @@ async def status_at(key: str, date: str) -> dict[str, Any]:
 
 @mcp.tool()
 async def timeline(key: str, limit: int = 60) -> dict[str, Any]:
-    """S6 — every recorded change on a work item, oldest first: status, assignee, version."""
+    """S6 — every recorded change on a work item, oldest first: status, assignee, version.
+
+    Takes a work item key or a document key. A document (a KIP) has no changelog of its own
+    and is answered derived: the commits that implement it, plus the status changes and fix
+    versions of the work items that reference it, in one time order. Every derived row says
+    which edge it came from in `props.via` (`IMPLEMENTS_KIP` / `REFERENCES`) and cites the
+    node it was derived from.
+    """
     return await _tool(
         "s6", key, lambda ctx: retrieve.timeline(ctx, key, limit=limit, log_mode="mcp")
     )
@@ -494,7 +503,12 @@ async def changes_between(component: str, v1: str, v2: str) -> dict[str, Any]:
 
 @mcp.tool()
 async def assignees_over_time(key: str) -> dict[str, Any]:
-    """S6 — every assignment interval on a work item, oldest first. An open interval is current."""
+    """S6 — every assignment interval on a work item, oldest first. An open interval is current.
+
+    Takes a work item key or a document key. A document (a KIP) has no assignee of its own
+    and is answered derived: the people who held the work items that reference it, merged
+    into one entry per person with the span they actually held.
+    """
     return await _tool(
         "s6", key, lambda ctx: retrieve.assignees_over_time(ctx, key, log_mode="mcp")
     )

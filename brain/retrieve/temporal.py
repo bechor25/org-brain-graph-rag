@@ -33,7 +33,15 @@ The union of those, in time order, is the KIP's timeline; the `ASSIGNED_TO` inte
 the same work items, merged per person, are its assignees. Nothing here infers anything:
 each row is one edge the graph holds, and `props.via` names that edge (`IMPLEMENTS_KIP` or
 `REFERENCES`) so a reader can tell a derived row from a recorded one. A work item's own
-answer is untouched — same query, same rows, same `cypher_used`.
+answer returns the same rows it always did.
+
+**Every ordering is total.** A Jira edit writes several changelog rows at one timestamp —
+KAFKA-100 resolves, is resolved as Fixed and gets its fix version all at `2024-03-02
+10:00:00Z` — so `ORDER BY s.at` alone leaves the tie to the database, and because a row is
+scored by its *position* in the result, the same query scored the same three rows
+differently on different runs. Every time-ordered read here therefore carries a second,
+unique key (`s.id`, `c.sha`, `p.id`): a retrieval whose ranking moves between two runs
+cannot be evaluated, and an answer nobody can reproduce is not evidence.
 
 A fix version has no timestamp of its own (`FIX_VERSION` is a plain edge), so it is dated
 by the `Fix Version` changelog row that first set it, or by the item's resolution when the
@@ -230,7 +238,7 @@ def _referencing_items(
         f"  MATCH (w)-[:HAS_CHANGE]->(s:{ctx.label('StatusChange')} {{`field`: 'status'}})\n"
         # `epoch` rather than the string, for the same reason `status_at` does it: two rows
         # written in different offsets compare wrongly as ISO text and correctly as instants.
-        "  WITH s ORDER BY s.at\n"
+        "  WITH s ORDER BY s.at, s.id\n"
         "  RETURN collect({id: s.id, at: toString(s.at), epoch: s.at.epochSeconds,\n"
         "    from: s.`from`, to: s.`to`, by: s.by})[..$changes] AS changes\n"
         "}\n"
@@ -241,7 +249,7 @@ def _referencing_items(
         "    WHERE s.`to` = v.name\n"
         # The first time this version was set, not the last: a fix version re-applied in a
         # later edit is the same decision, and the timeline wants the moment it was made.
-        "  WITH v, s ORDER BY s.at\n"
+        "  WITH v, s ORDER BY s.at, s.id\n"
         "  WITH v, head(collect({at: toString(s.at), epoch: s.at.epochSeconds})) AS first_set\n"
         "  ORDER BY v.name\n"
         "  RETURN collect({version: v.name, at: first_set.at,\n"
@@ -268,7 +276,7 @@ def _referencing_assignments(
         "  toString(r.valid_from) AS valid_from, r.valid_from.epochSeconds AS from_epoch,\n"
         "  toString(r.valid_to) AS valid_to, r.valid_to.epochSeconds AS to_epoch,\n"
         "  r.source AS source\n"
-        "ORDER BY r.valid_from, w.key LIMIT $limit"
+        "ORDER BY r.valid_from, w.key, p.id LIMIT $limit"
     )
     return ctx.read(cypher, key=key, limit=limit), cypher
 
@@ -399,7 +407,7 @@ def status_at(
         "OPTIONAL MATCH (w)-[:HAS_CHANGE]->(s:"
         + ctx.label("StatusChange")
         + " {`field`: 'status'})\n"
-        "WITH w, s ORDER BY s.at\n"
+        "WITH w, s ORDER BY s.at, s.id\n"
         # `epoch` rather than the string: comparing ISO strings is only correct while every
         # timestamp carries the same offset, and one `+02:00` row would silently reorder the
         # history. Seconds since the epoch are the same instant in every zone.
@@ -628,7 +636,7 @@ def timeline(
         "  toString(w.created) AS created, coalesce(w.synthetic, false) AS synthetic,\n"
         "  s.id AS change_id, s.field AS field, s.`from` AS from_value, s.`to` AS to_value,\n"
         "  toString(s.at) AS at, s.by AS by\n"
-        "ORDER BY s.at LIMIT $limit"
+        "ORDER BY s.at, s.id LIMIT $limit"
     )
     rows = ctx.read(cypher, key=key, limit=limit)
     if not rows:
@@ -863,7 +871,7 @@ def assignees_over_time(
         "RETURN coalesce(w.key, w.id) AS key, w.title AS title, w.status AS status,\n"
         "  p.id AS person, p.display AS display, toString(r.valid_from) AS valid_from,\n"
         "  toString(r.valid_to) AS valid_to, r.source AS source\n"
-        "ORDER BY r.valid_from"
+        "ORDER BY r.valid_from, p.id"
     )
     rows = ctx.read(cypher, key=key)
     evidence, evidence_cypher = own_chunks(ctx, [key])
