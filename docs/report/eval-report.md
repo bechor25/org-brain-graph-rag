@@ -1,24 +1,24 @@
 # הערכה — דוח Plan 3
 
-נוצר אוטומטית ע"י `brain eval report` ב-2026-09-17T10:13:27+00:00 (HEAD `4cf28f9a`) מתוך דוחות השלבים ב-`data/reports`. **אין כאן מספר שהוקלד ביד** — למעט שני הסעיפים האחרונים, שהמתכנן כותב אחרי קריאת המספרים ושנשמרים בכל יצירה מחדש.
+נוצר אוטומטית ע"י `brain eval report` ב-2026-09-17T10:19:30+00:00 (HEAD `8928c1e1`) מתוך דוחות השלבים ב-`data/reports`. **אין כאן מספר שהוקלד ביד** — למעט שני הסעיפים האחרונים, שהמתכנן כותב אחרי קריאת המספרים ושנשמרים בכל יצירה מחדש.
 
 כל שורה בטבלה הבאה היא קלט של הדוח: מתי נמדד, באיזה commit, והאם ה-commit הזה הוא ה-HEAD. `STALE` = המספרים קיימים אבל נמדדו על קוד אחר; `חסר` = הסעיף שמתבסס עליו יופיע כ-**טרם נמדד** עם הפקודה שמייצרת אותו.
 
 | קובץ | מה מביא | מצב | נמדד ב | sha | הפקודה שכותבת | הערה |
 |---|---|---|---|---|---|---|
 | `data/reports/harvest.json` | שכבה 0 — מה נמשך מהמקורות | בלי sha | 2026-09-17T09:30:08+00:00 | — | `brain harvest` | הדוח לא חותם sha — אי אפשר לדעת באיזה commit נמדד |
-| `data/reports/index.json` | שכבה 1 — מפקד, provenance, קהילות | בלי sha | 2026-09-17T09:53:19+00:00 | — | `brain index` | הדוח לא חותם sha — אי אפשר לדעת באיזה commit נמדד |
-| `data/reports/resolve.json` | שכבה 1 — P/R/F1 של איחוד ישויות | בלי sha | 2026-09-17T09:48:08+00:00 | — | `brain resolve eval` | הדוח לא חותם sha — אי אפשר לדעת באיזה commit נמדד |
-| `data/reports/retrieve.json` | תשתית האחזור — reranker ו-guard | בלי sha | 2026-09-17T07:33:52+00:00 | — | `brain cypher-examples check` | הדוח לא חותם sha — אי אפשר לדעת באיזה commit נמדד |
-| `data/reports/eval_questions.json` | סט השאלות | בלי sha | 2026-09-17T09:23:22+00:00 | — | `brain eval questions merge` | הדוח לא חותם sha — אי אפשר לדעת באיזה commit נמדד |
-| `data/reports/eval_retrieval.json` | שכבה 2 | STALE | 2026-09-17T09:35:39+00:00 | 9dba7252 | `brain eval run --mode fixed` | נמדד ב-9dba7252, HEAD הוא 4cf28f9a |
-| `data/reports/eval_answers.json` | שכבה 3 — תשובות ושיפוט עיוור | STALE | 2026-09-17T10:13:04+00:00 | 4cf28f9a | `brain eval answers merge · brain eval judge merge` | סעיפים ישנים: answers_build, answers_merge, judge_build |
-| `data/reports/plan2_gate.json` | שער מצב B (ציטוטים) | STALE | 2026-09-17T09:18:15+00:00 | c15b8385 | `brain eval cite-check` | נמדד ב-c15b8385, HEAD הוא 4cf28f9a |
-| `data/reports/incremental.json` | §5.5 — ריצת העדכון האינקרמנטלי (כל הפייפליין) | עדכני | 2026-09-17T10:12:44+00:00 | 4cf28f9 | `brain harvest --since <date> --source jira` | — |
+| `data/reports/index.json` | שכבה 1 — מפקד, provenance, קהילות | STALE | 2026-09-17T10:16:44+00:00 | 1ef67612 | `brain index` | נמדד ב-1ef67612, HEAD הוא 8928c1e1 |
+| `data/reports/resolve.json` | שכבה 1 — P/R/F1 של איחוד ישויות | STALE | 2026-09-17T10:16:44+00:00 | 1ef67612 | `brain resolve eval` | נמדד ב-1ef67612, HEAD הוא 8928c1e1 |
+| `data/reports/retrieve.json` | תשתית האחזור — reranker ו-guard | STALE | 2026-09-17T10:17:35+00:00 | 1ef67612 | `brain cypher-examples check` | נמדד ב-1ef67612, HEAD הוא 8928c1e1 |
+| `data/reports/eval_questions.json` | סט השאלות | STALE | 2026-09-17T10:17:36+00:00 | 1ef67612 | `brain eval questions merge` | נמדד ב-1ef67612, HEAD הוא 8928c1e1 |
+| `data/reports/eval_retrieval.json` | שכבה 2 | STALE | 2026-09-17T09:35:39+00:00 | 9dba7252 | `brain eval run --mode fixed` | נמדד ב-9dba7252, HEAD הוא 8928c1e1 |
+| `data/reports/eval_answers.json` | שכבה 3 — תשובות ושיפוט עיוור | STALE | 2026-09-17T10:13:04+00:00 | 4cf28f9a | `brain eval answers merge · brain eval judge merge` | נמדד ב-4cf28f9a, HEAD הוא 8928c1e1 |
+| `data/reports/plan2_gate.json` | שער מצב B (ציטוטים) | STALE | 2026-09-17T09:18:15+00:00 | c15b8385 | `brain eval cite-check` | נמדד ב-c15b8385, HEAD הוא 8928c1e1 |
+| `data/reports/incremental.json` | §5.5 — ריצת העדכון האינקרמנטלי (כל הפייפליין) | STALE | 2026-09-17T10:12:44+00:00 | 4cf28f9 | `brain harvest --since <date> --source jira` | נמדד ב-4cf28f9, HEAD הוא 8928c1e1 |
 
 ## סט השאלות
 
-מקור: `data/reports/eval_questions.json` · נמדד ב-2026-09-17T09:23:22+00:00. ⚠️ הדוח לא חותם sha — אי אפשר לדעת באיזה commit נמדד.
+מקור: `data/reports/eval_questions.json` · נמדד ב-2026-09-17T10:17:36+00:00 · sha `1ef67612`. **STALE** — נמדד ב-1ef67612, HEAD הוא 8928c1e1.
 
 הסט: `data/eval/questions.jsonl` (sha256 `68df8e48c68b9476`), 32 שאלות מתוך יעד 32. רצפת העברית: 11.
 
@@ -67,7 +67,7 @@
 
 ## שכבה 1 — מפקד הגרף
 
-מקור: `data/reports/index.json` · נמדד ב-2026-09-17T09:53:19+00:00. ⚠️ הדוח לא חותם sha — אי אפשר לדעת באיזה commit נמדד.
+מקור: `data/reports/index.json` · נמדד ב-2026-09-17T10:16:44+00:00 · sha `1ef67612`. **STALE** — נמדד ב-1ef67612, HEAD הוא 8928c1e1.
 
 הגרף שעליו נמדד הכול: **58,560** צמתים ו-**162,330** קשתות (147,534 דטרמיניסטיות, 14,796 מ-LLM). שער Plan 1: לא עבר — 11/13, נכשל: person_resolution_recall, make_smoke_green. המפקד המלא: `docs/report/plan1-graph-census.md`.
 
@@ -85,7 +85,7 @@
 
 ### שכבה 1 — איחוד ישויות
 
-מקור: `data/reports/resolve.json` · נמדד ב-2026-09-17T09:48:08+00:00. ⚠️ הדוח לא חותם sha — אי אפשר לדעת באיזה commit נמדד.
+מקור: `data/reports/resolve.json` · נמדד ב-2026-09-17T10:16:44+00:00 · sha `1ef67612`. **STALE** — נמדד ב-1ef67612, HEAD הוא 8928c1e1.
 
 P/R/F1 מול זוגות הזהב בלבד (יעד 0.85); מיזוגים שהזהב לא אומר עליהם דבר נספרים כ-`ungraded` ולא נכנסים לאף צד.
 
@@ -98,7 +98,7 @@ P/R/F1 מול זוגות הזהב בלבד (יעד 0.85); מיזוגים שהז�
 
 ### שכבה 1 — כיסוי provenance
 
-מקור: `data/reports/index.json` · נמדד ב-2026-09-17T09:53:19+00:00. ⚠️ הדוח לא חותם sha — אי אפשר לדעת באיזה commit נמדד.
+מקור: `data/reports/index.json` · נמדד ב-2026-09-17T10:16:44+00:00 · sha `1ef67612`. **STALE** — נמדד ב-1ef67612, HEAD הוא 8928c1e1.
 
 כלל הבעלות: conventions rule 3: every LLM-derived node and edge carries ['evidence_chunk_ids', 'batch_id', 'model', 'extracted_at'] with a non-empty evidence list. — 14,796 קשתות מ-LLM, 100.0% מהן עם provenance.
 
@@ -119,7 +119,7 @@ P/R/F1 מול זוגות הזהב בלבד (יעד 0.85); מיזוגים שהז�
 
 ### שכבה 1 — כיסוי קהילות
 
-מקור: `data/reports/index.json` · נמדד ב-2026-09-17T09:53:19+00:00. ⚠️ הדוח לא חותם sha — אי אפשר לדעת באיזה commit נמדד.
+מקור: `data/reports/index.json` · נמדד ב-2026-09-17T10:16:44+00:00 · sha `1ef67612`. **STALE** — נמדד ב-1ef67612, HEAD הוא 8928c1e1.
 
 **1,066** קהילות, מהן 124 מסוכמות (11.63%). 47.5% מהחברים נמצאים בקהילה מסוכמת — זה הכיסוי ש-S5 (חיפוש גלובלי) יכול לראות בכלל.
 
@@ -130,7 +130,7 @@ P/R/F1 מול זוגות הזהב בלבד (יעד 0.85); מיזוגים שהז�
 
 ## שכבה 2 — אחזור (דטרמיניסטי)
 
-מקור: `data/reports/eval_retrieval.json` · נמדד ב-2026-09-17T09:35:39+00:00 · sha `9dba7252`. **STALE** — נמדד ב-9dba7252, HEAD הוא 4cf28f9a.
+מקור: `data/reports/eval_retrieval.json` · נמדד ב-2026-09-17T09:35:39+00:00 · sha `9dba7252`. **STALE** — נמדד ב-9dba7252, HEAD הוא 8928c1e1.
 
 מצב fixed, k=10, תקציב הקשר 4,000 tokens לכל אסטרטגיה, baseline = `s1r`. 32 שאלות; כיסוי 224/224. כל התא נמדד דטרמיניסטית מול `gold_evidence` — אין כאן שופט.
 
@@ -237,14 +237,14 @@ P/R/F1 מול זוגות הזהב בלבד (יעד 0.85); מיזוגים שהז�
 | זמין | כן |
 | top-1 השתנה | 19/19 |
 | top-1 עבר למסמך אחר | 19 |
-| p50 בלי rerank (ms) | 167 |
-| p50 עם rerank (ms) | 1,772 |
-| תוספת p50 (ms) | 1,605 |
+| p50 בלי rerank (ms) | 164 |
+| p50 עם rerank (ms) | 1,823 |
+| תוספת p50 (ms) | 1,659 |
 | guard: נחסמו | 56/56 |
 | guard: דלפו | 0 |
 | guard: קריאות שעברו | 21/21 |
 | guard: LIMIT הוזרק | 9 |
-| guard: timeout נאכף (ms) | 1,486 |
+| guard: timeout נאכף (ms) | 1,073 |
 
 > measured, not improved: relevance is judged in Plan 3 (plan decision 5). A 100% top-1 change rate is what an RRF baseline invites: the fusion scores of ten chunks sit within ~0.002 of each other (1/(60+rank)), so any second opinion reorders them. `top1_source_changed` is the stricter number — how often the reranker moved the answer to a different document.
 
@@ -254,7 +254,7 @@ P/R/F1 מול זוגות הזהב בלבד (יעד 0.85); מיזוגים שהז�
 
 ## שכבה 3 — תשובות ושיפוט עיוור
 
-מקור: `data/reports/eval_answers.json` · נמדד ב-2026-09-17T10:13:04+00:00 · sha `4cf28f9a`. **STALE** — סעיפים ישנים: answers_build, answers_merge, judge_build.
+מקור: `data/reports/eval_answers.json` · נמדד ב-2026-09-17T10:13:04+00:00 · sha `4cf28f9a`. **STALE** — נמדד ב-4cf28f9a, HEAD הוא 8928c1e1.
 
 שיפוט עיוור לפי רובריקה 0–2 על ארבעה מדדים (§5.4). 229 שיפוטים על 190 מקרים, 143 השוואות pairwise, 0 נדחו. התשובות: 184 התקבלו מתוך 184 מקרים שנבנו.
 
@@ -373,7 +373,7 @@ P/R/F1 מול זוגות הזהב בלבד (יעד 0.85); מיזוגים שהז�
 
 ## עדכון אינקרמנטלי (§5.5)
 
-מקור: `data/reports/incremental.json` · נמדד ב-2026-09-17T10:12:44+00:00 · sha `4cf28f9`.
+מקור: `data/reports/incremental.json` · נמדד ב-2026-09-17T10:12:44+00:00 · sha `4cf28f9`. **STALE** — נמדד ב-4cf28f9, HEAD הוא 8928c1e1.
 
 פרוסה `incremental` ממקור `jira` מאז 2026-01-01: 10 פריטים, 39.65 שניות בסך הכול. שורה לכל שלב בפייפליין — שלב בלי מדידה נשאר בטבלה ומסומן, ולא נעלם.
 
@@ -453,7 +453,17 @@ P/R/F1 מול זוגות הזהב בלבד (יעד 0.85); מיזוגים שהז�
 *איפה הגרף לא החזיר את ההשקעה — לפי המספרים שלמעלה, לא לפי תחושה.*
 
 <!-- planner:start -->
-*(טרם נכתב. המתכנן כותב כאן אחרי קריאת המספרים; הטקסט בין שני הסימנים נשמר בכל יצירה מחדש של הדף.)*
+**נכתב ביד ע"י המתכנן (Claude Fable 5.1), 2026-09-17, אחרי קריאת המספרים שלמעלה.**
+
+**1. שאלות "מה כתוב על X".** baseline וקטורי (S1) מגיע ל-correctness 1.0 על שאלות גלובליות ול-0.5–0.67 על עקיבות והשפעה ב-144 ms ו-3.8k tokens — ובלי גרף בכלל. אם השאלה היא "מה כתוב על X" ולא "מה קשור ל-X", עלות הגרף (חילוץ, resolve, קהילות, אחזקה) לא מחזירה את עצמה. 5/19 שאלות הכשירות הן כאלה בפועל.
+
+**2. כשאין מפתחות.** כל היתרון של S3/S4/S6 (cross-lingual 4/4, correctness 1.0–1.8) נשען על מזהים בשאלה (`KIP-848`, `clients`, תאריך). שאלה חופשית בלי מפתח → router נופל ל-S2 (correctness 0.5) או ל-S4 מבנק דוגמאות שעשוי להיות עיוור לה (inc2/inc5: 0/5 במצב A). ארגון שבו אנשים לא מדברים במפתחות לא יקבל את המספרים האלה.
+
+**3. קורפוס שמשתנה מהר.** התוספת של 10 issues (0.3%) שינתה 645/1,297 קהילות והפילה כיסוי Global search מ-89% ל-47.5%. Leiden הוא re-partition גלובלי; עם קצב שינוי של ארגון חי, S5 דורש סיכום מחדש שוטף — ~1.5M tokens לסבב. אם אין תקציב לזה, S5 יהיה יפה בדמו ומיושן בייצור.
+
+**4. כשהאמת היא בטקסט חופשי ולא בקשתות.** 81% מה-Decisions שחולצו הן `weak` (בלי סיבה מקושרת); S3 מוביל ב-recall (0.23) ואחרון ב-correctness (0.47) — הוא מחזיר ישויות שהעונה לא יכול להפוך לתשובה. במקום שהידע הוא פרוזה ארוכה (KIP motivation), chunk מצוטט (S1/S2) עונה טוב יותר מגרף ישויות.
+
+**5. צוות שלא ישמור מזהים גולמיים.** resolve הדטרמיניסטי (268+15 מיזוגים) קיים רק כי load סירב לנרמל `JIRAUSER…`; recall אנשים נתקע ב-0.78 בגלל band של שופט. בארגון שבו המערכות לא חולקות מזהים, entity resolution הוא הפרויקט, לא שלב.
 <!-- planner:end -->
 
 ## מה הייתי משנה
@@ -461,5 +471,19 @@ P/R/F1 מול זוגות הזהב בלבד (יעד 0.85); מיזוגים שהז�
 *מה היה נעשה אחרת בסיבוב הבא — סכימה, אחזור, סט השאלות או המדידה עצמה.*
 
 <!-- planner:start -->
-*(טרם נכתב. המתכנן כותב כאן אחרי קריאת המספרים; הטקסט בין שני הסימנים נשמר בכל יצירה מחדש של הדף.)*
+**נכתב ביד ע"י המתכנן, 2026-09-17.**
+
+**1. לענות מ-S4/S6 כשיש מפתח, לא מ-S3.** המספרים אומרים שהשורה (Cypher/זמן) עדיפה על הישות: S4 correctness 0.95–1.4 ב-15 ms מול S3 0.47. S3 צריך להחזיר את הפריט עצמו (title+description) ליד הישויות — הראיה שהוא מוצא לא מגיעה לעונה.
+
+**2. Global search אינקרמנטלי.** במקום Leiden מחדש: הקצאת צמתים חדשים לקהילה הקרובה (לפי שכנים), סיכום מחדש רק לקהילות ש-`member_hash` שלהן זז מעל סף, re-partition גלובלי פעם ברבעון. ה-copy rule כבר קיים — חסר הצעד הראשון.
+
+**3. בנק Cypher לפי סטטוס, לא רק לפי סוג.** דוגמאות עם `NOT status IN (Resolved…)` הן נכונות ל"פתוח" ושגויות ל"מה נוצר ב-2026". `sample_values` בסכמה + דוגמה אחת לכל ערך שכיח של `status`/`source` — ו-cq05/cq08 היו מפסיקים להיות "חלקי".
+
+**4. faithfulness בלי הקשר ארוז למצב B.** agentic הוא הכי נכון (1.40) אבל היחיד שאין לו faithfulness — ו-8/8 אי-ההסכמות קוד-מול-שופט הן שלו (מזהים מקוצרים). לרשום את פלט הכלים של הסוכן כהקשר, ולאכוף מזהים מלאים בציטוט.
+
+**5. gold מה-truth הסינתטי.** 0/32 — זרוע שלמה של ההערכה (Xray/ADO עם אמת ידועה) לא מומשה כי 3 מסלולים נארזו כ-spare. 4 שאלות, שעה עבודה; זה ה-supplement הראשון.
+
+**6. שני recall בכל דוח, snapshot קפוא, ו-sha על כל מספר.** שלוש התקלות של Plan 3 (gold שמדד סדר אחסון, `--force` בזמן שהגרף זז, דוח שנדרס לעמודה אחת) נתפסו כי היו ledger, sha ו-`context_sha256`. הייתי מקדים את שלושתם ל-Plan 0 במקום ללמוד אותם ב-Plan 3.
+
+**7. איפה זה מגיע ל-NessBot.** הפרויקט הזה נבנה עם Kafka כדי שהאתגרים יהיו אמיתיים; ב-NessBot המערכות הן ADO+Xray אמיתיים. הצעד הראשון: קונקטור ADO לפי `docs/guides/adding-a-connector.md`, 15 שאלות כשירות שלכם, ואותו `brain eval` — לפני שמחליטים אם צריך גרף בכלל.
 <!-- planner:end -->
